@@ -71,15 +71,50 @@ class AuthService {
   }
 
   private setupInterceptors() {
+    // Request interceptor for logging
+    this.api.interceptors.request.use(
+      (config) => {
+        console.log(`🔵 API Request: ${config.method?.toUpperCase()} ${config.url}`);
+        return config;
+      },
+      (error) => {
+        console.error('🔴 Request Error:', error);
+        return Promise.reject(error);
+      }
+    );
+
     // Response interceptor for handling 401 errors
     this.api.interceptors.response.use(
-      (response) => response,
+      (response) => {
+        console.log(`✅ API Response: ${response.config.method?.toUpperCase()} ${response.config.url} - Status: ${response.status}`);
+        return response;
+      },
       async (error) => {
+        // Log detailed error information
+        if (error.response) {
+          console.error('🔴 API Error Response:', {
+            url: error.config?.url,
+            method: error.config?.method?.toUpperCase(),
+            status: error.response.status,
+            statusText: error.response.statusText,
+            data: error.response.data,
+            headers: error.response.headers,
+          });
+        } else if (error.request) {
+          console.error('🔴 API No Response:', {
+            url: error.config?.url,
+            request: error.request,
+            message: error.message,
+          });
+        } else {
+          console.error('🔴 API Error:', error.message);
+        }
+
         const originalRequest = error.config;
 
         if (error.response?.status === 401 && !originalRequest._retry) {
           console.log('🔴 401 Error detected, attempting token refresh...');
-          
+
           if (this.isRefreshing) {
             console.log('🔄 Already refreshing token, queuing request...');
             return new Promise((resolve, reject) => {
@@ -108,7 +143,7 @@ class AuthService {
             console.log('🔄 Attempting to refresh token...');
             const response = await this.refreshToken(refreshToken);
             console.log('✅ Token refreshed successfully');
-            
+
             await this.saveTokens(response.access_token, response.refresh_token);
             console.log('✅ New tokens saved to storage');
 
@@ -119,8 +154,11 @@ class AuthService {
             console.log('🔄 Retrying original request with new token...');
             return this.api(originalRequest);
           } catch (err: any) {
-            console.log('❌ Token refresh failed:', err.message || err);
-            console.log('Error details:', err.response?.data || err);
+            console.error('❌ Token refresh failed:', {
+              message: err.message || err,
+              response: err.response?.data,
+              status: err.response?.status,
+            });
             this.failedQueue.forEach((promise) => promise.reject(err));
             this.failedQueue = [];
             await this.clearTokens();
@@ -136,19 +174,42 @@ class AuthService {
   }
 
   async signIn(data: SignInRequest): Promise<SignInResponse> {
-    const response = await this.api.post<SignInResponse>('/auth/sign-in', data);
-    return response.data;
+    try {
+      console.log('🔑 Sign-in request:', { gmail: data.gmail, login: data.login });
+      const response = await this.api.post<SignInResponse>('/auth/sign-in', data);
+      console.log('✅ Sign-in successful:', response.data);
+      return response.data;
+    } catch (error: any) {
+      console.error('❌ Sign-in failed:', {
+        message: error.message,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      throw error;
+    }
   }
 
   async verify(data: VerifyRequest): Promise<VerifyResponse> {
-    const response = await this.api.post<VerifyResponse>('/auth/verify', data);
-    return response.data;
+    try {
+      console.log('🔐 Verification request:', { gmail: data.gmail, code: data.code });
+      const response = await this.api.post<VerifyResponse>('/auth/verify', data);
+      console.log('✅ Verification successful:', response.data);
+      return response.data;
+    } catch (error: any) {
+      console.error('❌ Verification failed:', {
+        message: error.message,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      throw error;
+    }
   }
 
   async signOut(): Promise<void> {
     const accessToken = await AsyncStorage.getItem('access_token');
     if (accessToken) {
       try {
+        console.log('🚪 Sign-out request');
         await this.api.post(
           '/auth/sign-out',
           {},
@@ -158,8 +219,13 @@ class AuthService {
             },
           }
         );
-      } catch (error) {
-        console.error('Sign out error:', error);
+        console.log('✅ Sign-out successful');
+      } catch (error: any) {
+        console.error('❌ Sign-out error:', {
+          message: error.message,
+          status: error.response?.status,
+          data: error.response?.data,
+        });
       }
     }
     await this.clearTokens();

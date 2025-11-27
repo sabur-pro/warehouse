@@ -9,7 +9,6 @@
     "experiments": {
       "tsconfigPaths": true
     },
-
     "plugins": [
       [
         "expo-notifications",
@@ -36,7 +35,8 @@
       "**/*"
     ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.umed1.sklad"
     },
     "android": {
       "adaptiveIcon": {

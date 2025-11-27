@@ -35,7 +35,7 @@ class SyncService {
   // ============================================
   // АССИСТЕНТ
   // ============================================
-  
+
   /**
    * Push изменений от ассистента на сервер
    */
@@ -57,9 +57,9 @@ class SyncService {
         db,
         'SELECT * FROM items WHERE needsSync=1 AND imageNeedsUpload=1'
       );
-      
+
       console.log(`📤 Found ${itemsWithImages.length} items with images to upload`);
-      
+
       for (const item of itemsWithImages) {
         if (item.imageUri) {
           try {
@@ -70,23 +70,27 @@ class SyncService {
               [imageUrl, item.id]
             );
             console.log(`✅ Uploaded image for item ${item.id}`);
-          } catch (error) {
-            console.error(`❌ Failed to upload image for item ${item.id}:`, error);
+          } catch (error: any) {
+            console.error(`❌ Failed to upload image for item ${item.id}:`, {
+              message: error.message,
+              status: error.response?.status,
+              data: error.response?.data,
+            });
           }
         }
       }
-      
+
       // 2. Получить items и transactions для синхронизации
       const items = await getAllWithRetry<any>(db, 'SELECT * FROM items WHERE needsSync=1');
       const transactions = await getAllWithRetry<any>(db, 'SELECT * FROM transactions WHERE needsSync=1');
-      
+
       if (items.length === 0 && transactions.length === 0) {
         console.log('✅ Nothing to sync');
         return;
       }
 
       console.log(`📤 Syncing ${items.length} items and ${transactions.length} transactions`);
-      
+
       // 3. Отправить на сервер
       const response = await api.post('/sync/assistant/push', {
         items: items.map((item: any) => ({
@@ -119,7 +123,7 @@ class SyncService {
       }, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
-      
+
       // 4. Обновить serverId и needsSync для items
       for (const item of response.data.items || []) {
         await runWithRetry(
@@ -139,12 +143,16 @@ class SyncService {
       }
 
       console.log('✅ Assistant push completed successfully');
-    } catch (error) {
-      console.error('❌ Assistant push failed:', error);
+    } catch (error: any) {
+      console.error('❌ Assistant push failed:', {
+        message: error.message,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
       throw error;
     }
   }
-  
+
   /**
    * Pull изменений с сервера для ассистента
    */
@@ -162,29 +170,33 @@ class SyncService {
       console.log('🔄 Starting assistant pull sync...');
 
       const lastSyncAt = await this.getLastSyncTimestamp();
-      
+
       const response = await api.get('/sync/assistant/pull', {
         params: { lastSyncAt: lastSyncAt ? new Date(lastSyncAt).toISOString() : undefined },
         headers: { Authorization: `Bearer ${accessToken}` },
       });
-      
+
       const { items = [], transactions = [], approvedActions = [] } = response.data;
-      
+
       console.log(`📥 Received ${items.length} items, ${transactions.length} transactions, ${approvedActions.length} approved actions`);
-      
+
       // Применить items и скачать изображения
       for (const item of items) {
         let localImageUri = null;
-        
+
         if (item.imageUrl) {
           try {
             localImageUri = await ImageService.downloadImage(item.imageUrl, accessToken);
             console.log(`✅ Downloaded image for item ${item.id}`);
-          } catch (error) {
-            console.error(`❌ Failed to download image for item ${item.id}:`, error);
+          } catch (error: any) {
+            console.error(`❌ Failed to download image for item ${item.id}:`, {
+              message: error.message,
+              status: error.response?.status,
+              data: error.response?.data,
+            });
           }
         }
-        
+
         await this.upsertItem({
           ...item,
           imageUri: localImageUri,
@@ -206,12 +218,16 @@ class SyncService {
       await this.updateLastSyncTimestamp();
 
       console.log('✅ Assistant pull completed successfully');
-    } catch (error) {
-      console.error('❌ Assistant pull failed:', error);
+    } catch (error: any) {
+      console.error('❌ Assistant pull failed:', {
+        message: error.message,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
       throw error;
     }
   }
-  
+
   /**
    * Запросить подтверждение действия у админа
    */
@@ -259,16 +275,20 @@ class SyncService {
       ]);
 
       console.log('✅ Approval request sent successfully');
-    } catch (error) {
-      console.error('❌ Failed to request approval:', error);
+    } catch (error: any) {
+      console.error('❌ Failed to request approval:', {
+        message: error.message,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
       throw error;
     }
   }
-  
+
   // ============================================
   // АДМИН
   // ============================================
-  
+
   /**
    * Pull изменений с сервера для админа
    */
@@ -286,29 +306,33 @@ class SyncService {
       console.log('🔄 Starting admin pull sync...');
 
       const lastSyncAt = await this.getLastSyncTimestamp();
-      
+
       const response = await api.get('/sync/admin/pull', {
         params: { lastSyncAt: lastSyncAt ? new Date(lastSyncAt).toISOString() : undefined },
         headers: { Authorization: `Bearer ${accessToken}` },
       });
-      
+
       const { items = [], transactions = [] } = response.data;
-      
+
       console.log(`📥 Received ${items.length} items and ${transactions.length} transactions`);
-      
+
       // Применить items и скачать изображения
       for (const item of items) {
         let localImageUri = null;
-        
+
         if (item.imageUrl) {
           try {
             localImageUri = await ImageService.downloadImage(item.imageUrl, accessToken);
             console.log(`✅ Downloaded image for item ${item.id}`);
-          } catch (error) {
-            console.error(`❌ Failed to download image for item ${item.id}:`, error);
+          } catch (error: any) {
+            console.error(`❌ Failed to download image for item ${item.id}:`, {
+              message: error.message,
+              status: error.response?.status,
+              data: error.response?.data,
+            });
           }
         }
-        
+
         await this.upsertItem({
           ...item,
           imageUri: localImageUri,
@@ -325,12 +349,16 @@ class SyncService {
       await this.updateLastSyncTimestamp();
 
       console.log('✅ Admin pull completed successfully');
-    } catch (error) {
-      console.error('❌ Admin pull failed:', error);
+    } catch (error: any) {
+      console.error('❌ Admin pull failed:', {
+        message: error.message,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
       throw error;
     }
   }
-  
+
   /**
    * Получить список ожидающих подтверждения действий
    */
@@ -346,10 +374,14 @@ class SyncService {
       const response = await api.get('/sync/admin/pending-actions', {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
-      
+
       return response.data || [];
-    } catch (error) {
-      console.error('Failed to get pending actions:', error);
+    } catch (error: any) {
+      console.error('Failed to get pending actions:', {
+        message: error.message,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
       return [];
     }
   }
@@ -366,13 +398,17 @@ class SyncService {
     const api = AuthService.getApiInstance();
 
     try {
-      await api.post(`/sync/admin/approve/${id}`, 
+      await api.post(`/sync/admin/approve/${id}`,
         { comment },
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
       console.log('✅ Action approved successfully');
-    } catch (error) {
-      console.error('❌ Failed to approve action:', error);
+    } catch (error: any) {
+      console.error('❌ Failed to approve action:', {
+        message: error.message,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
       throw error;
     }
   }
@@ -389,13 +425,17 @@ class SyncService {
     const api = AuthService.getApiInstance();
 
     try {
-      await api.post(`/sync/admin/reject/${id}`, 
+      await api.post(`/sync/admin/reject/${id}`,
         { comment },
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
       console.log('✅ Action rejected successfully');
-    } catch (error) {
-      console.error('❌ Failed to reject action:', error);
+    } catch (error: any) {
+      console.error('❌ Failed to reject action:', {
+        message: error.message,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
       throw error;
     }
   }
@@ -424,7 +464,7 @@ class SyncService {
 
   private async upsertItem(item: any): Promise<void> {
     const db = await getDatabaseInstance();
-    
+
     // Проверить существует ли item с serverId
     const existing = await getFirstWithRetry<{ id: number }>(
       db,
@@ -468,7 +508,7 @@ class SyncService {
 
   private async upsertTransaction(tx: any): Promise<void> {
     const db = await getDatabaseInstance();
-    
+
     // Проверить существует ли transaction с serverId
     const existing = await getFirstWithRetry<{ id: number }>(
       db,
@@ -503,7 +543,7 @@ class SyncService {
 
   private async handleApprovedAction(action: any): Promise<void> {
     const db = await getDatabaseInstance();
-    
+
     // Обновить статус в локальной БД
     await runWithRetry(db, `
       UPDATE pending_actions SET status='APPROVED', adminComment=?, respondedAt=?
@@ -518,17 +558,17 @@ class SyncService {
    */
   async getPendingChangesCount(): Promise<number> {
     const db = await getDatabaseInstance();
-    
+
     const itemsCount = await getFirstWithRetry<{ count: number }>(
       db,
       'SELECT COUNT(*) as count FROM items WHERE needsSync=1'
     );
-    
+
     const transactionsCount = await getFirstWithRetry<{ count: number }>(
       db,
       'SELECT COUNT(*) as count FROM transactions WHERE needsSync=1'
     );
-    
+
     return (itemsCount?.count || 0) + (transactionsCount?.count || 0);
   }
 }

@@ -32,7 +32,7 @@ type SignInScreenNavigationProp = NativeStackNavigationProp<AuthStackParamList, 
 export default function SignInScreen() {
   const navigation = useNavigation<SignInScreenNavigationProp>();
   const { signIn } = useAuth();
-  
+
   const [loginType, setLoginType] = useState<'admin' | 'assistant'>('admin');
   const [gmail, setGmail] = useState('');
   const [login, setLogin] = useState('');
@@ -80,12 +80,12 @@ export default function SignInScreen() {
 
     setIsLoading(true);
     try {
-      const requestData = loginType === 'admin' 
+      const requestData = loginType === 'admin'
         ? { gmail, password }
         : { login, password };
-      
+
       const result = await signIn(requestData);
-      
+
       if (result.requiresVerification) {
         Alert.alert('Успешно', result.message || 'Код верификации отправлен на ваш gmail');
         navigation.navigate('Verification', { gmail });
@@ -93,7 +93,17 @@ export default function SignInScreen() {
       // If successful login (no verification needed), AuthContext will handle navigation
     } catch (error: any) {
       const errorMessage = error.response?.data?.message || error.message || 'Ошибка при входе';
-      Alert.alert('Ошибка', errorMessage);
+
+      // Special handling for pending verification
+      if (error.response?.status === 400 && errorMessage === 'Please verify your email first') {
+        Alert.alert(
+          'Ожидается верификация',
+          'Код верификации уже отправлен на ваш email. Пожалуйста, проверьте почту (включая папку "Спам") и введите код.\n\nЕсли прошло более 10 минут, попробуйте войти снова для получения нового кода.',
+          [{ text: 'Понятно' }]
+        );
+      } else {
+        Alert.alert('Ошибка', errorMessage);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -149,9 +159,9 @@ export default function SignInScreen() {
                     style={styles.switchButtonBg}
                   />
                 )}
-                <MaterialIcons 
-                  name="admin-panel-settings" 
-                  size={20} 
+                <MaterialIcons
+                  name="admin-panel-settings"
+                  size={20}
                   color="#fff"
                 />
                 <Text style={[styles.switchButtonText, loginType === 'admin' && styles.switchButtonTextActive]}>
@@ -170,9 +180,9 @@ export default function SignInScreen() {
                     style={styles.switchButtonBg}
                   />
                 )}
-                <MaterialIcons 
-                  name="person" 
-                  size={20} 
+                <MaterialIcons
+                  name="person"
+                  size={20}
                   color="#fff"
                 />
                 <Text style={[styles.switchButtonText, loginType === 'assistant' && styles.switchButtonTextActive]}>
