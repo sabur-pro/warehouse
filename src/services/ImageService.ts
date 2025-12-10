@@ -1,6 +1,6 @@
 import * as FileSystem from 'expo-file-system';
-import axios from 'axios';
 import { BASE_URL } from '../config/api';
+import AuthService from './AuthService';
 
 class ImageService {
   private readonly LOCAL_IMAGES_DIR = `${FileSystem.documentDirectory}images/`;
@@ -33,9 +33,10 @@ class ImageService {
       name: filename,
     } as any);
 
-    // Отправить на сервер
-    const response = await axios.post(
-      `${BASE_URL}/storage/upload`,
+    // Отправить на сервер через AuthService API instance (с автоматическим refresh токена)
+    const api = AuthService.getApiInstance();
+    const response = await api.post(
+      '/storage/upload',
       formData,
       {
         headers: {

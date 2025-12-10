@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import AuthService, { DecodedToken, SignInRequest, VerifyRequest, RoleType } from '../services/AuthService';
+import AuthService, { DecodedToken, SignInRequest, VerifyRequest, RoleType, AUTH_EVENTS } from '../services/AuthService';
 import NotificationService from '../services/NotificationService';
 
 interface AuthContextType {
@@ -74,6 +74,19 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   useEffect(() => {
     loadUser();
+
+    // Subscribe to unauthorized events (when refresh token fails)
+    const handleUnauthorized = () => {
+      console.log('🔴 Received UNAUTHORIZED event - logging out user');
+      setUser(null);
+      setIsAuthenticated(false);
+    };
+
+    AuthService.on(AUTH_EVENTS.UNAUTHORIZED, handleUnauthorized);
+
+    return () => {
+      AuthService.off(AUTH_EVENTS.UNAUTHORIZED, handleUnauthorized);
+    };
   }, []);
 
   const signIn = async (data: SignInRequest): Promise<{ requiresVerification: boolean; message?: string }> => {

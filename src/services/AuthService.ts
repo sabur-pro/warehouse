@@ -1,6 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BASE_URL } from '../config/api';
+import { EventEmitter } from 'events';
 
 export interface SignInRequest {
   gmail?: string;
@@ -57,6 +58,12 @@ class AuthService {
     resolve: (value?: unknown) => void;
     reject: (reason?: unknown) => void;
   }[] = [];
+  private eventEmitter = new EventEmitter();
+
+  // Event types
+  static readonly EVENTS = {
+    UNAUTHORIZED: 'unauthorized', // Emitted when refresh token fails and user needs to re-login
+  };
 
   constructor() {
     this.api = axios.create({
@@ -162,6 +169,9 @@ class AuthService {
             this.failedQueue.forEach((promise) => promise.reject(err));
             this.failedQueue = [];
             await this.clearTokens();
+            // Emit unauthorized event to notify app to redirect to login
+            console.log('🔴 Emitting UNAUTHORIZED event - user needs to re-login');
+            this.eventEmitter.emit(AuthService.EVENTS.UNAUTHORIZED);
             return Promise.reject(err);
           } finally {
             this.isRefreshing = false;
@@ -278,7 +288,30 @@ class AuthService {
   getApiInstance(): AxiosInstance {
     return this.api;
   }
+
+  /**
+   * Subscribe to auth events
+   * @param event - Event name from AuthService.EVENTS
+   * @param listener - Callback function
+   */
+  on(event: string, listener: () => void): void {
+    this.eventEmitter.on(event, listener);
+  }
+
+  /**
+   * Unsubscribe from auth events
+   * @param event - Event name from AuthService.EVENTS
+   * @param listener - Callback function
+   */
+  off(event: string, listener: () => void): void {
+    this.eventEmitter.off(event, listener);
+  }
 }
 
-export default new AuthService();
+const authService = new AuthService();
+
+// Export events constant for easy access
+export const AUTH_EVENTS = AuthService.EVENTS;
+
+export default authService;
 

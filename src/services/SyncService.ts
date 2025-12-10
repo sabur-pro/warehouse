@@ -60,6 +60,8 @@ class SyncService {
 
       console.log(`📤 Found ${itemsWithImages.length} items with images to upload`);
 
+      const failedImageUploads: { itemId: number; error: string }[] = [];
+
       for (const item of itemsWithImages) {
         if (item.imageUri) {
           try {
@@ -71,13 +73,23 @@ class SyncService {
             );
             console.log(`✅ Uploaded image for item ${item.id}`);
           } catch (error: any) {
+            const errorMessage = error.response?.data?.message || error.message || 'Unknown error';
             console.error(`❌ Failed to upload image for item ${item.id}:`, {
               message: error.message,
               status: error.response?.status,
               data: error.response?.data,
             });
+            failedImageUploads.push({ itemId: item.id, error: errorMessage });
           }
         }
+      }
+
+      // Если есть ошибки загрузки изображений - прервать синхронизацию
+      if (failedImageUploads.length > 0) {
+        const errorDetails = failedImageUploads
+          .map(f => `Item ${f.itemId}: ${f.error}`)
+          .join('; ');
+        throw new Error(`Не удалось загрузить ${failedImageUploads.length} изображение(й): ${errorDetails}`);
       }
 
       // 2. Получить items и transactions для синхронизации
@@ -176,12 +188,26 @@ class SyncService {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
 
-      const { items = [], transactions = [], approvedActions = [] } = response.data;
+      const { items = [], transactions = [], approvedActions = [], isFullSync = false } = response.data;
 
-      console.log(`📥 Received ${items.length} items, ${transactions.length} transactions, ${approvedActions.length} approved actions`);
+      console.log(`📥 Received ${items.length} items, ${transactions.length} transactions, ${approvedActions.length} approved actions (fullSync: ${isFullSync})`);
+
+      // Если полная синхронизация - очистить локальные данные
+      if (isFullSync) {
+        console.log('🗑️ Full sync - clearing local data...');
+        await runWithRetry(db, 'DELETE FROM items WHERE serverId IS NOT NULL');
+        await runWithRetry(db, 'DELETE FROM transactions WHERE serverId IS NOT NULL');
+      }
 
       // Применить items и скачать изображения
       for (const item of items) {
+        // Если item удалён на сервере - удалить локально
+        if (item.isDeleted) {
+          console.log(`🗑️ Item ${item.id} is deleted on server, removing locally`);
+          await runWithRetry(db, 'DELETE FROM items WHERE serverId=?', [item.id]);
+          continue;
+        }
+
         let localImageUri = null;
 
         if (item.imageUrl) {
@@ -206,6 +232,13 @@ class SyncService {
 
       // Применить transactions
       for (const tx of transactions) {
+        // Если transaction удалён на сервере - удалить локально
+        if (tx.isDeleted) {
+          console.log(`🗑️ Transaction ${tx.id} is deleted on server, removing locally`);
+          await runWithRetry(db, 'DELETE FROM transactions WHERE serverId=?', [tx.id]);
+          continue;
+        }
+
         await this.upsertTransaction(tx);
       }
 
@@ -312,12 +345,26 @@ class SyncService {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
 
-      const { items = [], transactions = [] } = response.data;
+      const { items = [], transactions = [], isFullSync = false } = response.data;
 
-      console.log(`📥 Received ${items.length} items and ${transactions.length} transactions`);
+      console.log(`📥 Received ${items.length} items and ${transactions.length} transactions (fullSync: ${isFullSync})`);
+
+      // Если полная синхронизация - очистить локальные данные
+      if (isFullSync) {
+        console.log('🗑️ Full sync - clearing local data...');
+        await runWithRetry(db, 'DELETE FROM items WHERE serverId IS NOT NULL');
+        await runWithRetry(db, 'DELETE FROM transactions WHERE serverId IS NOT NULL');
+      }
 
       // Применить items и скачать изображения
       for (const item of items) {
+        // Если item удалён на сервере - удалить локально
+        if (item.isDeleted) {
+          console.log(`🗑️ Item ${item.id} is deleted on server, removing locally`);
+          await runWithRetry(db, 'DELETE FROM items WHERE serverId=?', [item.id]);
+          continue;
+        }
+
         let localImageUri = null;
 
         if (item.imageUrl) {
@@ -342,6 +389,13 @@ class SyncService {
 
       // Применить transactions
       for (const tx of transactions) {
+        // Если transaction удалён на сервере - удалить локально
+        if (tx.isDeleted) {
+          console.log(`🗑️ Transaction ${tx.id} is deleted on server, removing locally`);
+          await runWithRetry(db, 'DELETE FROM transactions WHERE serverId=?', [tx.id]);
+          continue;
+        }
+
         await this.upsertTransaction(tx);
       }
 
@@ -570,6 +624,46 @@ class SyncService {
     );
 
     return (itemsCount?.count || 0) + (transactionsCount?.count || 0);
+  }
+
+  /**
+   * Сбросить состояние синхронизации для принудительной полной синхронизации
+   * Используется когда пользователь очистил локальную БД и хочет восстановить данные с сервера
+   */
+  async resetSyncState(): Promise<void> {
+    const db = await getDatabaseInstance();
+    
+    // Сбросить lastSyncAt на null чтобы следующий pull был полным
+    await runWithRetry(db, 'UPDATE sync_state SET lastSyncAt=NULL WHERE id=1');
+    
+    console.log('🔄 Sync state reset - next pull will be a full sync');
+  }
+
+  /**
+   * Полное восстановление данных с сервера
+   * Очищает локальную БД и делает полную синхронизацию
+   */
+  async forceFullSync(role: 'ADMIN' | 'ASSISTANT'): Promise<void> {
+    const db = await getDatabaseInstance();
+    
+    console.log('🗑️ Clearing local data for full sync...');
+    
+    // Очистить локальные данные (только те что с сервера)
+    await runWithRetry(db, 'DELETE FROM items WHERE serverId IS NOT NULL');
+    await runWithRetry(db, 'DELETE FROM transactions WHERE serverId IS NOT NULL');
+    await runWithRetry(db, 'DELETE FROM pending_actions WHERE serverId IS NOT NULL');
+    
+    // Сбросить состояние синхронизации
+    await this.resetSyncState();
+    
+    // Сделать pull в зависимости от роли
+    if (role === 'ADMIN') {
+      await this.adminPull();
+    } else {
+      await this.assistantPull();
+    }
+    
+    console.log('✅ Full sync completed');
   }
 }
 

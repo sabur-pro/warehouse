@@ -1,7 +1,7 @@
 // components/ItemDetailsModal.tsx
 
 import { useState, useEffect } from 'react';
-import { Modal, View, ScrollView, Text, Image, TouchableOpacity, Alert, ActivityIndicator, TextInput } from 'react-native';
+import { Modal, View, ScrollView, Text, Image, TouchableOpacity, Alert, ActivityIndicator, TextInput, Pressable, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
@@ -199,7 +199,8 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
   }, [editedNumberOfBoxes, isEditing]);
 
   const getCurrentQuantity = (boxIndex: number, size: number | string): number => {
-    return boxSizeQuantities[boxIndex]?.find(item => item.size === size)?.quantity || 0;
+    // Используем нестрогое сравнение для поддержки разных типов (number vs string)
+    return boxSizeQuantities[boxIndex]?.find(item => String(item.size) === String(size))?.quantity || 0;
   };
 
   const pickImage = async () => {
@@ -278,7 +279,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
       prev.map((box, idx) => 
         idx === boxIndex
           ? box.map(item => 
-              item.size === size 
+              String(item.size) === String(size) 
                 ? { ...item, quantity: Math.max(0, item.quantity + change) }
                 : item
             )
@@ -379,12 +380,12 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
   };
 
   const handleSellItem = (boxIndex: number, size: number | string) => {
-    if (getCurrentQuantity(boxIndex, size) > 0) {
-      setCurrentBoxIndex(boxIndex);
-      setCurrentSize(size);
-      setSalePrice('');
-      setShowSaleModal(true);
-    }
+    // Кнопка уже показывается только при qty > 0, так что сразу открываем модалку
+    setCurrentBoxIndex(boxIndex);
+    setCurrentSize(size);
+    setSalePrice('');
+    setShowSaleModal(true);
+    console.log('🛒 Opening sale modal for box:', boxIndex, 'size:', size);
   };
 
   const handleConfirmSale = async () => {
@@ -394,8 +395,8 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
       return;
     }
 
-    const costPrice = boxSizeQuantities[currentBoxIndex]?.find(item => item.size === currentSize)?.price || 0;
-    const recommendedPrice = boxSizeQuantities[currentBoxIndex]?.find(item => item.size === currentSize)?.recommendedSellingPrice || 0;
+    const costPrice = boxSizeQuantities[currentBoxIndex]?.find(item => String(item.size) === String(currentSize))?.price || 0;
+    const recommendedPrice = boxSizeQuantities[currentBoxIndex]?.find(item => String(item.size) === String(currentSize))?.recommendedSellingPrice || 0;
     const profit = parsedSalePrice - costPrice;
 
     setIsLoading(true);
@@ -404,7 +405,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
       const newBoxSizeQuantities = boxSizeQuantities.map((box, idx) =>
         idx === currentBoxIndex
           ? box.map(item => 
-              item.size === currentSize
+              String(item.size) === String(currentSize)
                 ? { ...item, quantity: Math.max(0, item.quantity - 1) }
                 : item
             )
@@ -653,9 +654,11 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
         transparent={true}
         visible={visible}
         onRequestClose={onClose}
+        presentationStyle="overFullScreen"
+        statusBarTranslucent={true}
       >
-        <View className="flex-1 justify-center items-center bg-black/50 p-4">
-          <View style={{backgroundColor: colors.background.screen}} className="p-5 rounded-lg w-full max-h-4/5">
+        <View style={{flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.5)', padding: 16, position: 'relative'}}>
+          <View style={{backgroundColor: colors.background.screen, padding: 20, borderRadius: 8, width: '100%', maxHeight: '85%'}}>
             <ScrollView className="w-full" showsVerticalScrollIndicator={false}>
               <View className="flex-row justify-between items-center mb-4">
                 {isEditing ? (
@@ -1045,14 +1048,34 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                                 </View>
 
                                 {qty > 0 && isAssistant() && (
-                                  <TouchableOpacity
-                                    style={{backgroundColor: colors.primary.blue}}
-                                    className="w-8 h-8 rounded-full items-center justify-center"
-                                    onPress={() => handleSellItem(boxIndex, sizeQty.size)}
+                                  <Pressable
+                                    style={({pressed}) => [
+                                      {
+                                        backgroundColor: pressed 
+                                          ? (isDark ? '#b8860b' : '#1e40af') 
+                                          : (isDark ? colors.primary.gold : '#2563eb'),
+                                        width: 36, 
+                                        height: 36, 
+                                        borderRadius: 18, 
+                                        alignItems: 'center', 
+                                        justifyContent: 'center', 
+                                        opacity: isLoading ? 0.5 : 1,
+                                        shadowColor: '#000',
+                                        shadowOffset: { width: 0, height: 2 },
+                                        shadowOpacity: 0.25,
+                                        shadowRadius: 3.84,
+                                        elevation: 5,
+                                      }
+                                    ]}
+                                    onPress={() => {
+                                      console.log('🛒 Cart button pressed on', Platform.OS);
+                                      handleSellItem(boxIndex, sizeQty.size);
+                                    }}
                                     disabled={isLoading}
+                                    hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}
                                   >
-                                    <Ionicons name="cart-outline" size={16} color="white" />
-                                  </TouchableOpacity>
+                                    <Ionicons name="cart-outline" size={18} color="white" />
+                                  </Pressable>
                                 )}
                               </View>
                             );
@@ -1138,59 +1161,102 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
               )}
             </ScrollView>
           </View>
-        </View>
-      </Modal>
-
-      {/* Sale Input Modal */}
-      <Modal
-        animationType="fade"
-        transparent={true}
-        visible={showSaleModal}
-        onRequestClose={() => setShowSaleModal(false)}
-      >
-        <View className="flex-1 justify-center items-center bg-black/50 p-4">
-          <View style={{backgroundColor: colors.background.screen}} className="p-5 rounded-lg w-full max-w-sm">
-            <Text style={{color: colors.text.normal}} className="text-lg font-bold mb-4 text-center">Продажа</Text>
-            <Text style={{color: colors.text.normal}} className="mb-2">Размер: {currentSize}</Text>
-            {!isAdmin() && (() => {
-              const currentSizeQty = boxSizeQuantities[currentBoxIndex]?.find(item => item.size === currentSize);
-              const recommendedPrice = currentSizeQty?.recommendedSellingPrice || 0;
-              return (
-                <View className="mb-3 p-3 bg-green-50 border border-green-300 rounded-lg">
-                  <Text className="text-green-800 font-semibold text-center">
-                    Рекомендуемая цена: {recommendedPrice.toFixed(2)} сомонӣ
-                  </Text>
+          
+          {/* Sale Input Overlay - показывается поверх контента внутри основной модалки */}
+          {showSaleModal && (
+            <Pressable 
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                backgroundColor: 'rgba(0,0,0,0.6)',
+                justifyContent: 'center',
+                alignItems: 'center',
+                padding: 16,
+                zIndex: 9999,
+              }}
+              onPress={() => setShowSaleModal(false)}
+            >
+              <Pressable 
+                style={{
+                  backgroundColor: colors.background.screen,
+                  borderRadius: 12,
+                  padding: 20,
+                  width: '100%',
+                  maxWidth: 350,
+                  shadowColor: '#000',
+                  shadowOffset: { width: 0, height: 4 },
+                  shadowOpacity: 0.3,
+                  shadowRadius: 8,
+                  elevation: 10,
+                }}
+                onPress={(e) => e.stopPropagation()}
+              >
+                <Text style={{color: colors.text.normal, fontSize: 18, fontWeight: 'bold', marginBottom: 16, textAlign: 'center'}}>Продажа</Text>
+                <Text style={{color: colors.text.normal, marginBottom: 8}}>Размер: {currentSize}</Text>
+                {!isAdmin() && (() => {
+                  const currentSizeQty = boxSizeQuantities[currentBoxIndex]?.find(item => String(item.size) === String(currentSize));
+                  const recommendedPrice = currentSizeQty?.recommendedSellingPrice || 0;
+                  return (
+                    <View style={{marginBottom: 12, padding: 12, backgroundColor: '#dcfce7', borderWidth: 1, borderColor: '#86efac', borderRadius: 8}}>
+                      <Text style={{color: '#166534', fontWeight: '600', textAlign: 'center'}}>
+                        Рекомендуемая цена: {recommendedPrice.toFixed(2)} сомонӣ
+                      </Text>
+                    </View>
+                  );
+                })()}
+                <TextInput
+                  style={{
+                    borderWidth: 1,
+                    borderColor: colors.border.normal, 
+                    backgroundColor: colors.background.card, 
+                    color: colors.text.normal,
+                    padding: 12,
+                    borderRadius: 8,
+                    marginBottom: 16,
+                    fontSize: 16,
+                  }}
+                  placeholder="Цена продажи за пару (сомонӣ)"
+                  placeholderTextColor={colors.text.muted}
+                  value={salePrice}
+                  onChangeText={setSalePrice}
+                  keyboardType="numeric"
+                  autoFocus={true}
+                />
+                <View style={{flexDirection: 'row', gap: 12}}>
+                  <TouchableOpacity
+                    style={{
+                      flex: 1,
+                      backgroundColor: colors.background.card,
+                      padding: 12,
+                      borderRadius: 8,
+                      alignItems: 'center',
+                    }}
+                    onPress={() => setShowSaleModal(false)}
+                    disabled={isLoading}
+                  >
+                    <Text style={{color: colors.text.normal, fontWeight: '500'}}>Отмена</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={{
+                      flex: 1,
+                      backgroundColor: isDark ? colors.primary.gold : '#2563eb',
+                      padding: 12,
+                      borderRadius: 8,
+                      alignItems: 'center',
+                      opacity: (isLoading || !salePrice) ? 0.5 : 1,
+                    }}
+                    onPress={handleConfirmSale}
+                    disabled={isLoading || !salePrice}
+                  >
+                    <Text style={{color: 'white', fontWeight: '600'}}>Подтвердить</Text>
+                  </TouchableOpacity>
                 </View>
-              );
-            })()}
-            <TextInput
-              style={{borderColor: colors.border.normal, backgroundColor: colors.background.card, color: colors.text.normal}}
-              className="border p-3 rounded-lg mb-4"
-              placeholder="Цена продажи за пару (сомонӣ)"
-              placeholderTextColor={colors.text.muted}
-              value={salePrice}
-              onChangeText={setSalePrice}
-              keyboardType="numeric"
-            />
-            <View className="flex-row justify-between space-x-4">
-              <TouchableOpacity
-                style={{backgroundColor: colors.background.card}}
-                className="flex-1 p-3 rounded-lg items-center"
-                onPress={() => setShowSaleModal(false)}
-                disabled={isLoading}
-              >
-                <Text style={{color: colors.text.normal}} className="font-medium">Отмена</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={{backgroundColor: isDark ? colors.primary.gold : defaultColors.primary.blue}}
-                className="flex-1 p-3 rounded-lg items-center"
-                onPress={handleConfirmSale}
-                disabled={isLoading || !salePrice}
-              >
-                <Text className="text-white font-semibold">Подтвердить</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
+              </Pressable>
+            </Pressable>
+          )}
         </View>
       </Modal>
 

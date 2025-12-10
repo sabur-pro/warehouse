@@ -604,7 +604,12 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
 
   const isSaleTransaction = transactions.some((tx: Transaction) => {
     const details = parseDetails(tx.details);
-    return tx.action === 'sale' || tx.action === 'wholesale' || (tx.action === 'update' && details?.sale);
+    // Проверяем все возможные варианты транзакций продаж
+    return tx.action === 'sale' || 
+           tx.action === 'wholesale' || 
+           (tx.action === 'update' && details?.sale) ||
+           (tx.action === 'update' && details?.type === 'sale') ||
+           details?.type === 'wholesale';
   });
 
   return (
