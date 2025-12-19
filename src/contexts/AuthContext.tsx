@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, ReactNode } from
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import AuthService, { DecodedToken, SignInRequest, VerifyRequest, RoleType, AUTH_EVENTS } from '../services/AuthService';
 import NotificationService from '../services/NotificationService';
+import SyncService from '../services/SyncService';
 
 interface AuthContextType {
   isAuthenticated: boolean;
@@ -92,23 +93,23 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const signIn = async (data: SignInRequest): Promise<{ requiresVerification: boolean; message?: string }> => {
     try {
       const response = await AuthService.signIn(data);
-      
+
       if (response.access_token && response.refresh_token) {
         await AuthService.saveTokens(response.access_token, response.refresh_token);
         const decoded = AuthService.decodeToken(response.access_token);
         setUser(decoded);
         setIsAuthenticated(true);
-        
+
         // Регистрация PUSH-токена после успешного входа
         NotificationService.registerPushToken().catch(err => {
           console.warn('Failed to register push token:', err);
         });
-        
+
         return { requiresVerification: false };
       } else if (response.message) {
         return { requiresVerification: true, message: response.message };
       }
-      
+
       throw new Error('Unexpected response format');
     } catch (error) {
       console.error('Sign in error:', error);
@@ -130,7 +131,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       const decoded = AuthService.decodeToken(response.access_token);
       setUser(decoded);
       setIsAuthenticated(true);
-      
+
       // Регистрация PUSH-токена после верификации
       NotificationService.registerPushToken().catch(err => {
         console.warn('Failed to register push token:', err);
@@ -153,8 +154,13 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       await NotificationService.deactivatePushToken().catch(err => {
         console.warn('Failed to deactivate push token:', err);
       });
-      
+
       await AuthService.signOut();
+
+      // Очистить все локальные данные после выхода
+      await SyncService.clearAllLocalData().catch(err => {
+        console.error('Failed to clear local data on sign out:', err);
+      });
     } catch (error) {
       console.error('Sign out error:', error);
     } finally {

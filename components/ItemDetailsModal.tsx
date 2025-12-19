@@ -15,6 +15,7 @@ import { QRCodeDisplay } from './QRCodeDisplay';
 import { CreateQRModal } from './CreateQRModal';
 import { useTheme } from '../src/contexts/ThemeContext';
 import { getThemeColors, colors as defaultColors } from '../constants/theme';
+import { createQRCodesForItem } from '../utils/qrCodeUtils';
 
 interface ItemDetailsModalProps {
   item: Item;
@@ -35,16 +36,16 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
   const [currentBoxIndex, setCurrentBoxIndex] = useState(0);
   const [currentSize, setCurrentSize] = useState<number | string>(0);
   const [salePrice, setSalePrice] = useState('');
-  
+
   // Состояния для оптовой продажи
   const [showWholesaleModal, setShowWholesaleModal] = useState(false);
-  const [selectedBoxes, setSelectedBoxes] = useState<{boxIndex: number, price: string}[]>([]);
-  
+  const [selectedBoxes, setSelectedBoxes] = useState<{ boxIndex: number, price: string }[]>([]);
+
   // Состояния для QR-кодов
   const [showCreateQRModal, setShowCreateQRModal] = useState(false);
-  
+
   const { updateItemQuantity, deleteItem, addTransaction, updateItem, updateItemQRCodes } = useDatabase();
-  
+
   // Состояния для редактирования
   const [isEditing, setIsEditing] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
@@ -79,19 +80,19 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
     // Определяем тип товара по sizeType или по item.itemType
     const itemType = currentItem.itemType || 'обувь';
     const sizeRanges = itemType === 'обувь' ? shoeSizeRanges : clothingSizeRanges;
-    
+
     // Проверяем, существует ли указанный тип в размерных рядах
     if (sizeRanges[type]) {
       return sizeRanges[type];
     }
-    
+
     // Если не нашли, возвращаем первый доступный размерный ряд
     const firstAvailable = Object.keys(sizeRanges)[0];
     if (firstAvailable && sizeRanges[firstAvailable]) {
       console.warn(`SizeType "${type}" not found for itemType "${itemType}", using "${firstAvailable}" instead`);
       return sizeRanges[firstAvailable];
     }
-    
+
     // В крайнем случае возвращаем пустой массив
     console.error(`No size ranges found for itemType "${itemType}"`);
     return [];
@@ -142,7 +143,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
       let allRecommendedPrices: number[] = [];
       boxSizeQuantities.flatMap(box => box.filter(sq => sq.quantity > 0).map(sq => (sq.price !== undefined && !isNaN(sq.price)) ? sq.price : 0)).forEach(p => allPrices.push(p));
       boxSizeQuantities.flatMap(box => box.filter(sq => sq.quantity > 0).map(sq => (sq.recommendedSellingPrice !== undefined && !isNaN(sq.recommendedSellingPrice)) ? sq.recommendedSellingPrice : 0)).forEach(p => allRecommendedPrices.push(p));
-      
+
       if (allPrices.length > 0) {
         const uniquePrices = [...new Set(allPrices)];
         if (uniquePrices.length === 1) {
@@ -166,7 +167,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
         setPriceMode('per_pair');
         setPriceValue(0);
       }
-      
+
       // Устанавливаем рекомендуемую цену
       if (allRecommendedPrices.length > 0) {
         const uniqueRecommendedPrices = [...new Set(allRecommendedPrices)];
@@ -206,7 +207,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
   const pickImage = async () => {
     try {
       const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      
+
       if (!permissionResult.granted) {
         Alert.alert('Требуется разрешение', 'Пожалуйста, предоставьте разрешение для доступа к галерее');
         return;
@@ -242,7 +243,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
 
       // Определяем рекомендуемый профиль сжатия
       const profile = getRecommendedProfile(fileSize);
-      
+
       // Примерно оцениваем размер после сжатия
       const estimatedCompressedSize = fileSize * 0.3; // Примерно 30% от оригинала
 
@@ -275,14 +276,14 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
   };
 
   const updateSizeQuantity = (boxIndex: number, size: number | string, change: number) => {
-    setBoxSizeQuantities(prev => 
-      prev.map((box, idx) => 
+    setBoxSizeQuantities(prev =>
+      prev.map((box, idx) =>
         idx === boxIndex
-          ? box.map(item => 
-              String(item.size) === String(size) 
-                ? { ...item, quantity: Math.max(0, item.quantity + change) }
-                : item
-            )
+          ? box.map(item =>
+            String(item.size) === String(size)
+              ? { ...item, quantity: Math.max(0, item.quantity + change) }
+              : item
+          )
           : box
       )
     );
@@ -303,13 +304,13 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
         imageUri: editedImageUri,
       };
 
-      let newBoxSizeQuantities = boxSizeQuantities.map(box => box.map(sq => ({...sq})));
+      let newBoxSizeQuantities = boxSizeQuantities.map(box => box.map(sq => ({ ...sq })));
       if (priceValue > 0 || recommendedSellingPrice > 0) {
         newBoxSizeQuantities.forEach((box) => {
           const totalInBox = box.reduce((sum, item) => sum + item.quantity, 0);
           let pricePerPair = 0;
           let recommendedPricePerPair = 0;
-          
+
           if (totalInBox > 0 && priceValue > 0) {
             if (priceMode === 'per_box') {
               pricePerPair = priceValue / totalInBox;
@@ -317,7 +318,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
               pricePerPair = priceValue;
             }
           }
-          
+
           if (totalInBox > 0 && recommendedSellingPrice > 0) {
             if (priceMode === 'per_box') {
               recommendedPricePerPair = recommendedSellingPrice / totalInBox;
@@ -325,7 +326,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
               recommendedPricePerPair = recommendedSellingPrice;
             }
           }
-          
+
           box.forEach((item) => {
             if (priceValue > 0) item.price = pricePerPair;
             if (recommendedSellingPrice > 0) item.recommendedSellingPrice = recommendedPricePerPair;
@@ -340,16 +341,32 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
       await updateItem(updatedBasic);
       await updateItemQuantity(currentItem.id, newBoxJson, newTotalQuantity, newTotalValue);
 
-      const updatedItem: Item = {
+      let finalItem: Item = {
         ...updatedBasic,
         boxSizeQuantities: newBoxJson,
         totalQuantity: newTotalQuantity,
         totalValue: newTotalValue,
       };
 
-      setCurrentItem(updatedItem);
+      // Перегенерируем QR-коды если они есть
+      if (currentItem.qrCodeType && currentItem.qrCodeType !== 'none') {
+        console.log('🔄 Regenerating QR codes after edit...');
+        const qrCodes = createQRCodesForItem(
+          currentItem.id,
+          updatedBasic.name,
+          updatedBasic.code,
+          currentItem.qrCodeType,
+          updatedBasic.numberOfBoxes || 1,
+          newBoxJson
+        );
+        const qrCodesString = JSON.stringify(qrCodes);
+        await updateItemQRCodes(currentItem.id, currentItem.qrCodeType, qrCodesString);
+        finalItem.qrCodes = qrCodesString;
+      }
+
+      setCurrentItem(finalItem);
       setBoxSizeQuantities(newBoxSizeQuantities);
-      onItemUpdated(updatedItem);
+      onItemUpdated(finalItem);
       setIsEditing(false);
       Alert.alert('Успех', 'Данные товара успешно обновлены');
     } catch (error) {
@@ -404,11 +421,11 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
       // Compute new box sizes
       const newBoxSizeQuantities = boxSizeQuantities.map((box, idx) =>
         idx === currentBoxIndex
-          ? box.map(item => 
-              String(item.size) === String(currentSize)
-                ? { ...item, quantity: Math.max(0, item.quantity - 1) }
-                : item
-            )
+          ? box.map(item =>
+            String(item.size) === String(currentSize)
+              ? { ...item, quantity: Math.max(0, item.quantity - 1) }
+              : item
+          )
           : box
       );
 
@@ -452,15 +469,30 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
         newTotalValue
       );
 
-      const updatedItem: Item = {
+      let finalItem: Item = {
         ...currentItem,
         boxSizeQuantities: JSON.stringify(newBoxSizeQuantities),
         totalQuantity: newTotalQuantity,
         totalValue: newTotalValue
       };
 
-      setCurrentItem(updatedItem);
-      onItemUpdated(updatedItem);
+      // Перегенерируем QR-коды если они есть
+      if (currentItem.qrCodeType && currentItem.qrCodeType !== 'none') {
+        const qrCodes = createQRCodesForItem(
+          currentItem.id,
+          currentItem.name,
+          currentItem.code,
+          currentItem.qrCodeType,
+          currentItem.numberOfBoxes || 1,
+          JSON.stringify(newBoxSizeQuantities)
+        );
+        const qrCodesString = JSON.stringify(qrCodes);
+        await updateItemQRCodes(currentItem.id, currentItem.qrCodeType, qrCodesString);
+        finalItem.qrCodes = qrCodesString;
+      }
+
+      setCurrentItem(finalItem);
+      onItemUpdated(finalItem);
 
       setShowSaleModal(false);
       if (isAdmin()) {
@@ -488,7 +520,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
 
   const handleConfirmWholesale = async () => {
     // Проверяем, есть ли выбранные коробки с ценами
-    const validSelectedBoxes = selectedBoxes.filter(sb => 
+    const validSelectedBoxes = selectedBoxes.filter(sb =>
       sb.price !== '' && !isNaN(parseFloat(sb.price)) && parseFloat(sb.price) > 0
     );
 
@@ -569,15 +601,30 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
         newTotalValue
       );
 
-      const updatedItem: Item = {
+      let finalItem: Item = {
         ...currentItem,
         boxSizeQuantities: JSON.stringify(newBoxSizeQuantities),
         totalQuantity: newTotalQuantity,
         totalValue: newTotalValue
       };
 
-      setCurrentItem(updatedItem);
-      onItemUpdated(updatedItem);
+      // Перегенерируем QR-коды если они есть
+      if (currentItem.qrCodeType && currentItem.qrCodeType !== 'none') {
+        const qrCodes = createQRCodesForItem(
+          currentItem.id,
+          currentItem.name,
+          currentItem.code,
+          currentItem.qrCodeType,
+          currentItem.numberOfBoxes || 1,
+          JSON.stringify(newBoxSizeQuantities)
+        );
+        const qrCodesString = JSON.stringify(qrCodes);
+        await updateItemQRCodes(currentItem.id, currentItem.qrCodeType, qrCodesString);
+        finalItem.qrCodes = qrCodesString;
+      }
+
+      setCurrentItem(finalItem);
+      onItemUpdated(finalItem);
       setShowWholesaleModal(false);
       setSelectedBoxes([]);
 
@@ -657,15 +704,15 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
         presentationStyle="overFullScreen"
         statusBarTranslucent={true}
       >
-        <View style={{flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.5)', padding: 16, position: 'relative'}}>
-          <View style={{backgroundColor: colors.background.screen, padding: 20, borderRadius: 8, width: '100%', maxHeight: '85%'}}>
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.5)', padding: 16, position: 'relative' }}>
+          <View style={{ backgroundColor: colors.background.screen, padding: 20, borderRadius: 8, width: '100%', maxHeight: '85%' }}>
             <ScrollView className="w-full" showsVerticalScrollIndicator={false}>
               <View className="flex-row justify-between items-center mb-4">
                 {isEditing ? (
                   <View className="flex-1">
-                    <Text style={{color: colors.text.muted}} className="text-xs mb-1">Название товара</Text>
+                    <Text style={{ color: colors.text.muted }} className="text-xs mb-1">Название товара</Text>
                     <TextInput
-                      style={{color: colors.text.normal, borderColor: colors.border.normal, backgroundColor: colors.background.card}}
+                      style={{ color: colors.text.normal, borderColor: colors.border.normal, backgroundColor: colors.background.card }}
                       className="text-lg font-bold border p-2 rounded"
                       value={editedName}
                       onChangeText={setEditedName}
@@ -674,21 +721,21 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                     />
                   </View>
                 ) : (
-                  <Text style={{color: colors.text.normal}} className="text-lg font-bold">{currentItem.name}</Text>
+                  <Text style={{ color: colors.text.normal }} className="text-lg font-bold">{currentItem.name}</Text>
                 )}
-                
+
                 {!isEditing && isAssistant() && (
                   <View className="relative">
                     <TouchableOpacity
                       onPress={() => setShowMenu(!showMenu)}
-                      style={{backgroundColor: colors.background.card}}
+                      style={{ backgroundColor: colors.background.card }}
                       className="ml-2 p-2 rounded-full"
                     >
                       <Ionicons name="ellipsis-vertical" size={20} color={colors.text.muted} />
                     </TouchableOpacity>
-                    
+
                     {showMenu && (
-                      <View style={{backgroundColor: colors.background.screen, borderColor: colors.border.normal}} className="absolute right-0 top-10 shadow-lg rounded-md z-10 border min-w-[140px]">
+                      <View style={{ backgroundColor: colors.background.screen, borderColor: colors.border.normal }} className="absolute right-0 top-10 shadow-lg rounded-md z-10 border min-w-[140px]">
                         <TouchableOpacity
                           onPress={handleEditItem}
                           className="px-4 py-3 flex-row items-center border-b border-gray-100"
@@ -712,12 +759,12 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
               {isEditing ? (
                 <>
                   <View className="mb-3">
-                    <Text style={{color: colors.text.normal}} className="font-semibold">Основная информация</Text>
-                    <View style={{backgroundColor: colors.background.card}} className="p-3 rounded-lg mt-1">
+                    <Text style={{ color: colors.text.normal }} className="font-semibold">Основная информация</Text>
+                    <View style={{ backgroundColor: colors.background.card }} className="p-3 rounded-lg mt-1">
                       <View className="mb-2">
-                        <Text style={{color: colors.text.muted}} className="text-xs mb-1">Код товара</Text>
+                        <Text style={{ color: colors.text.muted }} className="text-xs mb-1">Код товара</Text>
                         <TextInput
-                          style={{borderColor: colors.border.normal, backgroundColor: colors.background.screen, color: colors.text.normal}}
+                          style={{ borderColor: colors.border.normal, backgroundColor: colors.background.screen, color: colors.text.normal }}
                           className="border p-2 rounded"
                           value={editedCode}
                           onChangeText={setEditedCode}
@@ -726,9 +773,9 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                         />
                       </View>
                       <View className="mb-2">
-                        <Text style={{color: colors.text.muted}} className="text-xs mb-1">Склад</Text>
+                        <Text style={{ color: colors.text.muted }} className="text-xs mb-1">Склад</Text>
                         <TextInput
-                          style={{borderColor: colors.border.normal, backgroundColor: colors.background.screen, color: colors.text.normal}}
+                          style={{ borderColor: colors.border.normal, backgroundColor: colors.background.screen, color: colors.text.normal }}
                           className="border p-2 rounded"
                           value={editedWarehouse}
                           onChangeText={setEditedWarehouse}
@@ -736,14 +783,14 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                           placeholderTextColor={colors.text.muted}
                         />
                       </View>
-                      <Text style={{color: colors.text.muted}} className="mb-1">Тип размера: {currentItem.sizeType || 'не указан'}</Text>
+                      <Text style={{ color: colors.text.muted }} className="mb-1">Тип размера: {currentItem.sizeType || 'не указан'}</Text>
                       <View className="mb-2">
-                        <Text style={{color: colors.text.muted}} className="text-xs mb-1">Количество коробок</Text>
-                        <View style={{borderColor: colors.border.normal}} className="border rounded-lg">
+                        <Text style={{ color: colors.text.muted }} className="text-xs mb-1">Количество коробок</Text>
+                        <View style={{ borderColor: colors.border.normal }} className="border rounded-lg">
                           <Picker
                             selectedValue={editedNumberOfBoxes}
                             onValueChange={setEditedNumberOfBoxes}
-                            style={{color: colors.text.normal}}
+                            style={{ color: colors.text.normal }}
                             dropdownIconColor={colors.text.normal}
                           >
                             {Array.from({ length: 20 }, (_, i) => i + 1).map(num => (
@@ -752,52 +799,52 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                           </Picker>
                         </View>
                       </View>
-                      <Text style={{color: colors.text.muted}} className="mb-1">Всего товаров: {boxSizeQuantities.reduce((total, box) => total + box.reduce((sum, sq) => sum + (sq.quantity || 0), 0), 0)}</Text>
+                      <Text style={{ color: colors.text.muted }} className="mb-1">Всего товаров: {boxSizeQuantities.reduce((total, box) => total + box.reduce((sum, sq) => sum + (sq.quantity || 0), 0), 0)}</Text>
                     </View>
                   </View>
 
                   <View className="mb-3">
-                    <Text style={{color: colors.text.normal}} className="font-semibold">Цена</Text>
-                      <View style={{backgroundColor: colors.background.card}} className="p-3 rounded-lg mt-1">
-                        <View className="mb-2">
-                          <Text style={{color: colors.text.muted}} className="text-xs mb-1">Тип цены</Text>
-                          <View style={{borderColor: colors.border.normal}} className="border rounded-lg">
-                            <Picker
-                              selectedValue={priceMode}
-                              onValueChange={(itemValue: 'per_pair' | 'per_box') => setPriceMode(itemValue)}
-                              style={{color: colors.text.normal}}
-                              dropdownIconColor={colors.text.normal}
-                            >
-                              <Picker.Item label="За пару" value="per_pair" />
-                              <Picker.Item label="За коробку" value="per_box" />
-                            </Picker>
-                          </View>
-                        </View>
-                        <View className="mb-2">
-                          <Text style={{color: colors.text.muted}} className="text-xs mb-1">{priceMode === 'per_pair' ? "Новая цена закупки за пару (сомонӣ)" : "Новая цена закупки за коробку (сомонӣ)"}</Text>
-                          <TextInput
-                            style={{borderColor: colors.border.normal, backgroundColor: colors.background.screen, color: colors.text.normal}}
-                            className="border p-2 rounded"
-                            value={(priceValue !== undefined && priceValue !== null) ? priceValue.toString() : '0'}
-                            onChangeText={(text) => setPriceValue(parseFloat(text) || 0)}
-                            keyboardType="numeric"
-                            placeholder="0 (не изменять)"
-                            placeholderTextColor={colors.text.muted}
-                          />
-                        </View>
-                        <View className="mb-2">
-                          <Text style={{color: colors.text.muted}} className="text-xs mb-1">{priceMode === 'per_pair' ? "Рекомендуемая цена продажи за пару (сомонӣ)" : "Рекомендуемая цена продажи за коробку (сомонӣ)"}</Text>
-                          <TextInput
-                            style={{borderColor: colors.border.normal, backgroundColor: colors.background.screen, color: colors.text.normal}}
-                            className="border p-2 rounded"
-                            value={(recommendedSellingPrice !== undefined && recommendedSellingPrice !== null) ? recommendedSellingPrice.toString() : '0'}
-                            onChangeText={(text) => setRecommendedSellingPrice(parseFloat(text) || 0)}
-                            keyboardType="numeric"
-                            placeholder="0 (не изменять)"
-                            placeholderTextColor={colors.text.muted}
-                          />
+                    <Text style={{ color: colors.text.normal }} className="font-semibold">Цена</Text>
+                    <View style={{ backgroundColor: colors.background.card }} className="p-3 rounded-lg mt-1">
+                      <View className="mb-2">
+                        <Text style={{ color: colors.text.muted }} className="text-xs mb-1">Тип цены</Text>
+                        <View style={{ borderColor: colors.border.normal }} className="border rounded-lg">
+                          <Picker
+                            selectedValue={priceMode}
+                            onValueChange={(itemValue: 'per_pair' | 'per_box') => setPriceMode(itemValue)}
+                            style={{ color: colors.text.normal }}
+                            dropdownIconColor={colors.text.normal}
+                          >
+                            <Picker.Item label="За пару" value="per_pair" />
+                            <Picker.Item label="За коробку" value="per_box" />
+                          </Picker>
                         </View>
                       </View>
+                      <View className="mb-2">
+                        <Text style={{ color: colors.text.muted }} className="text-xs mb-1">{priceMode === 'per_pair' ? "Новая цена закупки за пару (сомонӣ)" : "Новая цена закупки за коробку (сомонӣ)"}</Text>
+                        <TextInput
+                          style={{ borderColor: colors.border.normal, backgroundColor: colors.background.screen, color: colors.text.normal }}
+                          className="border p-2 rounded"
+                          value={(priceValue !== undefined && priceValue !== null) ? priceValue.toString() : '0'}
+                          onChangeText={(text) => setPriceValue(parseFloat(text) || 0)}
+                          keyboardType="numeric"
+                          placeholder="0 (не изменять)"
+                          placeholderTextColor={colors.text.muted}
+                        />
+                      </View>
+                      <View className="mb-2">
+                        <Text style={{ color: colors.text.muted }} className="text-xs mb-1">{priceMode === 'per_pair' ? "Рекомендуемая цена продажи за пару (сомонӣ)" : "Рекомендуемая цена продажи за коробку (сомонӣ)"}</Text>
+                        <TextInput
+                          style={{ borderColor: colors.border.normal, backgroundColor: colors.background.screen, color: colors.text.normal }}
+                          className="border p-2 rounded"
+                          value={(recommendedSellingPrice !== undefined && recommendedSellingPrice !== null) ? recommendedSellingPrice.toString() : '0'}
+                          onChangeText={(text) => setRecommendedSellingPrice(parseFloat(text) || 0)}
+                          keyboardType="numeric"
+                          placeholder="0 (не изменять)"
+                          placeholderTextColor={colors.text.muted}
+                        />
+                      </View>
+                    </View>
                   </View>
 
                   <View className="mb-3">
@@ -826,14 +873,14 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                         const safeBoxRecommendedTotal = isNaN(boxDisplayRecommendedTotal) ? 0 : boxDisplayRecommendedTotal;
                         const safePricePerPair = isNaN(displayPricePerPair) ? 0 : displayPricePerPair;
                         const safeRecommendedPricePerPair = isNaN(displayRecommendedPricePerPair) ? 0 : displayRecommendedPricePerPair;
-                        
+
                         return (
-                          <View key={boxIndex} style={{backgroundColor: colors.background.screen}} className="mb-4 p-3 rounded-lg">
-                            <Text style={{color: colors.text.normal}} className="font-bold mb-2">Коробка {boxIndex + 1}</Text>
+                          <View key={boxIndex} style={{ backgroundColor: colors.background.screen }} className="mb-4 p-3 rounded-lg">
+                            <Text style={{ color: colors.text.normal }} className="font-bold mb-2">Коробка {boxIndex + 1}</Text>
                             {box.map((sizeQty, sizeIndex) => (
-                              <View key={sizeIndex} style={{backgroundColor: colors.background.card}} className="mb-3 p-2 rounded">
+                              <View key={sizeIndex} style={{ backgroundColor: colors.background.card }} className="mb-3 p-2 rounded">
                                 <View className="flex-row items-center justify-between mb-2">
-                                  <Text style={{color: colors.text.normal}} className="font-medium">Размер {sizeQty.size}</Text>
+                                  <Text style={{ color: colors.text.normal }} className="font-medium">Размер {sizeQty.size}</Text>
                                   <View className="flex-row items-center">
                                     <TouchableOpacity
                                       className="bg-red-400 w-8 h-8 rounded-full items-center justify-center"
@@ -844,7 +891,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                                     </TouchableOpacity>
                                     <Text className="mx-3 font-bold">{sizeQty.quantity || 0}</Text>
                                     <TouchableOpacity
-                                      style={{backgroundColor: isDark ? colors.primary.gold : defaultColors.primary.blue}}
+                                      style={{ backgroundColor: isDark ? colors.primary.gold : defaultColors.primary.blue }}
                                       className="w-8 h-8 rounded-full items-center justify-center"
                                       onPress={() => updateSizeQuantity(boxIndex, sizeQty.size, 1)}
                                       disabled={isLoading}
@@ -853,12 +900,12 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                                     </TouchableOpacity>
                                   </View>
                                 </View>
-                                <Text style={{color: colors.text.muted}} className="text-xs ml-4">Цена закупки: {safePricePerPair.toFixed(2)} сомонӣ</Text>
-                                <Text style={{color: colors.text.muted}} className="text-xs ml-4">Рекомендуемая цена: {safeRecommendedPricePerPair.toFixed(2)} сомонӣ</Text>
+                                <Text style={{ color: colors.text.muted }} className="text-xs ml-4">Цена закупки: {safePricePerPair.toFixed(2)} сомонӣ</Text>
+                                <Text style={{ color: colors.text.muted }} className="text-xs ml-4">Рекомендуемая цена: {safeRecommendedPricePerPair.toFixed(2)} сомонӣ</Text>
                               </View>
                             ))}
-                            <Text style={{color: colors.text.normal}} className="font-medium mt-2">Стоимость закупки: {safeBoxTotal.toFixed(2)} сомонӣ</Text>
-                            <Text style={{color: colors.text.normal}} className="font-medium mt-1">Рекомендуемая стоимость: {safeBoxRecommendedTotal.toFixed(2)} сомонӣ</Text>
+                            <Text style={{ color: colors.text.normal }} className="font-medium mt-2">Стоимость закупки: {safeBoxTotal.toFixed(2)} сомонӣ</Text>
+                            <Text style={{ color: colors.text.normal }} className="font-medium mt-1">Рекомендуемая стоимость: {safeBoxRecommendedTotal.toFixed(2)} сомонӣ</Text>
                           </View>
                         );
                       })}
@@ -879,8 +926,8 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                           displayPricePerPair = box[0]?.price || 0;
                         }
                         return grandTotal + totalInBox * displayPricePerPair;
-                        }, 0).toFixed(2)
-                      }</Text> сомонӣ</Text>
+                      }, 0).toFixed(2)
+                    }</Text> сомонӣ</Text>
                     <Text className="text-blue-800">Общая рекомендуемая стоимость: <Text className="font-bold">{
                       boxSizeQuantities.reduce((grandTotal, box) => {
                         const totalInBox = box.reduce((sum, sq) => sum + sq.quantity, 0);
@@ -892,17 +939,17 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                           displayRecommendedPricePerPair = box[0]?.recommendedSellingPrice || 0;
                         }
                         return grandTotal + totalInBox * displayRecommendedPricePerPair;
-                        }, 0).toFixed(2)
-                      }</Text> сомонӣ</Text>
+                      }, 0).toFixed(2)
+                    }</Text> сомонӣ</Text>
                   </View>
 
                   <View className="mb-3">
-                    <Text style={{color: colors.text.normal}} className="font-semibold">Дополнительная информация</Text>
-                    <View style={{backgroundColor: colors.background.card}} className="p-3 rounded-lg mt-1">
+                    <Text style={{ color: colors.text.normal }} className="font-semibold">Дополнительная информация</Text>
+                    <View style={{ backgroundColor: colors.background.card }} className="p-3 rounded-lg mt-1">
                       <View className="mb-2">
-                        <Text style={{color: colors.text.muted}} className="text-xs mb-1">Ряд</Text>
+                        <Text style={{ color: colors.text.muted }} className="text-xs mb-1">Ряд</Text>
                         <TextInput
-                          style={{borderColor: colors.border.normal, backgroundColor: colors.background.screen, color: colors.text.normal}}
+                          style={{ borderColor: colors.border.normal, backgroundColor: colors.background.screen, color: colors.text.normal }}
                           className="border p-2 rounded"
                           placeholderTextColor={colors.text.muted}
                           value={editedRow}
@@ -911,9 +958,9 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                         />
                       </View>
                       <View className="mb-2">
-                        <Text style={{color: colors.text.muted}} className="text-xs mb-1">Позиция</Text>
+                        <Text style={{ color: colors.text.muted }} className="text-xs mb-1">Позиция</Text>
                         <TextInput
-                          style={{borderColor: colors.border.normal, backgroundColor: colors.background.screen, color: colors.text.normal}}
+                          style={{ borderColor: colors.border.normal, backgroundColor: colors.background.screen, color: colors.text.normal }}
                           className="border p-2 rounded"
                           placeholderTextColor={colors.text.muted}
                           value={editedPosition}
@@ -934,8 +981,8 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                   </View>
 
                   <View className="mb-3">
-                    <Text style={{color: colors.text.normal}} className="font-semibold">Изображение</Text>
-                    <View style={{backgroundColor: colors.background.card}} className="p-3 rounded-lg mt-1">
+                    <Text style={{ color: colors.text.normal }} className="font-semibold">Изображение</Text>
+                    <View style={{ backgroundColor: colors.background.card }} className="p-3 rounded-lg mt-1">
                       {editedImageUri && (
                         <Image
                           source={{ uri: editedImageUri }}
@@ -955,17 +1002,17 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                   <View className="flex-row justify-between mt-6 space-x-4">
                     <View className="flex-1">
                       <TouchableOpacity
-                        style={{backgroundColor: colors.background.card}}
+                        style={{ backgroundColor: colors.background.card }}
                         className="p-3 rounded-lg items-center"
                         onPress={handleCancelEdit}
                         disabled={isLoading}
                       >
-                        <Text style={{color: colors.text.normal}} className="font-semibold">Отмена</Text>
+                        <Text style={{ color: colors.text.normal }} className="font-semibold">Отмена</Text>
                       </TouchableOpacity>
                     </View>
                     <View className="flex-1">
                       <TouchableOpacity
-                        style={{backgroundColor: isDark ? colors.primary.gold : defaultColors.primary.blue}}
+                        style={{ backgroundColor: isDark ? colors.primary.gold : defaultColors.primary.blue }}
                         className="p-3 rounded-lg items-center"
                         onPress={handleSaveEdit}
                         disabled={isLoading}
@@ -986,17 +1033,17 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                   )}
 
                   <View className="mb-3">
-                    <Text style={{color: colors.text.normal}} className="font-semibold">Основная информация</Text>
-                    <View style={{backgroundColor: colors.background.card}} className="p-3 rounded-lg mt-1">
-                      <Text style={{color: colors.text.muted}} className="mb-1">Код: {currentItem.code || 'не указан'}</Text>
-                      <Text style={{color: colors.text.muted}} className="mb-1">Склад: {currentItem.warehouse || 'не указан'}</Text>
-                      <Text style={{color: colors.text.muted}} className="mb-1">Тип размера: {currentItem.sizeType || 'не указан'}</Text>
-                      <Text style={{color: colors.text.muted}} className="mb-1">Количество коробок: {currentItem.numberOfBoxes || 0}</Text>
-                      <Text style={{color: colors.text.muted}} className="mb-1">Всего товаров: {currentItem.totalQuantity || 0}</Text>
+                    <Text style={{ color: colors.text.normal }} className="font-semibold">Основная информация</Text>
+                    <View style={{ backgroundColor: colors.background.card }} className="p-3 rounded-lg mt-1">
+                      <Text style={{ color: colors.text.muted }} className="mb-1">Код: {currentItem.code || 'не указан'}</Text>
+                      <Text style={{ color: colors.text.muted }} className="mb-1">Склад: {currentItem.warehouse || 'не указан'}</Text>
+                      <Text style={{ color: colors.text.muted }} className="mb-1">Тип размера: {currentItem.sizeType || 'не указан'}</Text>
+                      <Text style={{ color: colors.text.muted }} className="mb-1">Количество коробок: {currentItem.numberOfBoxes || 0}</Text>
+                      <Text style={{ color: colors.text.muted }} className="mb-1">Всего товаров: {currentItem.totalQuantity || 0}</Text>
                       {isAdmin() && (
-                        <Text style={{color: colors.text.muted}}>Общая стоимость закупки: {(currentItem.totalValue !== undefined && currentItem.totalValue >= 0) ? currentItem.totalValue.toFixed(2) : '0.00'} сомонӣ</Text>
+                        <Text style={{ color: colors.text.muted }}>Общая стоимость закупки: {(currentItem.totalValue !== undefined && currentItem.totalValue >= 0) ? currentItem.totalValue.toFixed(2) : '0.00'} сомонӣ</Text>
                       )}
-                      
+
                       {(currentItem.totalValue === -1 || currentItem.totalValue < 0 || currentItem.totalValue === undefined) && (
                         <View className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg">
                           <Text className="text-red-600 font-bold text-center">⚠️ Внимание!</Text>
@@ -1005,9 +1052,9 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                           </Text>
                         </View>
                       )}
-                      
+
                       {(() => {
-                        const hasRecommendedPrice = boxSizeQuantities.some(box => 
+                        const hasRecommendedPrice = boxSizeQuantities.some(box =>
                           box.some(sq => sq.recommendedSellingPrice && sq.recommendedSellingPrice > 0)
                         );
                         if (!hasRecommendedPrice) {
@@ -1026,22 +1073,22 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                   </View>
 
                   <View className="mb-3">
-                    <Text style={{color: colors.text.normal}} className="font-semibold">Размеры по коробкам</Text>
-                    <View style={{backgroundColor: colors.background.card}} className="p-3 rounded-lg mt-1">
+                    <Text style={{ color: colors.text.normal }} className="font-semibold">Размеры по коробкам</Text>
+                    <View style={{ backgroundColor: colors.background.card }} className="p-3 rounded-lg mt-1">
                       {boxSizeQuantities.map((box, boxIndex) => (
-                        <View key={boxIndex} style={{backgroundColor: colors.background.screen}} className="mb-4 p-3 rounded-lg">
-                          <Text style={{color: colors.text.normal}} className="font-bold mb-2">Коробка {boxIndex + 1}</Text>
+                        <View key={boxIndex} style={{ backgroundColor: colors.background.screen }} className="mb-4 p-3 rounded-lg">
+                          <Text style={{ color: colors.text.normal }} className="font-bold mb-2">Коробка {boxIndex + 1}</Text>
 
                           {box.map((sizeQty, sizeIndex) => {
                             const qty = getCurrentQuantity(boxIndex, sizeQty.size);
                             const safePrice = (sizeQty.price !== undefined && !isNaN(sizeQty.price)) ? sizeQty.price : 0;
                             const safeRecommendedPrice = (sizeQty.recommendedSellingPrice !== undefined && !isNaN(sizeQty.recommendedSellingPrice)) ? sizeQty.recommendedSellingPrice : 0;
                             return (
-                              <View key={sizeIndex} style={{backgroundColor: colors.background.card}} className="flex-row items-center justify-between mb-2 p-2 rounded">
+                              <View key={sizeIndex} style={{ backgroundColor: colors.background.card }} className="flex-row items-center justify-between mb-2 p-2 rounded">
                                 <View className="flex-1">
-                                  <Text style={{color: colors.text.normal}} className="font-medium">Размер {sizeQty.size}: {qty} шт.</Text>
+                                  <Text style={{ color: colors.text.normal }} className="font-medium">Размер {sizeQty.size}: {qty} шт.</Text>
                                   {isAdmin() ? (
-                                    <Text style={{color: colors.text.muted}} className="text-xs mt-1">Цена: {safePrice.toFixed(2)} сомонӣ</Text>
+                                    <Text style={{ color: colors.text.muted }} className="text-xs mt-1">Цена: {safePrice.toFixed(2)} сомонӣ</Text>
                                   ) : (
                                     <Text className="text-green-700 text-xs mt-1 font-semibold">Рек. цена: {safeRecommendedPrice.toFixed(2)} сомонӣ</Text>
                                   )}
@@ -1049,16 +1096,16 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
 
                                 {qty > 0 && isAssistant() && (
                                   <Pressable
-                                    style={({pressed}) => [
+                                    style={({ pressed }) => [
                                       {
-                                        backgroundColor: pressed 
-                                          ? (isDark ? '#b8860b' : '#1e40af') 
+                                        backgroundColor: pressed
+                                          ? (isDark ? '#b8860b' : '#1e40af')
                                           : (isDark ? colors.primary.gold : '#2563eb'),
-                                        width: 36, 
-                                        height: 36, 
-                                        borderRadius: 18, 
-                                        alignItems: 'center', 
-                                        justifyContent: 'center', 
+                                        width: 36,
+                                        height: 36,
+                                        borderRadius: 18,
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
                                         opacity: isLoading ? 0.5 : 1,
                                         shadowColor: '#000',
                                         shadowOffset: { width: 0, height: 2 },
@@ -1072,7 +1119,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                                       handleSellItem(boxIndex, sizeQty.size);
                                     }}
                                     disabled={isLoading}
-                                    hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}
+                                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                                   >
                                     <Ionicons name="cart-outline" size={18} color="white" />
                                   </Pressable>
@@ -1098,11 +1145,11 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
 
                   {(currentItem.row || currentItem.position || currentItem.side) && (
                     <View className="mb-3">
-                      <Text style={{color: colors.text.normal}} className="font-semibold">Дополнительная информация</Text>
-                      <View style={{backgroundColor: colors.background.card}} className="p-3 rounded-lg mt-1">
-                        {currentItem.row && <Text style={{color: colors.text.muted}} className="mb-1">Ряд: {currentItem.row}</Text>}
-                        {currentItem.position && <Text style={{color: colors.text.muted}} className="mb-1">Позиция: {currentItem.position}</Text>}
-                        {currentItem.side && <Text style={{color: colors.text.muted}}>Сторона: {currentItem.side}</Text>}
+                      <Text style={{ color: colors.text.normal }} className="font-semibold">Дополнительная информация</Text>
+                      <View style={{ backgroundColor: colors.background.card }} className="p-3 rounded-lg mt-1">
+                        {currentItem.row && <Text style={{ color: colors.text.muted }} className="mb-1">Ряд: {currentItem.row}</Text>}
+                        {currentItem.position && <Text style={{ color: colors.text.muted }} className="mb-1">Позиция: {currentItem.position}</Text>}
+                        {currentItem.side && <Text style={{ color: colors.text.muted }}>Сторона: {currentItem.side}</Text>}
                       </View>
                     </View>
                   )}
@@ -1121,7 +1168,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                         {isAssistant() && (
                           <TouchableOpacity
                             onPress={() => setShowCreateQRModal(true)}
-                            style={{backgroundColor: colors.primary.blue}}
+                            style={{ backgroundColor: colors.primary.blue }}
                             className="py-3 px-4 rounded-xl flex-row items-center justify-center"
                           >
                             <Ionicons name="qr-code" size={20} color="white" />
@@ -1161,10 +1208,10 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
               )}
             </ScrollView>
           </View>
-          
-          {/* Sale Input Overlay - показывается поверх контента внутри основной модалки */}
+
+          {/* Sale Input Overlay */}
           {showSaleModal && (
-            <Pressable 
+            <Pressable
               style={{
                 position: 'absolute',
                 top: 0,
@@ -1179,7 +1226,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
               }}
               onPress={() => setShowSaleModal(false)}
             >
-              <Pressable 
+              <Pressable
                 style={{
                   backgroundColor: colors.background.screen,
                   borderRadius: 12,
@@ -1194,14 +1241,14 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                 }}
                 onPress={(e) => e.stopPropagation()}
               >
-                <Text style={{color: colors.text.normal, fontSize: 18, fontWeight: 'bold', marginBottom: 16, textAlign: 'center'}}>Продажа</Text>
-                <Text style={{color: colors.text.normal, marginBottom: 8}}>Размер: {currentSize}</Text>
+                <Text style={{ color: colors.text.normal, fontSize: 18, fontWeight: 'bold', marginBottom: 16, textAlign: 'center' }}>Продажа</Text>
+                <Text style={{ color: colors.text.normal, marginBottom: 8 }}>Размер: {currentSize}</Text>
                 {!isAdmin() && (() => {
                   const currentSizeQty = boxSizeQuantities[currentBoxIndex]?.find(item => String(item.size) === String(currentSize));
                   const recommendedPrice = currentSizeQty?.recommendedSellingPrice || 0;
                   return (
-                    <View style={{marginBottom: 12, padding: 12, backgroundColor: '#dcfce7', borderWidth: 1, borderColor: '#86efac', borderRadius: 8}}>
-                      <Text style={{color: '#166534', fontWeight: '600', textAlign: 'center'}}>
+                    <View style={{ marginBottom: 12, padding: 12, backgroundColor: '#dcfce7', borderWidth: 1, borderColor: '#86efac', borderRadius: 8 }}>
+                      <Text style={{ color: '#166534', fontWeight: '600', textAlign: 'center' }}>
                         Рекомендуемая цена: {recommendedPrice.toFixed(2)} сомонӣ
                       </Text>
                     </View>
@@ -1210,8 +1257,8 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                 <TextInput
                   style={{
                     borderWidth: 1,
-                    borderColor: colors.border.normal, 
-                    backgroundColor: colors.background.card, 
+                    borderColor: colors.border.normal,
+                    backgroundColor: colors.background.card,
                     color: colors.text.normal,
                     padding: 12,
                     borderRadius: 8,
@@ -1225,7 +1272,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                   keyboardType="numeric"
                   autoFocus={true}
                 />
-                <View style={{flexDirection: 'row', gap: 12}}>
+                <View style={{ flexDirection: 'row', gap: 12 }}>
                   <TouchableOpacity
                     style={{
                       flex: 1,
@@ -1237,7 +1284,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                     onPress={() => setShowSaleModal(false)}
                     disabled={isLoading}
                   >
-                    <Text style={{color: colors.text.normal, fontWeight: '500'}}>Отмена</Text>
+                    <Text style={{ color: colors.text.normal, fontWeight: '500' }}>Отмена</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={{
@@ -1251,182 +1298,200 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                     onPress={handleConfirmSale}
                     disabled={isLoading || !salePrice}
                   >
-                    <Text style={{color: 'white', fontWeight: '600'}}>Подтвердить</Text>
+                    <Text style={{ color: 'white', fontWeight: '600' }}>Подтвердить</Text>
                   </TouchableOpacity>
                 </View>
               </Pressable>
             </Pressable>
           )}
-        </View>
-      </Modal>
 
-      {/* Wholesale Modal */}
-      <Modal
-        animationType="slide"
-        transparent={false}
-        visible={showWholesaleModal}
-        onRequestClose={() => setShowWholesaleModal(false)}
-      >
-        <View style={{backgroundColor: colors.background.screen}} className="flex-1">
-          {/* Header */}
-          <LinearGradient
-            colors={isDark ? colors.gradients.accent : defaultColors.gradients.main}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={{ padding: 16 }}
-            className="flex-row items-center justify-between"
-          >
-            <TouchableOpacity onPress={() => setShowWholesaleModal(false)}>
-              <Ionicons name="close" size={24} color="white" />
-            </TouchableOpacity>
-            <Text className="text-white text-lg font-bold">Продажа оптом</Text>
-            <TouchableOpacity onPress={handleConfirmWholesale} disabled={isLoading}>
-              <Text className="text-white text-lg font-bold">Продать</Text>
-            </TouchableOpacity>
-          </LinearGradient>
+          {/* Wholesale Overlay */}
+          {showWholesaleModal && (
+            <Pressable
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                backgroundColor: 'rgba(0,0,0,0.6)',
+                zIndex: 10000,
+              }}
+              onPress={() => setShowWholesaleModal(false)}
+            >
+              <Pressable
+                style={{
+                  backgroundColor: colors.background.screen,
+                  margin: 16,
+                  marginTop: 40,
+                  marginBottom: 40,
+                  borderRadius: 16,
+                  flex: 1,
+                  overflow: 'hidden',
+                  shadowColor: '#000',
+                  shadowOffset: { width: 0, height: 10 },
+                  shadowOpacity: 0.5,
+                  shadowRadius: 20,
+                  elevation: 20,
+                }}
+                onPress={(e) => e.stopPropagation()}
+              >
+                {/* Header */}
+                <LinearGradient
+                  colors={isDark ? colors.gradients.accent : defaultColors.gradients.main}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={{ padding: 16 }}
+                  className="flex-row items-center justify-between"
+                >
+                  <TouchableOpacity onPress={() => setShowWholesaleModal(false)}>
+                    <Ionicons name="close" size={24} color="white" />
+                  </TouchableOpacity>
+                  <Text className="text-white text-lg font-bold">Продажа оптом</Text>
+                  <TouchableOpacity onPress={handleConfirmWholesale} disabled={isLoading}>
+                    <Text className="text-white text-lg font-bold">Продать</Text>
+                  </TouchableOpacity>
+                </LinearGradient>
 
-          {/* Content */}
-          <ScrollView className="flex-1 p-4">
-            <Text className="text-gray-800 text-lg font-bold mb-4">{currentItem.name}</Text>
-            
-            {boxSizeQuantities.map((box, boxIndex) => {
-              const boxTotalQuantity = box.reduce((sum, item) => sum + getCurrentQuantity(boxIndex, item.size), 0);
-              const boxTotalValue = box.reduce((sum, item) => {
-                const price = (item.price !== undefined && !isNaN(item.price)) ? item.price : 0;
-                return sum + (getCurrentQuantity(boxIndex, item.size) * price);
-              }, 0);
-              const safeBoxTotalValue = isNaN(boxTotalValue) ? 0 : boxTotalValue;
-              const selectedBox = selectedBoxes.find(sb => sb.boxIndex === boxIndex);
-              const isBoxSelected = selectedBox && selectedBox.price !== '';
-              
-              if (boxTotalQuantity === 0) return null; // Не показываем пустые коробки
-              
-              return (
-                <View key={boxIndex} className="mb-4 p-4 bg-gray-50 rounded-lg">
-                  <View className="flex-row items-center justify-between mb-3">
-                    <Text className="text-gray-800 font-bold text-lg">Коробка {boxIndex + 1}</Text>
-                    <TouchableOpacity
-                      style={isBoxSelected ? {backgroundColor: colors.primary.blue, borderColor: colors.primary.blue, borderWidth: 2} : {borderColor: '#d1d5db', borderWidth: 2}}
-                      className="w-6 h-6 rounded items-center justify-center"
-                      onPress={() => {
-                        const updatedBoxes = [...selectedBoxes];
-                        const boxIndex_copy = boxIndex;
-                        const selectedBoxIndex = updatedBoxes.findIndex(sb => sb.boxIndex === boxIndex_copy);
-                        if (selectedBoxIndex !== -1) {
-                          if (updatedBoxes[selectedBoxIndex].price === '') {
-                            // Если коробка не выбрана, помечаем как выбранную
-                            updatedBoxes[selectedBoxIndex].price = '0';
-                          } else {
-                            // Если коробка выбрана, снимаем выбор
-                            updatedBoxes[selectedBoxIndex].price = '';
-                          }
-                          setSelectedBoxes(updatedBoxes);
-                        }
-                      }}
-                    >
-                      {isBoxSelected && <Text className="text-white text-xs">✓</Text>}
-                    </TouchableOpacity>
-                  </View>
-                  
-                  <View className="mb-3">
-                    <Text className="text-gray-600 mb-1">Всего товаров: {boxTotalQuantity} шт.</Text>
-                    <Text className="text-gray-600 mb-1">Себестоимость: {safeBoxTotalValue.toFixed(2)} сомонӣ</Text>
-                  </View>
-                  
-                  {/* Размеры в коробке */}
-                  <View className="mb-3">
-                    <Text className="text-gray-700 font-medium mb-2">Размеры:</Text>
-                    {box.map((sizeQty, sizeIndex) => {
-                      const qty = getCurrentQuantity(boxIndex, sizeQty.size);
-                      const safePrice = (sizeQty.price !== undefined && !isNaN(sizeQty.price)) ? sizeQty.price : 0;
-                      const safeRecommendedPrice = (sizeQty.recommendedSellingPrice !== undefined && !isNaN(sizeQty.recommendedSellingPrice)) ? sizeQty.recommendedSellingPrice : 0;
-                      if (qty === 0) return null;
-                      return (
-                        <View key={sizeIndex} className="flex-row justify-between mb-1">
-                          <Text className="text-gray-600">Размер {sizeQty.size}: {qty} шт.</Text>
-                          <Text className="text-gray-600">× {safePrice.toFixed(2)} сомонӣ</Text>
+                {/* Content */}
+                <ScrollView className="flex-1 p-4" showsVerticalScrollIndicator={false}>
+                  <Text style={{ color: colors.text.normal }} className="text-lg font-bold mb-4">{currentItem.name}</Text>
+
+                  {boxSizeQuantities.map((box, boxIndex) => {
+                    const boxTotalQuantity = box.reduce((sum, item) => sum + getCurrentQuantity(boxIndex, item.size), 0);
+                    const boxTotalValue = box.reduce((sum, item) => {
+                      const price = (item.price !== undefined && !isNaN(item.price)) ? item.price : 0;
+                      return sum + (getCurrentQuantity(boxIndex, item.size) * price);
+                    }, 0);
+                    const safeBoxTotalValue = isNaN(boxTotalValue) ? 0 : boxTotalValue;
+                    const selectedBox = selectedBoxes.find(sb => sb.boxIndex === boxIndex);
+                    const isBoxSelected = selectedBox && selectedBox.price !== '';
+
+                    if (boxTotalQuantity === 0) return null;
+
+                    return (
+                      <View key={boxIndex} style={{ backgroundColor: colors.background.card }} className="mb-4 p-4 rounded-lg">
+                        <View className="flex-row items-center justify-between mb-3">
+                          <Text style={{ color: colors.text.normal }} className="font-bold text-lg">Коробка {boxIndex + 1}</Text>
+                          <TouchableOpacity
+                            style={isBoxSelected ? { backgroundColor: colors.primary.blue, borderColor: colors.primary.blue, borderWidth: 2 } : { borderColor: colors.border.normal, borderWidth: 2 }}
+                            className="w-6 h-6 rounded items-center justify-center"
+                            onPress={() => {
+                              const updatedBoxes = [...selectedBoxes];
+                              const idx = updatedBoxes.findIndex(sb => sb.boxIndex === boxIndex);
+                              if (idx !== -1) {
+                                if (updatedBoxes[idx].price === '') {
+                                  updatedBoxes[idx].price = '0';
+                                } else {
+                                  updatedBoxes[idx].price = '';
+                                }
+                                setSelectedBoxes(updatedBoxes);
+                              }
+                            }}
+                          >
+                            {isBoxSelected && <Text className="text-white text-xs">✓</Text>}
+                          </TouchableOpacity>
                         </View>
-                      );
-                    })}
-                  </View>
-                  
-                  {/* Поле для ввода цены продажи */}
-                  {isBoxSelected && (
-                    <View>
-                      <Text className="text-gray-700 font-medium mb-2">Цена продажи за всю коробку:</Text>
-                      <TextInput
-                        className="border border-gray-300 p-3 rounded-lg"
-                        placeholder="Введите цену за всю коробку (сомонӣ)"
-                        value={selectedBox?.price || ''}
-                        onChangeText={(text) => {
-                          const updatedBoxes = [...selectedBoxes];
-                          const selectedBoxIndex = updatedBoxes.findIndex(sb => sb.boxIndex === boxIndex);
-                          if (selectedBoxIndex !== -1) {
-                            updatedBoxes[selectedBoxIndex].price = text;
-                            setSelectedBoxes(updatedBoxes);
-                          }
-                        }}
-                        keyboardType="numeric"
-                      />
-                      {selectedBox?.price && !isNaN(parseFloat(selectedBox.price)) && parseFloat(selectedBox.price) > 0 && (
-                        <View className="mt-2 p-2 bg-blue-50 rounded">
-                          <Text className="text-blue-800 text-sm">
-                            Прибыль: {(parseFloat(selectedBox.price) - safeBoxTotalValue).toFixed(2)} сомонӣ
-                            {safeBoxTotalValue > 0 && ` (${((parseFloat(selectedBox.price) - safeBoxTotalValue) / safeBoxTotalValue * 100).toFixed(1)}%)`}
-                          </Text>
+
+                        <View className="mb-3">
+                          <Text style={{ color: colors.text.muted }} className="mb-1">Всего товаров: {boxTotalQuantity} шт.</Text>
+                          <Text style={{ color: colors.text.muted }} className="mb-1">Себестоимость: {safeBoxTotalValue.toFixed(2)} сомонӣ</Text>
                         </View>
-                      )}
+
+                        <View className="mb-3">
+                          <Text style={{ color: colors.text.normal }} className="font-medium mb-2">Размеры:</Text>
+                          {box.map((sizeQty, sizeIndex) => {
+                            const qty = getCurrentQuantity(boxIndex, sizeQty.size);
+                            const safePrice = (sizeQty.price !== undefined && !isNaN(sizeQty.price)) ? sizeQty.price : 0;
+                            if (qty === 0) return null;
+                            return (
+                              <View key={sizeIndex} className="flex-row justify-between mb-1">
+                                <Text style={{ color: colors.text.muted }}>Размер {sizeQty.size}: {qty} шт.</Text>
+                                <Text style={{ color: colors.text.muted }}>× {safePrice.toFixed(2)} сомонӣ</Text>
+                              </View>
+                            );
+                          })}
+                        </View>
+
+                        {isBoxSelected && (
+                          <View>
+                            <Text style={{ color: colors.text.normal }} className="font-medium mb-2">Цена продажи за коробку:</Text>
+                            <TextInput
+                              style={{ borderColor: colors.border.normal, backgroundColor: colors.background.screen, color: colors.text.normal }}
+                              className="border p-3 rounded-lg"
+                              placeholder="Введите цену (сомонӣ)"
+                              placeholderTextColor={colors.text.muted}
+                              value={selectedBox?.price || ''}
+                              onChangeText={(text) => {
+                                const updatedBoxes = [...selectedBoxes];
+                                const selectedBoxIndex = updatedBoxes.findIndex(sb => sb.boxIndex === boxIndex);
+                                if (selectedBoxIndex !== -1) {
+                                  updatedBoxes[selectedBoxIndex].price = text;
+                                  setSelectedBoxes(updatedBoxes);
+                                }
+                              }}
+                              keyboardType="numeric"
+                            />
+                            {selectedBox?.price && !isNaN(parseFloat(selectedBox.price)) && parseFloat(selectedBox.price) > 0 && (
+                              <View className="mt-2 p-2 bg-blue-50 rounded">
+                                <Text className="text-blue-800 text-sm">
+                                  Прибыль: {(parseFloat(selectedBox.price) - safeBoxTotalValue).toFixed(2)} сомонӣ
+                                </Text>
+                              </View>
+                            )}
+                          </View>
+                        )}
+                      </View>
+                    );
+                  })}
+
+                  {selectedBoxes.some(sb => sb.price !== '' && !isNaN(parseFloat(sb.price)) && parseFloat(sb.price) > 0) && (
+                    <View className="mt-4 p-4 bg-green-50 rounded-lg mb-6">
+                      <Text className="text-green-800 font-bold text-lg mb-2">Итого к продаже:</Text>
+                      {(() => {
+                        let totalSalePrice = 0;
+                        let totalCostPrice = 0;
+                        let totalBoxes = 0;
+
+                        selectedBoxes.forEach(sb => {
+                          if (sb.price !== '' && !isNaN(parseFloat(sb.price)) && parseFloat(sb.price) > 0) {
+                            const box = boxSizeQuantities[sb.boxIndex];
+                            const boxTotalValue = box.reduce((sum, item) => sum + (getCurrentQuantity(sb.boxIndex, item.size) * item.price), 0);
+                            totalSalePrice += parseFloat(sb.price);
+                            totalCostPrice += boxTotalValue;
+                            totalBoxes++;
+                          }
+                        });
+
+                        return (
+                          <>
+                            <Text className="text-green-700">Коробок: {totalBoxes}</Text>
+                            <Text className="text-green-700">Себестоимость: {totalCostPrice.toFixed(2)} сомонӣ</Text>
+                            <Text className="text-green-700 font-bold">Цена продажи: {totalSalePrice.toFixed(2)} сомонӣ</Text>
+                            <Text className="text-green-700 font-bold text-lg mt-1">Прибыль: {(totalSalePrice - totalCostPrice).toFixed(2)} сомонӣ</Text>
+                          </>
+                        );
+                      })()}
                     </View>
                   )}
-                </View>
-              );
-            })}
-            
-            {/* Общая информация о продаже */}
-            {selectedBoxes.some(sb => sb.price !== '' && !isNaN(parseFloat(sb.price)) && parseFloat(sb.price) > 0) && (
-              <View className="mt-4 p-4 bg-green-50 rounded-lg">
-                <Text className="text-green-800 font-bold text-lg mb-2">Итого к продаже:</Text>
-                {(() => {
-                  let totalSalePrice = 0;
-                  let totalCostPrice = 0;
-                  let totalBoxes = 0;
-                  
-                  selectedBoxes.forEach(sb => {
-                    if (sb.price !== '' && !isNaN(parseFloat(sb.price)) && parseFloat(sb.price) > 0) {
-                      const box = boxSizeQuantities[sb.boxIndex];
-                      const boxTotalValue = box.reduce((sum, item) => sum + (getCurrentQuantity(sb.boxIndex, item.size) * item.price), 0);
-                      totalSalePrice += parseFloat(sb.price);
-                      totalCostPrice += boxTotalValue;
-                      totalBoxes++;
-                    }
-                  });
-                  
-                  return (
-                    <>
-                      <Text className="text-green-700">Коробок: {totalBoxes}</Text>
-                      <Text className="text-green-700">Себестоимость: {totalCostPrice.toFixed(2)} сомонӣ</Text>
-                      <Text className="text-green-700">Цена продажи: {totalSalePrice.toFixed(2)} сомонӣ</Text>
-                      <Text className="text-green-700 font-bold">Прибыль: {(totalSalePrice - totalCostPrice).toFixed(2)} сомонӣ</Text>
-                    </>
-                  );
-                })()}
-              </View>
-            )}
-          </ScrollView>
+                </ScrollView>
+              </Pressable>
+            </Pressable>
+          )}
+
+          {/* Модальное окно создания QR-кодов */}
+          <CreateQRModal
+            visible={showCreateQRModal}
+            onClose={() => setShowCreateQRModal(false)}
+            onCreateQR={handleCreateQR}
+            itemId={currentItem.id}
+            itemName={currentItem.name}
+            itemCode={currentItem.code}
+            numberOfBoxes={currentItem.numberOfBoxes}
+            boxSizeQuantities={currentItem.boxSizeQuantities}
+          />
         </View>
       </Modal>
-
-      {/* Модальное окно создания QR-кодов */}
-      <CreateQRModal
-        visible={showCreateQRModal}
-        onClose={() => setShowCreateQRModal(false)}
-        onCreateQR={handleCreateQR}
-        itemId={currentItem.id}
-        itemName={currentItem.name}
-        itemCode={currentItem.code}
-        numberOfBoxes={currentItem.numberOfBoxes}
-        boxSizeQuantities={currentItem.boxSizeQuantities}
-      />
     </>
   );
 };

@@ -1,6 +1,6 @@
 import AuthService from './AuthService';
 import ImageService from './ImageService';
-import { getDatabaseInstance, runWithRetry, getAllWithRetry, getFirstWithRetry } from '../../database/database';
+import { getDatabaseInstance, runWithRetry, getAllWithRetry, getFirstWithRetry, clearDatabase } from '../../database/database';
 
 interface SyncItem {
   localId?: number;
@@ -107,6 +107,7 @@ class SyncService {
       const response = await api.post('/sync/assistant/push', {
         items: items.map((item: any) => ({
           localId: item.id,
+          serverId: item.serverId,
           name: item.name,
           code: item.code,
           warehouse: item.warehouse,
@@ -123,14 +124,18 @@ class SyncService {
           qrCodeType: item.qrCodeType,
           qrCodes: item.qrCodes,
           createdAt: item.createdAt,
+          version: item.version,
+          isDeleted: item.isDeleted === 1,
         })),
         transactions: transactions.map((tx: any) => ({
           localId: tx.id,
+          serverId: tx.serverId,
           itemId: tx.itemId,
           action: tx.action,
           itemName: tx.itemName,
           timestamp: tx.timestamp,
           details: tx.details,
+          isDeleted: tx.isDeleted === 1,
         })),
       }, {
         headers: { Authorization: `Bearer ${accessToken}` },
@@ -632,10 +637,10 @@ class SyncService {
    */
   async resetSyncState(): Promise<void> {
     const db = await getDatabaseInstance();
-    
+
     // Сбросить lastSyncAt на null чтобы следующий pull был полным
     await runWithRetry(db, 'UPDATE sync_state SET lastSyncAt=NULL WHERE id=1');
-    
+
     console.log('🔄 Sync state reset - next pull will be a full sync');
   }
 
@@ -645,25 +650,39 @@ class SyncService {
    */
   async forceFullSync(role: 'ADMIN' | 'ASSISTANT'): Promise<void> {
     const db = await getDatabaseInstance();
-    
+
     console.log('🗑️ Clearing local data for full sync...');
-    
+
     // Очистить локальные данные (только те что с сервера)
     await runWithRetry(db, 'DELETE FROM items WHERE serverId IS NOT NULL');
     await runWithRetry(db, 'DELETE FROM transactions WHERE serverId IS NOT NULL');
     await runWithRetry(db, 'DELETE FROM pending_actions WHERE serverId IS NOT NULL');
-    
+
     // Сбросить состояние синхронизации
     await this.resetSyncState();
-    
+
     // Сделать pull в зависимости от роли
     if (role === 'ADMIN') {
       await this.adminPull();
     } else {
       await this.assistantPull();
     }
-    
+
     console.log('✅ Full sync completed');
+  }
+
+  /**
+   * Полная очистка всех локальных данных (при выходе из аккаунта)
+   */
+  async clearAllLocalData(): Promise<void> {
+    console.log('🧹 Clearing all local data...');
+    try {
+      await clearDatabase();
+      console.log('✅ All local data cleared');
+    } catch (error) {
+      console.error('❌ Failed to clear local data:', error);
+      throw error;
+    }
   }
 }
 

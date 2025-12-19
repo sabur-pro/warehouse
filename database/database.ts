@@ -13,7 +13,7 @@ let opQueue: Promise<any> = Promise.resolve();
 const withLock = <T>(fn: () => Promise<T>): Promise<T> => {
   const exec = () => fn();
   const next = opQueue.then(exec, exec);
-  opQueue = next.catch(() => {});
+  opQueue = next.catch(() => { });
   return next;
 };
 
@@ -37,15 +37,24 @@ const shouldRetryMessage = (msg: string) => {
   return /(database is locked|database busy|database table is locked|database schema is locked|finalizeAsync|finalize|Error code\s*:\s*database is locked)/i.test(msg);
 };
 
+const isClosedResourceMessage = (msg: string) => {
+  return /Access to closed resource/i.test(msg);
+};
+
 const execWithRetry = async (db: SQLite.SQLiteDatabase, sql: string) => {
+  let currentDb = db;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      // В проекте вы, похоже, используете обёртки async вокруг expo-sqlite — вызываем их через any
-      // если у вас другая реализация, подставьте нужный вызов.
       // @ts-ignore
-      return await (db as any).execAsync(sql);
+      return await (currentDb as any).execAsync(sql);
     } catch (err: any) {
       const msg = String(err?.message || err);
+      if (isClosedResourceMessage(msg)) {
+        console.warn(`Access to closed resource in execAsync, re-initializing database (attempt ${attempt + 1})`);
+        databaseInstance = null;
+        currentDb = await initDatabase();
+        continue;
+      }
       if (shouldRetryMessage(msg)) {
         const wait = RETRY_BASE_MS * Math.pow(2, attempt);
         console.warn(`execAsync locked/retry ${attempt + 1}/${MAX_RETRIES} after ${wait}ms:`, msg);
@@ -55,18 +64,24 @@ const execWithRetry = async (db: SQLite.SQLiteDatabase, sql: string) => {
       throw err;
     }
   }
-  // последний пробный вызов — чтобы выбросить нормальную ошибку
   // @ts-ignore
-  return await (db as any).execAsync(sql);
+  return await (currentDb as any).execAsync(sql);
 };
 
 const runWithRetry = async (db: SQLite.SQLiteDatabase, sql: string, params: any[] = []) => {
+  let currentDb = db;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
       // @ts-ignore
-      return await (db as any).runAsync(sql, params);
+      return await (currentDb as any).runAsync(sql, params);
     } catch (err: any) {
       const msg = String(err?.message || err);
+      if (isClosedResourceMessage(msg)) {
+        console.warn(`Access to closed resource in runAsync, re-initializing database (attempt ${attempt + 1})`);
+        databaseInstance = null;
+        currentDb = await initDatabase();
+        continue;
+      }
       if (shouldRetryMessage(msg)) {
         const wait = RETRY_BASE_MS * Math.pow(2, attempt);
         console.warn(`runAsync locked/retry ${attempt + 1}/${MAX_RETRIES} after ${wait}ms:`, msg);
@@ -77,16 +92,23 @@ const runWithRetry = async (db: SQLite.SQLiteDatabase, sql: string, params: any[
     }
   }
   // @ts-ignore
-  return await (db as any).runAsync(sql, params);
+  return await (currentDb as any).runAsync(sql, params);
 };
 
 const getAllWithRetry = async <T = any>(db: SQLite.SQLiteDatabase, sql: string, params: any[] = []): Promise<T[]> => {
+  let currentDb = db;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
       // @ts-ignore
-      return await (db as any).getAllAsync<T>(sql, params);
+      return await (currentDb as any).getAllAsync<T>(sql, params);
     } catch (err: any) {
       const msg = String(err?.message || err);
+      if (isClosedResourceMessage(msg)) {
+        console.warn(`Access to closed resource in getAllAsync, re-initializing database (attempt ${attempt + 1})`);
+        databaseInstance = null;
+        currentDb = await initDatabase();
+        continue;
+      }
       if (shouldRetryMessage(msg)) {
         const wait = RETRY_BASE_MS * Math.pow(2, attempt);
         console.warn(`getAllAsync locked/retry ${attempt + 1}/${MAX_RETRIES} after ${wait}ms:`, msg);
@@ -97,16 +119,23 @@ const getAllWithRetry = async <T = any>(db: SQLite.SQLiteDatabase, sql: string, 
     }
   }
   // @ts-ignore
-  return await (db as any).getAllAsync<T>(sql, params);
+  return await (currentDb as any).getAllAsync<T>(sql, params);
 };
 
 const getFirstWithRetry = async <T = any>(db: SQLite.SQLiteDatabase, sql: string, params: any[] = []): Promise<T | null> => {
+  let currentDb = db;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
       // @ts-ignore
-      return await (db as any).getFirstAsync<T>(sql, params);
+      return await (currentDb as any).getFirstAsync<T>(sql, params);
     } catch (err: any) {
       const msg = String(err?.message || err);
+      if (isClosedResourceMessage(msg)) {
+        console.warn(`Access to closed resource in getFirstAsync, re-initializing database (attempt ${attempt + 1})`);
+        databaseInstance = null;
+        currentDb = await initDatabase();
+        continue;
+      }
       if (shouldRetryMessage(msg)) {
         const wait = RETRY_BASE_MS * Math.pow(2, attempt);
         console.warn(`getFirstAsync locked/retry ${attempt + 1}/${MAX_RETRIES} after ${wait}ms:`, msg);
@@ -117,7 +146,7 @@ const getFirstWithRetry = async <T = any>(db: SQLite.SQLiteDatabase, sql: string
     }
   }
   // @ts-ignore
-  return await (db as any).getFirstAsync<T>(sql, params);
+  return await (currentDb as any).getFirstAsync<T>(sql, params);
 };
 
 interface TableInfo {
@@ -459,11 +488,11 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
       // SYNC SYSTEM MIGRATION
       // ========================================
       console.log('Running sync system migration...');
-      
+
       // Добавить sync поля в items
       const itemsColumns = await getAllWithRetry<TableInfo>(databaseInstance!, 'PRAGMA table_info(items);');
       const itemsColumnNames = itemsColumns.map(col => col.name);
-      
+
       if (!itemsColumnNames.includes('serverId')) {
         console.log('Adding serverId column to items');
         await execWithRetry(databaseInstance!, 'ALTER TABLE items ADD COLUMN serverId INTEGER;');
@@ -496,7 +525,7 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
       // Добавить sync поля в transactions
       const transColumns = await getAllWithRetry<TableInfo>(databaseInstance!, 'PRAGMA table_info(transactions);');
       const transColumnNames = transColumns.map(col => col.name);
-      
+
       if (!transColumnNames.includes('serverId')) {
         console.log('Adding serverId column to transactions');
         await execWithRetry(databaseInstance!, 'ALTER TABLE transactions ADD COLUMN serverId INTEGER;');
@@ -519,7 +548,7 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
         databaseInstance!,
         "SELECT name FROM sqlite_master WHERE type='table' AND name='pending_actions';"
       );
-      
+
       if (!pendingActionsTableInfo) {
         console.log('Creating pending_actions table');
         await execWithRetry(databaseInstance!, `
@@ -546,7 +575,7 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
         databaseInstance!,
         "SELECT name FROM sqlite_master WHERE type='table' AND name='sync_state';"
       );
-      
+
       if (!syncStateTableInfo) {
         console.log('Creating sync_state table');
         await execWithRetry(databaseInstance!, `
@@ -560,7 +589,7 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
             pendingChangesCount INTEGER DEFAULT 0
           );
         `);
-        
+
         // Вставить начальную запись
         await execWithRetry(databaseInstance!, `
           INSERT INTO sync_state (id, lastSyncAt, deviceId) 
@@ -573,7 +602,7 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
         databaseInstance!,
         "SELECT name FROM sqlite_master WHERE type='table' AND name='push_token';"
       );
-      
+
       if (!pushTokenTableInfo) {
         console.log('Creating push_token table');
         await execWithRetry(databaseInstance!, `
@@ -668,9 +697,9 @@ export const addItem = async (item: Omit<Item, 'id' | 'createdAt'>): Promise<voi
       const newId = result.lastInsertRowId || 0;
 
       const sizeMap = getSizeQuantities(item.boxSizeQuantities);
-      const sizes = Object.entries(sizeMap).map(([s, q]) => ({ 
+      const sizes = Object.entries(sizeMap).map(([s, q]) => ({
         size: isNaN(Number(s)) ? s : Number(s), // Сохраняем как число если возможно, иначе как строку
-        quantity: q as number 
+        quantity: q as number
       }));
       const details = JSON.stringify({ type: 'create', initialSizes: sizes, total: totalQuantity, totalValue });
 
@@ -760,7 +789,7 @@ export const getItems = async (): Promise<Item[]> => {
   return withLock(async () => {
     try {
       const db = await getDatabaseInstance();
-      const result = await getAllWithRetry<Item>(db, 'SELECT * FROM items ORDER BY createdAt DESC', []);
+      const result = await getAllWithRetry<Item>(db, 'SELECT * FROM items WHERE isDeleted = 0 ORDER BY createdAt DESC', []);
       console.log(`Retrieved ${result.length} items from database`);
       return result || [];
     } catch (error) {
@@ -779,7 +808,7 @@ export const getAllTransactions = async (): Promise<Transaction[]> => {
   return withLock(async () => {
     try {
       const db = await getDatabaseInstance();
-      const result = await getAllWithRetry<Transaction>(db, 'SELECT * FROM transactions ORDER BY timestamp DESC', []);
+      const result = await getAllWithRetry<Transaction>(db, 'SELECT * FROM transactions WHERE isDeleted = 0 ORDER BY timestamp DESC', []);
       console.log(`Retrieved ${result.length} transactions from database`);
       return result || [];
     } catch (error) {
@@ -828,14 +857,15 @@ export const getItemsPage = async (
           .map(char => char.replace(/[%_]/g, '\\$&')) // экранируем спецсимволы SQL
           .join('%');
         const fuzzyLike = `%${fuzzyPattern}%`;
-        
+
         // Также используем обычный поиск для точных совпадений
         const exactLike = `%${searchTerm.trim()}%`;
-        
+
         whereClauses.push('(name LIKE ? COLLATE NOCASE OR code LIKE ? COLLATE NOCASE OR name LIKE ? COLLATE NOCASE OR code LIKE ? COLLATE NOCASE)');
         params.push(exactLike, exactLike, fuzzyLike, fuzzyLike);
       }
 
+      whereClauses.push('isDeleted = 0');
       const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
       // We'll request limit + 1 rows to determine hasMore
       const sql = `SELECT * FROM items ${whereSql} ORDER BY name COLLATE NOCASE ASC LIMIT ? OFFSET ?`;
@@ -908,10 +938,10 @@ export const updateItemQuantity = async (id: number, boxSizeQuantities: string, 
         // Вычисляем старую и новую рекомендованную цену
         const oldParsed = JSON.parse(oldStr || '[]');
         const newParsed = JSON.parse(newStr || '[]');
-        
+
         let oldRecommendedPrice = 0;
         let newRecommendedPrice = 0;
-        
+
         oldParsed.forEach((box: any[]) => {
           box.forEach((sq: any) => {
             if (sq && typeof sq.quantity === 'number' && typeof sq.recommendedSellingPrice === 'number') {
@@ -919,7 +949,7 @@ export const updateItemQuantity = async (id: number, boxSizeQuantities: string, 
             }
           });
         });
-        
+
         newParsed.forEach((box: any[]) => {
           box.forEach((sq: any) => {
             if (sq && typeof sq.quantity === 'number' && typeof sq.recommendedSellingPrice === 'number') {
@@ -927,17 +957,17 @@ export const updateItemQuantity = async (id: number, boxSizeQuantities: string, 
             }
           });
         });
-        
-        details = JSON.stringify({ 
-          type: 'price_update', 
-          oldTotalValue: item.totalValue, 
+
+        details = JSON.stringify({
+          type: 'price_update',
+          oldTotalValue: item.totalValue,
           newTotalValue: totalValue,
           oldRecommendedPrice,
           newRecommendedPrice
         });
       }
 
-      const result = await runWithRetry(db, 'UPDATE items SET boxSizeQuantities = ?, totalQuantity = ?, totalValue = ? WHERE id = ?', [boxSizeQuantities, totalQuantity, totalValue, id]);
+      const result = await runWithRetry(db, 'UPDATE items SET boxSizeQuantities = ?, totalQuantity = ?, totalValue = ?, needsSync = 1 WHERE id = ?', [boxSizeQuantities, totalQuantity, totalValue, id]);
 
       const changed = getAffectedRows(result);
       if (typeof changed === 'number' && changed === 0) {
@@ -996,13 +1026,13 @@ export const deleteItem = async (id: number): Promise<void> => {
       txnActive = true;
 
       const sizeMap = getSizeQuantities(item.boxSizeQuantities);
-      const sizes = Object.entries(sizeMap).map(([s, q]) => ({ 
+      const sizes = Object.entries(sizeMap).map(([s, q]) => ({
         size: isNaN(Number(s)) ? s : Number(s), // Сохраняем как число если возможно, иначе как строку
-        quantity: q as number 
+        quantity: q as number
       }));
       const details = JSON.stringify({ type: 'delete', finalSizes: sizes, total: item.totalQuantity, totalValue: item.totalValue });
 
-      const result = await runWithRetry(db, 'DELETE FROM items WHERE id = ?', [id]);
+      const result = await runWithRetry(db, 'UPDATE items SET isDeleted = 1, needsSync = 1 WHERE id = ?', [id]);
 
       const changed = getAffectedRows(result);
       if (typeof changed === 'number' && changed === 0) {
@@ -1109,7 +1139,7 @@ export const getTransactionsPage = async (
     try {
       const db = await getDatabaseInstance();
       // We'll request limit + 1 rows to determine hasMore
-      const sql = `SELECT * FROM transactions ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
+      const sql = `SELECT * FROM transactions WHERE isDeleted = 0 ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
       const params = [limit + 1, offsetParam];
 
       const rows = await getAllWithRetry<Transaction>(db, sql, params);
@@ -1134,7 +1164,7 @@ export const searchTransactions = async (
   return withLock(async () => {
     try {
       const db = await getDatabaseInstance();
-      const sql = `SELECT * FROM transactions WHERE itemName LIKE ? ORDER BY timestamp ASC LIMIT ? OFFSET ?`;
+      const sql = `SELECT * FROM transactions WHERE itemName LIKE ? AND isDeleted = 0 ORDER BY timestamp ASC LIMIT ? OFFSET ?`;
       const params = [`%${searchQuery}%`, limit + 1, offsetParam];
 
       const rows = await getAllWithRetry<Transaction>(db, sql, params);
@@ -1160,7 +1190,7 @@ export const filterTransactionsByDate = async (
   return withLock(async () => {
     try {
       const db = await getDatabaseInstance();
-      const sql = `SELECT * FROM transactions WHERE timestamp >= ? AND timestamp < ? ORDER BY timestamp ASC LIMIT ? OFFSET ?`;
+      const sql = `SELECT * FROM transactions WHERE timestamp >= ? AND timestamp < ? AND isDeleted = 0 ORDER BY timestamp ASC LIMIT ? OFFSET ?`;
       const params = [startTimestamp, endTimestamp, limit + 1, offsetParam];
 
       const rows = await getAllWithRetry<Transaction>(db, sql, params);
@@ -1188,6 +1218,8 @@ export const clearDatabase = async (): Promise<void> => {
 
       await execWithRetry(db, 'DELETE FROM items;');
       await execWithRetry(db, 'DELETE FROM transactions;');
+      await execWithRetry(db, 'DELETE FROM pending_actions;');
+      await execWithRetry(db, 'UPDATE sync_state SET lastSyncAt = 0, lastItemVersion = 0, lastTransactionId = 0, lastPendingActionId = 0, deviceId = NULL, pendingChangesCount = 0 WHERE id = 1;');
 
       for (const item of itemsWithImages) {
         if (item.imageUri) {
@@ -1260,7 +1292,7 @@ export const getDistinctWarehouses = async (): Promise<string[]> => {
   return withLock(async () => {
     try {
       const db = await getDatabaseInstance();
-      const rows = await getAllWithRetry<{ warehouse: string }>(db, 'SELECT DISTINCT warehouse FROM items ORDER BY warehouse ASC', []);
+      const rows = await getAllWithRetry<{ warehouse: string }>(db, 'SELECT DISTINCT warehouse FROM items WHERE isDeleted = 0 ORDER BY warehouse ASC', []);
       return (rows || []).map(r => r.warehouse);
     } catch (error) {
       console.error('Error fetching distinct warehouses:', error);
@@ -1289,10 +1321,10 @@ export const closeDatabase = async (): Promise<void> => {
 export const updateItem = async (item: Item): Promise<void> => {
   return withLock(async () => {
     const db = await getDatabaseInstance();
-    
+
     await runWithRetry(db, `
       UPDATE items 
-      SET name = ?, code = ?, warehouse = ?, numberOfBoxes = ?, row = ?, position = ?, side = ?, imageUri = ?
+      SET name = ?, code = ?, warehouse = ?, numberOfBoxes = ?, row = ?, position = ?, side = ?, imageUri = ?, needsSync = 1
       WHERE id = ?
     `, [
       item.name,
@@ -1314,10 +1346,10 @@ export const updateItem = async (item: Item): Promise<void> => {
 export const updateItemQRCodes = async (id: number, qrCodeType: string, qrCodes: string | null): Promise<void> => {
   return withLock(async () => {
     const db = await getDatabaseInstance();
-    
+
     await runWithRetry(db, `
       UPDATE items 
-      SET qrCodeType = ?, qrCodes = ?
+      SET qrCodeType = ?, qrCodes = ?, needsSync = 1
       WHERE id = ?
     `, [
       qrCodeType,
@@ -1344,11 +1376,11 @@ interface CreateInfo {
 }
 
 interface UpdateInfo {
-  changes: { 
-    size: number; 
-    oldQuantity: number; 
-    newQuantity: number; 
-    delta: number 
+  changes: {
+    size: number;
+    oldQuantity: number;
+    newQuantity: number;
+    delta: number
   }[];
   totalAfter: number;
   totalValueAfter: number;
@@ -1417,7 +1449,7 @@ export const deleteTransaction = async (transactionId: number): Promise<{ succes
       await execWithRetry(db, 'BEGIN TRANSACTION;');
       txnActive = true;
 
-      const transaction = await getFirstWithRetry<Transaction>(db, 'SELECT * FROM transactions WHERE id = ?', [transactionId]);
+      const transaction = await getFirstWithRetry<Transaction>(db, 'SELECT * FROM transactions WHERE id = ? AND isDeleted = 0', [transactionId]);
       if (!transaction) {
         throw new Error('Transaction not found');
       }
@@ -1429,6 +1461,7 @@ export const deleteTransaction = async (transactionId: number): Promise<{ succes
         SELECT * FROM transactions 
         WHERE itemId = ? 
         AND action IN ('sale', 'update', 'wholesale') 
+        AND isDeleted = 0
         AND ABS(timestamp - ?) < 5
       `, [itemId, timestamp]);
 
@@ -1476,15 +1509,15 @@ export const deleteTransaction = async (transactionId: number): Promise<{ succes
         // Восстанавливаем каждую проданную коробку
         for (const soldBox of wholesaleInfo.boxes) {
           const { boxIndex, sizes } = soldBox;
-          
+
           // Убеждаемся что коробка существует
           if (boxIndex >= 0 && boxIndex < boxSizeQuantities.length) {
             const targetBox = boxSizeQuantities[boxIndex];
-            
+
             // Восстанавливаем каждый размер в коробке
             for (const sizeInfo of sizes) {
               const { size, quantity, price } = sizeInfo;
-              
+
               // Ищем размер в коробке
               let sizeFound = false;
               for (let j = 0; j < targetBox.length; j++) {
@@ -1495,7 +1528,7 @@ export const deleteTransaction = async (transactionId: number): Promise<{ succes
                   break;
                 }
               }
-              
+
               // Если размер не найден, добавляем его
               if (!sizeFound) {
                 targetBox.push({ size, quantity, price });
@@ -1505,14 +1538,14 @@ export const deleteTransaction = async (transactionId: number): Promise<{ succes
         }
       } else {
         // Восстановление обычной продажи
-        const saleInfo = parsedDetails.sale || { 
-          size: parsedDetails.size, 
-          quantity: parsedDetails.quantity, 
-          costPrice: parsedDetails.costPrice, 
+        const saleInfo = parsedDetails.sale || {
+          size: parsedDetails.size,
+          quantity: parsedDetails.quantity,
+          costPrice: parsedDetails.costPrice,
           salePrice: parsedDetails.salePrice,
           previousQuantity: parsedDetails.previousQuantity,
           profit: parsedDetails.profit,
-          boxIndex: parsedDetails.boxIndex 
+          boxIndex: parsedDetails.boxIndex
         };
         const { size, quantity, costPrice, boxIndex } = saleInfo;
 
@@ -1575,11 +1608,11 @@ export const deleteTransaction = async (transactionId: number): Promise<{ succes
 
       const newBoxStr = JSON.stringify(boxSizeQuantities);
 
-      await runWithRetry(db, 'UPDATE items SET boxSizeQuantities = ?, totalQuantity = ?, totalValue = ? WHERE id = ?', [newBoxStr, newTotalQuantity, newTotalValue, itemId]);
+      await runWithRetry(db, 'UPDATE items SET boxSizeQuantities = ?, totalQuantity = ?, totalValue = ?, needsSync = 1 WHERE id = ?', [newBoxStr, newTotalQuantity, newTotalValue, itemId]);
 
-      // Delete all related transactions
+      // Soft delete all related transactions
       for (let tx of related) {
-        await runWithRetry(db, 'DELETE FROM transactions WHERE id = ?', [tx.id]);
+        await runWithRetry(db, 'UPDATE transactions SET isDeleted = 1, needsSync = 1 WHERE id = ?', [tx.id]);
       }
 
       await execWithRetry(db, 'COMMIT;');
