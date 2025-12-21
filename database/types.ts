@@ -10,13 +10,14 @@ export interface QRCodeData {
 
 export interface Item {
   id: number;
+  serverId?: number | null; // ID на сервере для синхронизации
   name: string;
   code: string;
   warehouse: string;
   numberOfBoxes: number;
-  boxSizeQuantities: string; 
+  boxSizeQuantities: string;
   sizeType: string;
-  itemType: ItemType; 
+  itemType: ItemType;
   row: string | null;
   position: string | null;
   side: string | null;
@@ -24,8 +25,8 @@ export interface Item {
   createdAt: number;
   totalQuantity: number;
   totalValue: number;
-  qrCodeType: QRCodeType; 
-  qrCodes: string | null; 
+  qrCodeType: QRCodeType;
+  qrCodes: string | null;
 }
 
 export interface Transaction {

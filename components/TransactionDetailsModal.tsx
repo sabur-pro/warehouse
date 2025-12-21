@@ -39,11 +39,11 @@ interface CreateInfo {
 }
 
 interface UpdateInfo {
-  changes: { 
-    size: number; 
-    oldQuantity: number; 
-    newQuantity: number; 
-    delta: number 
+  changes: {
+    size: number;
+    oldQuantity: number;
+    newQuantity: number;
+    delta: number
   }[];
   totalAfter: number;
   totalValueAfter: number;
@@ -83,15 +83,17 @@ interface PriceUpdateInfo {
 }
 
 interface TransactionDetails {
-  type: 'sale' | 'create' | 'update' | 'delete' | 'wholesale' | 'price_update';
+  type: 'sale' | 'create' | 'update' | 'delete' | 'wholesale' | 'price_update' | 'admin_approved_delete' | 'admin_approved_update';
   sale?: SaleInfo;
   wholesale?: WholesaleInfo;
   initialSizes?: CreateInfo['initialSizes'];
   total?: number;
   totalValue?: number;
+  totalRecommendedValue?: number;
   changes?: UpdateInfo['changes'];
   totalAfter?: number;
   totalValueAfter?: number;
+  totalRecommendedValueAfter?: number;
   finalSizes?: DeleteInfo['finalSizes'];
   oldTotalValue?: number;
   newTotalValue?: number;
@@ -242,7 +244,7 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
             <Text style={[styles.label, { color: colors.text.muted }]}>Общее количество товаров:</Text>
             <Text style={[styles.value, { color: colors.text.normal }]}>{details.wholesale.totalQuantity} шт.</Text>
           </View>
-          {isAssistant() && (
+          {isAdmin() && (
             <View style={styles.row}>
               <Text style={[styles.label, { color: colors.text.muted }]}>Общая себестоимость:</Text>
               <Text style={[styles.value, { color: colors.text.normal }]}>{details.wholesale.totalCostPrice.toFixed(2)} сомонӣ</Text>
@@ -252,7 +254,7 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
             <Text style={[styles.label, { color: colors.text.muted }]}>Общая цена продажи:</Text>
             <Text style={[styles.value, { color: colors.text.normal }]}>{details.wholesale.totalSalePrice.toFixed(2)} сомонӣ</Text>
           </View>
-          {isAssistant() && (
+          {isAdmin() && (
             <View style={styles.row}>
               <Text style={[styles.label, { color: colors.text.muted }]}>Общая прибыль:</Text>
               <Text style={[
@@ -274,7 +276,7 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
                   <Text style={[styles.label, { color: colors.text.muted }]}>Количество:</Text>
                   <Text style={[styles.value, { color: colors.text.normal }]}>{box.quantity} шт.</Text>
                 </View>
-                {isAssistant() && (
+                {isAdmin() && (
                   <View style={styles.row}>
                     <Text style={[styles.label, { color: colors.text.muted }]}>Себестоимость:</Text>
                     <Text style={[styles.value, { color: colors.text.normal }]}>{box.costPrice.toFixed(2)} сомонӣ</Text>
@@ -284,7 +286,7 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
                   <Text style={[styles.label, { color: colors.text.muted }]}>Цена продажи:</Text>
                   <Text style={[styles.value, { color: colors.text.normal }]}>{box.salePrice.toFixed(2)} сомонӣ</Text>
                 </View>
-                {isAssistant() && (
+                {isAdmin() && (
                   <View style={styles.row}>
                     <Text style={[styles.label, { color: colors.text.muted }]}>Прибыль:</Text>
                     <Text style={[
@@ -312,30 +314,34 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
     const costDiff = (details.newTotalValue || 0) - (details.oldTotalValue || 0);
     const recommendedDiff = (details.newRecommendedPrice || 0) - (details.oldRecommendedPrice || 0);
     const hasRecommendedChange = details.oldRecommendedPrice !== undefined && details.newRecommendedPrice !== undefined;
-    
+
     return (
       <View>
         <Text style={[styles.sectionTitle, { color: colors.text.normal }]}>Детали обновления цены:</Text>
         <View>
-          <Text style={[styles.subsectionTitle, { color: colors.text.normal, marginTop: 8, marginBottom: 8 }]}>Себестоимость:</Text>
-          <View style={styles.row}>
-            <Text style={[styles.label, { color: colors.text.muted }]}>Была общая стоимость:</Text>
-            <Text style={[styles.value, { color: colors.text.normal }]}>{details.oldTotalValue?.toFixed(2) || '0.00'} сомонӣ</Text>
-          </View>
-          <View style={styles.row}>
-            <Text style={[styles.label, { color: colors.text.muted }]}>Стала общая стоимость:</Text>
-            <Text style={[styles.value, { color: colors.text.normal }]}>{details.newTotalValue?.toFixed(2) || '0.00'} сомонӣ</Text>
-          </View>
-          <View style={styles.row}>
-            <Text style={[styles.label, { color: colors.text.muted }]}>Разница:</Text>
-            <Text style={[
-              styles.value,
-              { color: costDiff > 0 ? '#10b981' : costDiff < 0 ? '#ef4444' : colors.text.muted, fontWeight: 'bold' }
-            ]}>
-              {costDiff > 0 ? '+' : ''}{costDiff.toFixed(2)} сомонӣ
-            </Text>
-          </View>
-          
+          {isAdmin() && (
+            <>
+              <Text style={[styles.subsectionTitle, { color: colors.text.normal, marginTop: 8, marginBottom: 8 }]}>Себестоимость:</Text>
+              <View style={styles.row}>
+                <Text style={[styles.label, { color: colors.text.muted }]}>Была общая стоимость:</Text>
+                <Text style={[styles.value, { color: colors.text.normal }]}>{details.oldTotalValue?.toFixed(2) || '0.00'} сомонӣ</Text>
+              </View>
+              <View style={styles.row}>
+                <Text style={[styles.label, { color: colors.text.muted }]}>Стала общая стоимость:</Text>
+                <Text style={[styles.value, { color: colors.text.normal }]}>{details.newTotalValue?.toFixed(2) || '0.00'} сомонӣ</Text>
+              </View>
+              <View style={styles.row}>
+                <Text style={[styles.label, { color: colors.text.muted }]}>Разница:</Text>
+                <Text style={[
+                  styles.value,
+                  { color: costDiff > 0 ? '#10b981' : costDiff < 0 ? '#ef4444' : colors.text.muted, fontWeight: 'bold' }
+                ]}>
+                  {costDiff > 0 ? '+' : ''}{costDiff.toFixed(2)} сомонӣ
+                </Text>
+              </View>
+            </>
+          )}
+
           {hasRecommendedChange && (
             <>
               <Text style={[styles.subsectionTitle, { color: colors.text.normal, marginTop: 12, marginBottom: 8 }]}>Рекомендованная цена продажи:</Text>
@@ -358,11 +364,11 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
               </View>
             </>
           )}
-          
-          <View style={[styles.infoBox, { 
-            backgroundColor: isDark ? 'rgba(14, 165, 233, 0.2)' : '#e0f2fe', 
-            borderColor: '#0284c7', 
-            marginTop: 12 
+
+          <View style={[styles.infoBox, {
+            backgroundColor: isDark ? 'rgba(14, 165, 233, 0.2)' : '#e0f2fe',
+            borderColor: '#0284c7',
+            marginTop: 12
           }]}>
             <MaterialIcons name="info" size={20} color="#0284c7" style={{ marginRight: 8 }} />
             <Text style={[styles.infoText, { color: isDark ? '#38bdf8' : '#0369a1' }]}>
@@ -442,10 +448,17 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
                 <Text style={[styles.label, { color: colors.text.muted }]}>Новое общее количество:</Text>
                 <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalAfter} шт.</Text>
               </View>
-              <View style={styles.row}>
-                <Text style={[styles.label, { color: colors.text.muted }]}>Новая общая стоимость:</Text>
-                <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalValueAfter?.toFixed(2)} сомонӣ</Text>
-              </View>
+              {isAdmin() ? (
+                <View style={styles.row}>
+                  <Text style={[styles.label, { color: colors.text.muted }]}>Новая общая стоимость:</Text>
+                  <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalValueAfter?.toFixed(2)} сомонӣ</Text>
+                </View>
+              ) : (
+                <View style={styles.row}>
+                  <Text style={[styles.label, { color: colors.text.muted }]}>Новая рекомендованная стоимость:</Text>
+                  <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalRecommendedValueAfter?.toFixed(2) || '0.00'} сомонӣ</Text>
+                </View>
+              )}
               <Text style={[styles.subsectionTitle, { color: colors.text.normal }]}>Изменения:</Text>
               {details.changes.map((change, index) => (
                 <View key={index} style={[styles.row, { marginLeft: 10 }]}>
@@ -475,10 +488,17 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
             <Text style={[styles.label, { color: colors.text.muted }]}>Общее количество:</Text>
             <Text style={[styles.value, { color: colors.text.normal }]}>{details.total} шт.</Text>
           </View>
-          <View style={styles.row}>
-            <Text style={[styles.label, { color: colors.text.muted }]}>Общая стоимость:</Text>
-            <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalValue?.toFixed(2)} сомонӣ</Text>
-          </View>
+          {isAdmin() ? (
+            <View style={styles.row}>
+              <Text style={[styles.label, { color: colors.text.muted }]}>Общая стоимость:</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalValue?.toFixed(2)} сомонӣ</Text>
+            </View>
+          ) : (
+            <View style={styles.row}>
+              <Text style={[styles.label, { color: colors.text.muted }]}>Общая рекомендованная стоимость:</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalRecommendedValue?.toFixed(2) || '0.00'} сомонӣ</Text>
+            </View>
+          )}
           <Text style={[styles.subsectionTitle, { color: colors.text.normal }]}>Размеры:</Text>
           {details.initialSizes.map((size, index) => (
             <View key={index} style={[styles.row, { marginLeft: 10 }]}>
@@ -504,10 +524,17 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
             <Text style={[styles.label, { color: colors.text.muted }]}>Общее количество:</Text>
             <Text style={[styles.value, { color: colors.text.normal }]}>{details.total} шт.</Text>
           </View>
-          <View style={styles.row}>
-            <Text style={[styles.label, { color: colors.text.muted }]}>Общая стоимость:</Text>
-            <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalValue?.toFixed(2)} сомонӣ</Text>
-          </View>
+          {isAdmin() ? (
+            <View style={styles.row}>
+              <Text style={[styles.label, { color: colors.text.muted }]}>Общая стоимость:</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalValue?.toFixed(2)} сомонӣ</Text>
+            </View>
+          ) : (
+            <View style={styles.row}>
+              <Text style={[styles.label, { color: colors.text.muted }]}>Общая рекомендованная стоимость:</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalRecommendedValue?.toFixed(2) || '0.00'} сомонӣ</Text>
+            </View>
+          )}
           <Text style={[styles.subsectionTitle, { color: colors.text.normal }]}>Размеры:</Text>
           {details.finalSizes.map((size, index) => (
             <View key={index} style={[styles.row, { marginLeft: 10 }]}>
@@ -520,12 +547,124 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
     </View>
   );
 
+  const renderAdminApprovedDeleteDetails = (details: any) => {
+    const deletedItem = details.deletedItem || {};
+    return (
+      <View>
+        <Text style={[styles.sectionTitle, { color: colors.text.normal }]}>Удаление одобрено администратором:</Text>
+        <View>
+          <View style={styles.row}>
+            <Text style={[styles.label, { color: colors.text.muted }]}>Название товара:</Text>
+            <Text style={[styles.value, { color: colors.text.normal }]}>{deletedItem.name || 'Неизвестно'}</Text>
+          </View>
+          {deletedItem.code && (
+            <View style={styles.row}>
+              <Text style={[styles.label, { color: colors.text.muted }]}>Артикул:</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{deletedItem.code}</Text>
+            </View>
+          )}
+          {deletedItem.warehouse && (
+            <View style={styles.row}>
+              <Text style={[styles.label, { color: colors.text.muted }]}>Склад:</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{deletedItem.warehouse}</Text>
+            </View>
+          )}
+          {deletedItem.totalQuantity !== undefined && (
+            <View style={styles.row}>
+              <Text style={[styles.label, { color: colors.text.muted }]}>Было товаров:</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{deletedItem.totalQuantity} шт.</Text>
+            </View>
+          )}
+          <View style={[styles.infoBox, {
+            backgroundColor: isDark ? 'rgba(239, 68, 68, 0.2)' : '#fef2f2',
+            borderColor: '#ef4444',
+            marginTop: 12
+          }]}>
+            <MaterialIcons name="delete-forever" size={20} color="#ef4444" style={{ marginRight: 8 }} />
+            <Text style={[styles.infoText, { color: isDark ? '#f87171' : '#dc2626' }]}>
+              Товар был удалён по запросу ассистента.
+            </Text>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
+  const renderAdminApprovedUpdateDetails = (details: any) => {
+    const oldData = details.oldData || {};
+    const newData = details.newData || {};
+
+    // Находим изменённые поля
+    const changes: { field: string; label: string; old: any; new: any }[] = [];
+    const fieldLabels: { [key: string]: string } = {
+      name: 'Название',
+      code: 'Артикул',
+      warehouse: 'Склад',
+      numberOfBoxes: 'Кол-во коробок',
+      row: 'Ряд',
+      position: 'Позиция',
+      side: 'Сторона',
+      totalQuantity: 'Общее кол-во',
+      totalValue: 'Общая стоимость',
+    };
+
+    for (const key of Object.keys(newData)) {
+      if (oldData[key] !== undefined && JSON.stringify(oldData[key]) !== JSON.stringify(newData[key])) {
+        changes.push({
+          field: key,
+          label: fieldLabels[key] || key,
+          old: oldData[key],
+          new: newData[key],
+        });
+      }
+    }
+
+    return (
+      <View>
+        <Text style={[styles.sectionTitle, { color: colors.text.normal }]}>Обновление одобрено администратором:</Text>
+        <View>
+          {changes.length > 0 ? (
+            <>
+              <Text style={[styles.subsectionTitle, { color: colors.text.normal }]}>Изменённые поля:</Text>
+              {changes.map((change, index) => (
+                <View key={index} style={[styles.row, { marginLeft: 10, flexDirection: 'column', alignItems: 'flex-start', marginBottom: 8 }]}>
+                  <Text style={[styles.label, { color: colors.text.muted }]}>{change.label}:</Text>
+                  <View style={{ flexDirection: 'row', marginTop: 2 }}>
+                    <Text style={[styles.value, { color: '#ef4444', textDecorationLine: 'line-through' }]}>
+                      {String(change.old || '—').substring(0, 30)}
+                    </Text>
+                    <MaterialIcons name="arrow-forward" size={16} color={colors.text.muted} style={{ marginHorizontal: 8 }} />
+                    <Text style={[styles.value, { color: '#22c55e' }]}>
+                      {String(change.new || '—').substring(0, 30)}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </>
+          ) : (
+            <Text style={[styles.noData, { color: colors.text.muted }]}>Нет деталей изменений</Text>
+          )}
+          <View style={[styles.infoBox, {
+            backgroundColor: isDark ? 'rgba(34, 197, 94, 0.2)' : '#f0fdf4',
+            borderColor: '#22c55e',
+            marginTop: 12
+          }]}>
+            <MaterialIcons name="check-circle" size={20} color="#22c55e" style={{ marginRight: 8 }} />
+            <Text style={[styles.infoText, { color: isDark ? '#4ade80' : '#16a34a' }]}>
+              Изменения применены по запросу ассистента.
+            </Text>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
   const renderContent = () => {
     if (groupedTransaction.type === 'grouped') {
       const saleTx = transactions.find((tx: Transaction) => tx.action === 'sale');
       const wholesaleTx = transactions.find((tx: Transaction) => tx.action === 'wholesale');
       const updateTx = transactions.find((tx: Transaction) => tx.action === 'update');
-      
+
       const saleParsed = saleTx ? parseDetails(saleTx.details) : null;
       const wholesaleParsed = wholesaleTx ? parseDetails(wholesaleTx.details) : null;
       const updateParsed = updateTx ? parseDetails(updateTx.details) : null;
@@ -542,6 +681,14 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
     const details = parseDetails(mainTransaction.details);
     if (!details) {
       return <Text style={styles.noData}>Нет дополнительных деталей</Text>;
+    }
+
+    // Проверяем на admin_approved типы
+    if (details.type === 'admin_approved_delete') {
+      return renderAdminApprovedDeleteDetails(details);
+    }
+    if (details.type === 'admin_approved_update') {
+      return renderAdminApprovedUpdateDetails(details);
     }
 
     // Проверяем на price_update
@@ -570,7 +717,7 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
       // Проверяем какой тип продажи в группе
       const wholesaleTx = transactions.find((tx: Transaction) => tx.action === 'wholesale');
       const saleTx = transactions.find((tx: Transaction) => tx.action === 'sale');
-      
+
       if (wholesaleTx) {
         return 'Продажа оптом';
       } else if (saleTx) {
@@ -579,6 +726,16 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
         return 'Продажа';
       }
     }
+
+    // Проверяем детали для admin_approved типов
+    const details = parseDetails(mainTransaction.details);
+    if (details?.type === 'admin_approved_delete') {
+      return 'Удаление (одобрено)';
+    }
+    if (details?.type === 'admin_approved_update') {
+      return 'Обновление (одобрено)';
+    }
+
     switch (mainTransaction.action) {
       case 'sale':
         return 'Продажа';
@@ -587,7 +744,6 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
       case 'create':
         return 'Создание';
       case 'update':
-        const details = parseDetails(mainTransaction.details);
         if (details?.type === 'price_update') {
           return 'Обновление цены';
         }
@@ -605,11 +761,11 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
   const isSaleTransaction = transactions.some((tx: Transaction) => {
     const details = parseDetails(tx.details);
     // Проверяем все возможные варианты транзакций продаж
-    return tx.action === 'sale' || 
-           tx.action === 'wholesale' || 
-           (tx.action === 'update' && details?.sale) ||
-           (tx.action === 'update' && details?.type === 'sale') ||
-           details?.type === 'wholesale';
+    return tx.action === 'sale' ||
+      tx.action === 'wholesale' ||
+      (tx.action === 'update' && details?.sale) ||
+      (tx.action === 'update' && details?.type === 'sale') ||
+      details?.type === 'wholesale';
   });
 
   return (

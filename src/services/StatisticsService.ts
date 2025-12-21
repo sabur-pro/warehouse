@@ -38,7 +38,7 @@ export class StatisticsService {
   ): StatisticsCalculation {
     // Подсчитываем основную статистику по товарам
     const totalItems = items.length;
-    
+
     // Исключаем товары без цены (totalValue = 0) из общей стоимости
     const totalValue = items.reduce((sum, item) => {
       if (item.totalValue > 0) {
@@ -46,34 +46,47 @@ export class StatisticsService {
       }
       return sum;
     }, 0);
-    
+
     const totalQuantity = items.reduce((sum, item) => sum + item.totalQuantity, 0);
-    
+
     // Подсчитываем коробки
     const totalBoxes = items.reduce((sum, item) => sum + item.numberOfBoxes, 0);
-    
+
     // Распределение коробок по количеству пар
     const boxDistribution = this.calculateBoxDistribution(items);
-    
+
     // Подсчитываем продажи и прибыль
     let totalSales = 0;
     let totalProfit = 0;
     let salesCount = 0;
-    
+
     transactions.forEach(tx => {
-      if (tx.action === 'sale' || tx.action === 'wholesale' || (tx.action === 'update' && tx.details)) {
+      // Пытаемся определить, является ли транзакция продажей (обычной или оптовой)
+      if (tx.action === 'sale' || tx.action === 'wholesale' || tx.action === 'update') {
         try {
           const details = JSON.parse(tx.details || '{}');
-          if (details.sale) {
-            const saleAmount = details.sale.salePrice * details.sale.quantity;
-            totalSales += saleAmount;
-            totalProfit += details.sale.profit || 0;
-            salesCount++;
-          }
-          // Обработка оптовых продаж
-          if (details.wholesale) {
-            totalSales += details.wholesale.totalSalePrice || 0;
-            totalProfit += details.wholesale.totalProfit || 0;
+
+          // Проверка на обычную продажу
+          const isRetailSale = details.sale || (tx.action === 'sale') || (details.type === 'sale');
+          // Проверка на оптовую продажу
+          const isWholesaleSale = details.wholesale || (tx.action === 'wholesale') || (details.type === 'wholesale');
+
+          if (isRetailSale && !isWholesaleSale) {
+            const sale = details.sale || details; // Пытаемся взять из вложенного объекта или из корня
+            const quantity = Number(sale.quantity || 0);
+            const salePrice = Number(sale.salePrice || 0);
+            const saleAmount = salePrice * quantity;
+            const profit = Number(sale.profit || 0);
+
+            if (quantity > 0 || salePrice > 0) {
+              totalSales += saleAmount;
+              totalProfit += profit;
+              salesCount++;
+            }
+          } else if (isWholesaleSale) {
+            const wholesale = details.wholesale || details;
+            totalSales += Number(wholesale.totalSalePrice || wholesale.salePrice || 0);
+            totalProfit += Number(wholesale.totalProfit || wholesale.profit || 0);
             salesCount++;
           }
         } catch (e) {
@@ -81,7 +94,7 @@ export class StatisticsService {
         }
       }
     });
-    
+
     // Подсчитываем транзакции за последнюю неделю
     const weekAgo = Date.now() / 1000 - 7 * 24 * 60 * 60;
     const recentTransactions = transactions.filter(tx => tx.timestamp > weekAgo).length;
@@ -110,11 +123,11 @@ export class StatisticsService {
    */
   static calculateBoxDistribution(items: Item[]): BoxDistribution[] {
     const distributionMap = new Map<number, number>();
-    
+
     items.forEach(item => {
       try {
         const boxSizeQuantities = JSON.parse(item.boxSizeQuantities);
-        
+
         // boxSizeQuantities - это массив коробок, где каждая коробка - массив размеров
         if (Array.isArray(boxSizeQuantities)) {
           boxSizeQuantities.forEach((box: any) => {
@@ -123,7 +136,7 @@ export class StatisticsService {
               const pairsInBox = box.reduce((sum: number, sizeItem: any) => {
                 return sum + (sizeItem.quantity || 0);
               }, 0);
-              
+
               // Добавляем в распределение
               const currentCount = distributionMap.get(pairsInBox) || 0;
               distributionMap.set(pairsInBox, currentCount + 1);
@@ -134,7 +147,7 @@ export class StatisticsService {
         console.warn('Ошибка парсинга boxSizeQuantities для товара', item.id);
       }
     });
-    
+
     // Преобразуем в массив и сортируем по количеству пар
     return Array.from(distributionMap.entries())
       .map(([pairsCount, boxCount]) => ({ pairsCount, boxCount }))
@@ -155,56 +168,97 @@ export class StatisticsService {
     let salesCount = 0;
     let shoesQuantity = 0;
     let clothesQuantity = 0;
-    
-    // Создаем карту товаров для быстрого поиска
-    const itemsMap = new Map<number, Item>();
-    items.forEach(item => itemsMap.set(item.id, item));
-    
+
+    // Создаем карту товаров для быстрого поиска с приведением ID к строке для надежности
+    const itemsMap = new Map<string, Item>();
+    items.forEach(item => itemsMap.set(String(item.id), item));
+
     transactions.forEach(tx => {
       if (tx.timestamp >= startTimestamp && tx.timestamp <= endTimestamp) {
-        if (tx.action === 'sale' || tx.action === 'wholesale' || (tx.action === 'update' && tx.details)) {
+        // Пытаемся определить, является ли транзакция продажей
+        if (tx.action === 'sale' || tx.action === 'wholesale' || tx.action === 'update') {
           try {
             const details = JSON.parse(tx.details || '{}');
-            if (details.sale) {
-              const saleAmount = details.sale.salePrice * details.sale.quantity;
-              sales += saleAmount;
-              profit += details.sale.profit || 0;
+
+            // Проверка на обычную продажу
+            const isRetailSale = details.sale || (tx.action === 'sale') || (details.type === 'sale');
+            // Проверка на оптовую продажу
+            const isWholesaleSale = details.wholesale || (tx.action === 'wholesale') || (details.type === 'wholesale');
+
+            if (isRetailSale && !isWholesaleSale) {
+              const sale = details.sale || details;
+              const quantity = Number(sale.quantity || 0);
+              const salePrice = Number(sale.salePrice || 0);
+              const saleProfit = Number(sale.profit || 0);
+
+              sales += salePrice * quantity;
+              profit += saleProfit;
               salesCount++;
-              
+
               // Подсчет по типам товаров
-              if (tx.itemId) {
-                const item = itemsMap.get(tx.itemId);
+              let itemType: string | undefined = undefined;
+
+              // 1. Пытаемся взять тип из транзакции (если сохранено в корень или в sale)
+              itemType = details.itemType || sale.itemType;
+
+              // 2. Если нет в транзакции, ищем в карте товаров
+              if (!itemType && tx.itemId !== undefined && tx.itemId !== null) {
+                const item = itemsMap.get(String(tx.itemId));
                 if (item) {
-                  const quantity = details.sale.quantity || 0;
-                  if (item.itemType === 'обувь') {
-                    shoesQuantity += quantity;
-                  } else if (item.itemType === 'одежда') {
-                    clothesQuantity += quantity;
-                  }
+                  itemType = item.itemType;
                 }
               }
-            }
-            // Обработка оптовых продаж
-            if (details.wholesale) {
-              sales += details.wholesale.totalSalePrice || 0;
-              profit += details.wholesale.totalProfit || 0;
-              salesCount++;
-              
-              // Подсчет по типам товаров для оптовых продаж
-              if (tx.itemId) {
-                const item = itemsMap.get(tx.itemId);
-                if (item && details.wholesale.soldItems) {
-                  // Считаем количество проданных единиц
-                  const totalQuantity = details.wholesale.soldItems.reduce(
-                    (sum: number, soldItem: any) => sum + (soldItem.quantity || 0),
-                    0
-                  );
-                  if (item.itemType === 'обувь') {
-                    shoesQuantity += totalQuantity;
-                  } else if (item.itemType === 'одежда') {
-                    clothesQuantity += totalQuantity;
-                  }
+
+              // 3. Категоризируем (проверяем разные варианты написания)
+              if (itemType) {
+                const normalizedType = itemType.trim().toLowerCase();
+                // Проверяем на одежду (включая варианты с разными регистрами и возможные опечатки)
+                if (normalizedType === 'одежда' || normalizedType.includes('одежд')) {
+                  clothesQuantity += quantity;
+                } else {
+                  // Все остальное (включая обувь и неопознанное) считаем обувью
+                  shoesQuantity += quantity;
                 }
+              } else {
+                // Если тип вообще не найден, считаем обувью по умолчанию
+                shoesQuantity += quantity;
+              }
+            } else if (isWholesaleSale) {
+              const wholesale = details.wholesale || details;
+              const totalSalePrice = Number(wholesale.totalSalePrice || wholesale.salePrice || 0);
+              const totalProfitAmt = Number(wholesale.totalProfit || wholesale.profit || 0);
+
+              sales += totalSalePrice;
+              profit += totalProfitAmt;
+              salesCount++;
+
+              // Подсчет по типам товаров для оптовых продаж
+              let itemType: string | undefined = undefined;
+              const totalQuantity = Number(wholesale.totalQuantity || wholesale.quantity || 0);
+
+              // 1. Пытаемся взять тип из транзакции
+              itemType = details.itemType || wholesale.itemType;
+
+              // 2. Если нет в транзакции, ищем в карте товаров
+              if (!itemType && tx.itemId !== undefined && tx.itemId !== null) {
+                const item = itemsMap.get(String(tx.itemId));
+                if (item) {
+                  itemType = item.itemType;
+                }
+              }
+
+              // 3. Категоризируем (проверяем разные варианты написания)
+              if (itemType) {
+                const normalizedType = itemType.trim().toLowerCase();
+                // Проверяем на одежду (включая варианты с разными регистрами и возможные опечатки)
+                if (normalizedType === 'одежда' || normalizedType.includes('одежд')) {
+                  clothesQuantity += totalQuantity;
+                } else {
+                  // Все остальное (включая обувь и неопознанное) считаем обувью
+                  shoesQuantity += totalQuantity;
+                }
+              } else {
+                shoesQuantity += totalQuantity;
               }
             }
           } catch (e) {
@@ -213,10 +267,10 @@ export class StatisticsService {
         }
       }
     });
-    
+
     const averageProfit = salesCount > 0 ? profit / salesCount : 0;
     const profitMargin = sales > 0 ? (profit / sales) * 100 : 0;
-    
+
     return {
       sales,
       profit,

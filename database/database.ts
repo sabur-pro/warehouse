@@ -195,6 +195,24 @@ const computeTotalValue = (boxSizeQuantities: string): number => {
   return totalValue;
 };
 
+const computeTotalRecommendedValue = (boxSizeQuantities: string): number => {
+  let parsed: any[] = [];
+  try {
+    parsed = JSON.parse(boxSizeQuantities || '[]');
+  } catch {
+    parsed = [];
+  }
+  let totalValue = 0;
+  parsed.forEach((box: any[]) => {
+    box.forEach((sq: { quantity: number; recommendedSellingPrice?: number }) => {
+      if (sq && typeof sq.quantity === 'number' && typeof sq.recommendedSellingPrice === 'number') {
+        totalValue += sq.quantity * sq.recommendedSellingPrice;
+      }
+    });
+  });
+  return totalValue;
+};
+
 const computeChanges = (oldMap: { [size: string]: number }, newMap: { [size: string]: number }): { size: string; oldQuantity: number; newQuantity: number; delta: number }[] => {
   const allSizes = new Set([...Object.keys(oldMap), ...Object.keys(newMap)]);
   const changes: { size: string; oldQuantity: number; newQuantity: number; delta: number }[] = [];
@@ -701,7 +719,8 @@ export const addItem = async (item: Omit<Item, 'id' | 'createdAt'>): Promise<voi
         size: isNaN(Number(s)) ? s : Number(s), // Сохраняем как число если возможно, иначе как строку
         quantity: q as number
       }));
-      const details = JSON.stringify({ type: 'create', initialSizes: sizes, total: totalQuantity, totalValue });
+      const totalRecommendedValue = computeTotalRecommendedValue(item.boxSizeQuantities);
+      const details = JSON.stringify({ type: 'create', initialSizes: sizes, total: totalQuantity, totalValue, totalRecommendedValue });
 
       await runWithRetry(db, `
         INSERT INTO transactions (action, itemId, itemName, timestamp, details, needsSync)
@@ -781,6 +800,21 @@ export const insertItemImport = async (item: Omit<Item, 'id' | 'createdAt'> & { 
       }
       databaseInstance = null;
       throw transactionError;
+    }
+  });
+};
+
+export const getAllItems = async (): Promise<Item[]> => {
+  return withLock(async () => {
+    try {
+      const db = await getDatabaseInstance();
+      const result = await getAllWithRetry<Item>(db, 'SELECT * FROM items ORDER BY createdAt DESC', []);
+      console.log(`Retrieved ${result.length} items (including deleted) from database`);
+      return result || [];
+    } catch (error) {
+      console.error('Error fetching all items:', error);
+      databaseInstance = null;
+      return [];
     }
   });
 };
@@ -932,7 +966,8 @@ export const updateItemQuantity = async (id: number, boxSizeQuantities: string, 
       let details = null;
       if (changes.length > 0) {
         // Есть изменение количества
-        details = JSON.stringify({ type: 'update', changes, totalAfter: totalQuantity, totalValueAfter: totalValue });
+        const totalRecommendedValueAfter = computeTotalRecommendedValue(newStr);
+        details = JSON.stringify({ type: 'update', changes, totalAfter: totalQuantity, totalValueAfter: totalValue, totalRecommendedValueAfter });
       } else if (oldStr !== newStr) {
         // Только изменение цены (количество не менялось)
         // Вычисляем старую и новую рекомендованную цену
@@ -1030,7 +1065,8 @@ export const deleteItem = async (id: number): Promise<void> => {
         size: isNaN(Number(s)) ? s : Number(s), // Сохраняем как число если возможно, иначе как строку
         quantity: q as number
       }));
-      const details = JSON.stringify({ type: 'delete', finalSizes: sizes, total: item.totalQuantity, totalValue: item.totalValue });
+      const totalRecommendedValue = computeTotalRecommendedValue(item.boxSizeQuantities);
+      const details = JSON.stringify({ type: 'delete', finalSizes: sizes, total: item.totalQuantity, totalValue: item.totalValue, totalRecommendedValue });
 
       const result = await runWithRetry(db, 'UPDATE items SET isDeleted = 1, needsSync = 1 WHERE id = ?', [id]);
 

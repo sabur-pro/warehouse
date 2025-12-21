@@ -32,7 +32,7 @@ interface DateGroup {
 const HistoryContentNew: React.FC = () => {
   const { isDark } = useTheme();
   const colors = getThemeColors(isDark);
-  
+
   const [dateGroups, setDateGroups] = useState<DateGroup[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -42,41 +42,41 @@ const HistoryContentNew: React.FC = () => {
   const [offset, setOffset] = useState(0);
   const [selectedGroup, setSelectedGroup] = useState<GroupedTransaction | null>(null);
   const [detailsVisible, setDetailsVisible] = useState(false);
-  
+
   // Поиск и фильтрация
   const [searchQuery, setSearchQuery] = useState('');
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [filterDate, setFilterDate] = useState<Date | null>(null);
-  
+
   const { getTransactionsPage, searchTransactions, filterTransactionsByDate } = useDatabase();
 
   // Группировка транзакций по датам
   const groupTransactionsByDate = (txs: Transaction[]): DateGroup[] => {
     const grouped: { [key: string]: { dateObj: Date; transactions: GroupedTransaction[] } } = {};
-    
+
     // Сначала группируем связанные транзакции
     const groupedTxs = groupRelatedTransactions(txs);
-    
+
     // Затем группируем по датам
     groupedTxs.forEach(tx => {
       const date = new Date(tx.timestamp * 1000);
       const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-      
+
       if (!grouped[dateKey]) {
         grouped[dateKey] = {
           dateObj: date,
           transactions: []
         };
       }
-      
+
       grouped[dateKey].transactions.push(tx);
     });
-    
+
     // Конвертируем в массив и сортируем
     const result: DateGroup[] = Object.entries(grouped).map(([dateKey, data]) => {
       const weekDays = ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];
       const weekDay = weekDays[data.dateObj.getDay()];
-      
+
       return {
         date: dateKey,
         dateObj: data.dateObj,
@@ -84,7 +84,7 @@ const HistoryContentNew: React.FC = () => {
         transactions: data.transactions.sort((a, b) => b.timestamp - a.timestamp)
       };
     });
-    
+
     return result.sort((a, b) => b.dateObj.getTime() - a.dateObj.getTime());
   };
 
@@ -92,31 +92,31 @@ const HistoryContentNew: React.FC = () => {
     // Создаем карту всех транзакций для быстрого поиска
     const txMap = new Map<number, Transaction>();
     txs.forEach(tx => txMap.set(tx.id, tx));
-    
+
     const result: GroupedTransaction[] = [];
     const processedIds = new Set<number>();
-    
+
     for (let i = 0; i < txs.length; i++) {
       if (processedIds.has(txs[i].id)) continue;
-      
+
       const currentTx = txs[i];
       const relatedTransactions: Transaction[] = [currentTx];
       processedIds.add(currentTx.id);
-      
+
       // Ищем ВСЕ связанные транзакции с тем же itemId и близким временем
       for (let j = 0; j < txs.length; j++) {
         if (i === j || processedIds.has(txs[j].id)) continue;
-        
+
         const otherTx = txs[j];
-        
+
         // Проверяем: тот же товар + время в пределах 5 секунд
-        if (otherTx.itemId === currentTx.itemId && 
-            Math.abs(otherTx.timestamp - currentTx.timestamp) < 5) {
+        if (otherTx.itemId === currentTx.itemId &&
+          Math.abs(otherTx.timestamp - currentTx.timestamp) < 5) {
           relatedTransactions.push(otherTx);
           processedIds.add(otherTx.id);
         }
       }
-      
+
       // Сортируем связанные транзакции по приоритету (sale/wholesale сначала)
       relatedTransactions.sort((a, b) => {
         const priority = { wholesale: 0, sale: 1, update: 2, create: 3, delete: 4 };
@@ -124,7 +124,7 @@ const HistoryContentNew: React.FC = () => {
         const bPriority = priority[b.action] ?? 5;
         return aPriority - bPriority;
       });
-      
+
       if (relatedTransactions.length > 1) {
         result.push({
           id: `group-${relatedTransactions.map(t => t.id).join('-')}`,
@@ -143,18 +143,18 @@ const HistoryContentNew: React.FC = () => {
         });
       }
     }
-    
+
     return result;
   };
 
   const loadTransactions = useCallback(async (isLoadMore = false, isRefresh = false) => {
     if (isLoadMore && loadingMore) return;
     if (isRefresh && refreshing) return;
-    
+
     const hasSearch = searchQuery.trim().length > 0;
     const hasDateFilter = filterDate !== null;
     console.log('Loading transactions, hasSearch:', hasSearch, 'hasDateFilter:', hasDateFilter, 'isLoadMore:', isLoadMore, 'offset:', offset);
-    
+
     if (!isLoadMore && !isRefresh) {
       setInitialLoading(true);
       setOffset(0);
@@ -164,27 +164,27 @@ const HistoryContentNew: React.FC = () => {
       setRefreshing(true);
       setOffset(0);
     }
-    
+
     try {
       const currentOffset = isLoadMore ? offset : 0;
       let result: { transactions: Transaction[]; hasMore: boolean };
-      
+
       const hasSearch = searchQuery.trim().length > 0;
       const hasDateFilter = filterDate !== null;
-      
+
       // Комбинированный фильтр: поиск + дата
       if (hasSearch && hasDateFilter) {
         const startOfDay = new Date(filterDate);
         startOfDay.setHours(0, 0, 0, 0);
         const endOfDay = new Date(filterDate);
         endOfDay.setHours(23, 59, 59, 999);
-        
+
         const startTimestamp = Math.floor(startOfDay.getTime() / 1000);
         const endTimestamp = Math.floor(endOfDay.getTime() / 1000);
-        
+
         // Сначала фильтруем по дате, потом по поиску на клиенте
         const dateResult = await filterTransactionsByDate(startTimestamp, endTimestamp, 1000, 0);
-        const filtered = dateResult.transactions.filter(tx => 
+        const filtered = dateResult.transactions.filter(tx =>
           tx.itemName.toLowerCase().includes(searchQuery.trim().toLowerCase())
         );
         const paginated = filtered.slice(currentOffset, currentOffset + ITEM_LIMIT);
@@ -199,23 +199,23 @@ const HistoryContentNew: React.FC = () => {
         startOfDay.setHours(0, 0, 0, 0);
         const endOfDay = new Date(filterDate);
         endOfDay.setHours(23, 59, 59, 999);
-        
+
         const startTimestamp = Math.floor(startOfDay.getTime() / 1000);
         const endTimestamp = Math.floor(endOfDay.getTime() / 1000);
-        
+
         result = await filterTransactionsByDate(startTimestamp, endTimestamp, ITEM_LIMIT, currentOffset);
       } else {
         result = await getTransactionsPage(ITEM_LIMIT, currentOffset);
       }
-      
+
       console.log('Received', result.transactions.length, 'transactions, hasMore:', result.hasMore);
-      
+
       const allTransactions = (isLoadMore && !isRefresh) ? [...transactions, ...result.transactions] : result.transactions;
       setTransactions(allTransactions);
-      
+
       const grouped = groupTransactionsByDate(allTransactions);
       setDateGroups(grouped);
-      
+
       if (!isLoadMore || isRefresh) {
         setOffset(result.transactions.length);
       } else {
@@ -312,7 +312,7 @@ const HistoryContentNew: React.FC = () => {
 
   const renderDateHeader = (dateGroup: DateGroup) => {
     const formattedDate = `${dateGroup.dateObj.getDate()} ${getMonthName(dateGroup.dateObj.getMonth())} ${dateGroup.dateObj.getFullYear()}`;
-    
+
     return (
       <View style={[styles.dateHeader, { borderBottomColor: isDark ? colors.primary.gold : '#10b981' }]}>
         <Text style={[styles.dateText, { color: colors.text.normal }]}>{formattedDate}</Text>
@@ -324,10 +324,10 @@ const HistoryContentNew: React.FC = () => {
   const renderTransactionItem = (item: GroupedTransaction) => {
     let mainAction = item.transactions[0].action;
     let actionText = getActionText(mainAction);
-    
+
     let isPriceUpdate = false;
     let isRegularUpdate = false;
-    
+
     // СНАЧАЛА проверяем grouped транзакции (приоритет у продажи!)
     if (item.type === 'grouped') {
       const wholesaleTx = item.transactions.find(tx => tx.action === 'wholesale');
@@ -344,7 +344,7 @@ const HistoryContentNew: React.FC = () => {
         }
         return false;
       });
-      
+
       if (wholesaleTx) {
         mainAction = 'wholesale';
         actionText = 'Продажа оптом';
@@ -363,13 +363,13 @@ const HistoryContentNew: React.FC = () => {
           isRegularUpdate = true;
           actionText = 'Обновление';
         }
-      } catch {}
+      } catch { }
     }
-    
+
     // Получаем иконку и цвет
     let icon: keyof typeof MaterialIcons.glyphMap;
     let color: string;
-    
+
     if (isPriceUpdate) {
       icon = 'edit';
       color = '#3b82f6';
@@ -386,7 +386,7 @@ const HistoryContentNew: React.FC = () => {
     return (
       <TouchableOpacity onPress={() => handleTransactionPress(item)} activeOpacity={0.7}>
         <View style={[
-          styles.transactionItem, 
+          styles.transactionItem,
           { backgroundColor: colors.background.card },
           item.type === 'grouped' && styles.groupedTransactionItem
         ]}>
@@ -397,7 +397,7 @@ const HistoryContentNew: React.FC = () => {
             <Text style={[styles.actionText, { color: colors.text.normal }]}>{actionText}</Text>
             <Text style={[styles.itemName, { color: colors.text.muted }]} numberOfLines={1}>{item.transactions[0].itemName}</Text>
             <Text style={[styles.details, { color: colors.text.muted }]} numberOfLines={1}>
-              {item.transactions.length > 1 
+              {item.transactions.length > 1
                 ? (mainAction === 'wholesale' ? 'Оптовая продажа и обновление' : 'Продажа и обновление') + ` - ${item.transactions.length} действия`
                 : parseDetailsType(item.transactions[0].details)
               }
@@ -436,7 +436,7 @@ const HistoryContentNew: React.FC = () => {
     const hasSearch = searchQuery.trim().length > 0;
     const hasDateFilter = filterDate !== null;
     const hasFilters = hasSearch || hasDateFilter;
-    
+
     return (
       <View style={styles.emptyContainer}>
         <MaterialIcons name="history" size={64} color={isDark ? '#4a4a4a' : '#d1d5db'} />
@@ -462,11 +462,11 @@ const HistoryContentNew: React.FC = () => {
   return (
     <View style={styles.container}>
       {/* Панель поиска и фильтров */}
-      <View style={[styles.searchContainer, { 
+      <View style={[styles.searchContainer, {
         backgroundColor: colors.background.card,
         borderBottomColor: colors.border.normal
       }]}>
-        <View style={[styles.searchInputContainer, { 
+        <View style={[styles.searchInputContainer, {
           backgroundColor: isDark ? colors.background.light : '#f3f4f6'
         }]}>
           <MaterialIcons name="search" size={20} color={colors.text.muted} style={styles.searchIcon} />
@@ -485,17 +485,17 @@ const HistoryContentNew: React.FC = () => {
             </TouchableOpacity>
           )}
         </View>
-        
-        <TouchableOpacity 
-          onPress={() => setShowDatePicker(true)} 
-          style={[styles.filterButton, { 
+
+        <TouchableOpacity
+          onPress={() => setShowDatePicker(true)}
+          style={[styles.filterButton, {
             backgroundColor: isDark ? colors.background.light : '#f3f4f6'
           }]}
         >
-          <MaterialIcons 
-            name="event" 
-            size={24} 
-            color={filterDate ? (isDark ? colors.primary.gold : '#10b981') : colors.text.muted} 
+          <MaterialIcons
+            name="event"
+            size={24}
+            color={filterDate ? (isDark ? colors.primary.gold : '#10b981') : colors.text.muted}
           />
         </TouchableOpacity>
       </View>
@@ -504,10 +504,10 @@ const HistoryContentNew: React.FC = () => {
       {(searchQuery.trim().length > 0 || filterDate !== null) && (
         <View style={[styles.activeFiltersContainer, { backgroundColor: colors.background.screen }]}>
           {searchQuery.trim().length > 0 && (
-            <View style={[styles.filterChip, { 
+            <View style={[styles.filterChip, {
               backgroundColor: isDark ? 'rgba(212, 175, 55, 0.2)' : '#d1fae5'
             }]}>
-              <Text style={[styles.filterChipText, { 
+              <Text style={[styles.filterChipText, {
                 color: isDark ? colors.primary.gold : '#065f46'
               }]}>Поиск: {searchQuery}</Text>
               <TouchableOpacity onPress={handleClearSearch}>
@@ -516,10 +516,10 @@ const HistoryContentNew: React.FC = () => {
             </View>
           )}
           {filterDate && (
-            <View style={[styles.filterChip, { 
+            <View style={[styles.filterChip, {
               backgroundColor: isDark ? 'rgba(212, 175, 55, 0.2)' : '#d1fae5'
             }]}>
-              <Text style={[styles.filterChipText, { 
+              <Text style={[styles.filterChipText, {
                 color: isDark ? colors.primary.gold : '#065f46'
               }]}>
                 Дата: {filterDate.getDate()} {getMonthName(filterDate.getMonth())}
@@ -641,6 +641,12 @@ const parseDetailsType = (details: string | null | undefined): string => {
       return `Создание - ${parsed.initialSizes?.length || 0} размеров`;
     } else if (parsed.type === 'delete') {
       return `Удаление - ${parsed.finalSizes?.length || 0} размеров`;
+    } else if (parsed.type === 'admin_approved_delete') {
+      const itemName = parsed.deletedItem?.name || 'товар';
+      return `Удаление одобрено админом - ${itemName}`;
+    } else if (parsed.type === 'admin_approved_update') {
+      const changedFields = parsed.newData ? Object.keys(parsed.newData).length : 0;
+      return `Обновление одобрено админом - ${changedFields} полей`;
     }
     return parsed.type ? `${parsed.type}` : 'Детали';
   } catch {

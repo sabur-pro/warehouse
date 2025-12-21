@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react';
 import { useDatabase } from '../../hooks/useDatabase';
 import { StatisticsService, StatisticsCalculation, PeriodStatistics } from '../services/StatisticsService';
-import { Transaction } from '../../database/types';
+import { Item, Transaction } from '../../database/types';
 
 export type PeriodType = 'daily' | '3day' | 'weekly' | 'monthly' | 'yearly' | 'custom_date' | 'custom_month' | 'custom_year';
 
@@ -15,8 +15,9 @@ export const useStatistics = (selectedPeriod: PeriodType = 'daily', customDate?:
   const [statistics, setStatistics] = useState<StatisticsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  
-  const { getItemsPage, getTransactionsPage, getDistinctWarehouses } = useDatabase();
+
+  const { getItemsPage, getAllItems, getTransactionsPage, getDistinctWarehouses } = useDatabase();
+  const [allItems, setAllItems] = useState<Item[]>([]); // Added allItems state
 
   const getPeriodTimestamps = (period: PeriodType, date?: Date): { start: number; end: number } => {
     const now = Date.now();
@@ -90,19 +91,23 @@ export const useStatistics = (selectedPeriod: PeriodType = 'daily', customDate?:
     try {
       setLoading(true);
       setError(null);
-      
-      // Получаем все товары для подсчета общей статистики
-      const { items } = await getItemsPage(10000, 0, '', 'Все');
-      
+
+      // Получаем все товары (включая удаленные) для корректного маппинга в статистике
+      const fetchedAllItems = await getAllItems();
+      setAllItems(fetchedAllItems);
+
+      // Получаем активные товары для подсчета текущих запасов
+      const { items: activeItems } = await getItemsPage(10000, 0, '', 'Все');
+
       // Получаем все транзакции (или достаточно большое количество)
-      const { transactions } = await getTransactionsPage(10000, 0);
-      
-      // Получаем склады
+      const { transactions } = await getTransactionsPage(50000, 0);
+
+      // Получаем список складов
       const warehouses = await getDistinctWarehouses();
-      
+
       // Используем сервис для вычисления общей статистики
       const calculatedStats = StatisticsService.calculateStatistics(
-        items,
+        activeItems,
         transactions,
         warehouses.length
       );
@@ -113,7 +118,7 @@ export const useStatistics = (selectedPeriod: PeriodType = 'daily', customDate?:
         transactions,
         start,
         end,
-        items
+        fetchedAllItems // Используем все товары для маппинга
       );
 
       setStatistics({

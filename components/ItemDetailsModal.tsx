@@ -16,6 +16,8 @@ import { CreateQRModal } from './CreateQRModal';
 import { useTheme } from '../src/contexts/ThemeContext';
 import { getThemeColors, colors as defaultColors } from '../constants/theme';
 import { createQRCodesForItem } from '../utils/qrCodeUtils';
+import SyncService from '../src/services/SyncService';
+import NetInfo from '@react-native-community/netinfo';
 
 interface ItemDetailsModalProps {
   item: Item;
@@ -338,6 +340,63 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
       const newTotalValue = newBoxSizeQuantities.reduce((total, box) => total + box.reduce((sum, sq) => sum + sq.quantity * sq.price, 0), 0);
       const newBoxJson = JSON.stringify(newBoxSizeQuantities);
 
+      // Для ассистентов - отправляем заявку на изменение
+      if (isAssistant()) {
+        // Проверяем подключение к интернету
+        const netState = await NetInfo.fetch();
+        if (!netState.isConnected) {
+          Alert.alert('Нет подключения', 'Это действие требует подключения к интернету.');
+          return;
+        }
+
+        // Проверяем, что товар синхронизирован с сервером
+        if (!currentItem.serverId) {
+          Alert.alert('Ошибка', 'Товар еще не синхронизирован с сервером. Пожалуйста, дождитесь синхронизации.');
+          return;
+        }
+
+        const oldData = {
+          id: currentItem.id,
+          name: currentItem.name,
+          code: currentItem.code,
+          warehouse: currentItem.warehouse,
+          numberOfBoxes: currentItem.numberOfBoxes,
+          row: currentItem.row,
+          position: currentItem.position,
+          side: currentItem.side,
+          boxSizeQuantities: currentItem.boxSizeQuantities,
+          totalQuantity: currentItem.totalQuantity,
+          totalValue: currentItem.totalValue,
+        };
+
+        const newData = {
+          id: currentItem.id,
+          name: editedName,
+          code: editedCode,
+          warehouse: editedWarehouse,
+          numberOfBoxes: editedNumberOfBoxes,
+          row: editedRow,
+          position: editedPosition,
+          side: editedSide,
+          boxSizeQuantities: newBoxJson,
+          totalQuantity: newTotalQuantity,
+          totalValue: newTotalValue,
+        };
+
+        await SyncService.requestApproval(
+          'UPDATE_ITEM',
+          currentItem.serverId,
+          oldData,
+          newData,
+          'Запрос на изменение товара'
+        );
+
+        setIsEditing(false);
+        Alert.alert('Успех', 'Заявка на изменение отправлена администратору');
+        return;
+      }
+
+      // Для админов - прямое изменение
       await updateItem(updatedBasic);
       await updateItemQuantity(currentItem.id, newBoxJson, newTotalQuantity, newTotalValue);
 
@@ -369,9 +428,10 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
       onItemUpdated(finalItem);
       setIsEditing(false);
       Alert.alert('Успех', 'Данные товара успешно обновлены');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error updating item:', error);
-      Alert.alert('Ошибка', 'Не удалось обновить данные товара');
+      const message = error.response?.data?.message || error.message || 'Ошибка';
+      Alert.alert('Ошибка', `Не удалось обновить данные товара: ${message}`);
     } finally {
       setIsLoading(false);
     }
@@ -439,6 +499,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
         timestamp: Math.floor(Date.now() / 1000),
         details: JSON.stringify({
           type: 'sale',
+          itemType: currentItem.itemType,
           sale: {
             size: currentSize,
             quantity: 1,
@@ -573,6 +634,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
         timestamp: Math.floor(Date.now() / 1000),
         details: JSON.stringify({
           type: 'wholesale',
+          itemType: currentItem.itemType,
           wholesale: {
             boxes: wholesaleBoxes,
             totalBoxes: wholesaleBoxes.length,
@@ -650,6 +712,66 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
       Alert.alert('Ошибка', 'ID товара отсутствует');
       return;
     }
+
+    // Для ассистентов - отправляем заявку на удаление
+    if (isAssistant()) {
+      Alert.alert(
+        'Запрос на удаление',
+        `Отправить заявку на удаление товара "${currentItem.name}" администратору?`,
+        [
+          { text: 'Отмена', style: 'cancel' },
+          {
+            text: 'Отправить',
+            onPress: async () => {
+              setIsLoading(true);
+              try {
+                // Проверяем подключение к интернету
+                const netState = await NetInfo.fetch();
+                if (!netState.isConnected) {
+                  Alert.alert('Нет подключения', 'Это действие требует подключения к интернету.');
+                  setIsLoading(false);
+                  return;
+                }
+
+                // Проверяем, что товар синхронизирован с сервером
+                if (!currentItem.serverId) {
+                  Alert.alert('Ошибка', 'Товар еще не синхронизирован с сервером. Пожалуйста, дождитесь синхронизации.');
+                  setIsLoading(false);
+                  return;
+                }
+
+                const oldData = {
+                  id: currentItem.id,
+                  serverId: currentItem.serverId,
+                  name: currentItem.name,
+                  code: currentItem.code,
+                  warehouse: currentItem.warehouse,
+                  totalQuantity: currentItem.totalQuantity,
+                };
+                await SyncService.requestApproval(
+                  'DELETE_ITEM',
+                  currentItem.serverId,
+                  oldData,
+                  {}, // newData пустое для удаления
+                  'Запрос на удаление товара'
+                );
+                Alert.alert('Успех', 'Заявка на удаление отправлена администратору');
+                onClose();
+              } catch (error: any) {
+                console.error('Error requesting delete approval:', error);
+                const message = error.response?.data?.message || error.message || 'Ошибка';
+                Alert.alert('Ошибка', `Не удалось отправить заявку: ${message}`);
+              } finally {
+                setIsLoading(false);
+              }
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    // Для админов - прямое удаление
     Alert.alert(
       'Удаление товара',
       `Вы уверены, что хотите удалить товар "${currentItem.name}"?`,

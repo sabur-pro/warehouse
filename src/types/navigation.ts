@@ -10,6 +10,7 @@ export type RootTabParamList = {
 export type ProfileStackParamList = {
   ProfileMain: undefined;
   Subscription: undefined;
+  PendingActions: undefined;
 };
 
 export type AuthStackParamList = {

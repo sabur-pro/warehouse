@@ -21,7 +21,7 @@ import { getThemeColors } from '../../constants/theme';
 import { useDatabase, ImportResult } from '../../hooks/useDatabase';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { 
+import {
   streamingExportDatabase,
   StreamingExportProgress,
 } from '../../database/streamingImportExport';
@@ -41,27 +41,27 @@ export default function ProfileScreen() {
   const [showSettings, setShowSettings] = useState(false);
   const [showAddAssistant, setShowAddAssistant] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  
+
   // Database operations
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [exportProgress, setExportProgress] = useState<StreamingExportProgress | null>(null);
   const [showStreamingExport, setShowStreamingExport] = useState(false);
-  
+
   // Assistants
   const [assistants, setAssistants] = useState<Assistant[]>([]);
   const [loadingAssistants, setLoadingAssistants] = useState(false);
   const [addingAssistant, setAddingAssistant] = useState(false);
-  
+
   // Subscription
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [loadingSubscription, setLoadingSubscription] = useState(false);
-  
+
   // Add assistant form
   const [assistantLogin, setAssistantLogin] = useState('');
   const [assistantPassword, setAssistantPassword] = useState('');
   const [assistantPhone, setAssistantPhone] = useState('');
-  
+
   const {
     clearDatabase,
     exportDatabase,
@@ -95,7 +95,7 @@ export default function ProfileScreen() {
         useNativeDriver: true,
       }),
     ]).start();
-    
+
     if (isAdmin()) {
       loadAssistants();
       loadSubscription();
@@ -153,16 +153,16 @@ export default function ProfileScreen() {
         password: assistantPassword,
         phone: assistantPhone,
       });
-      
+
       // Сохраняем токены ассистента для будущего переключения
       await saveAssistantTokens(assistantLogin, response.access_token, response.refresh_token);
-      
+
       Alert.alert('Успешно', 'Ассистент создан');
       setShowAddAssistant(false);
       setAssistantLogin('');
       setAssistantPassword('');
       setAssistantPhone('');
-      
+
       // Обновляем список
       await loadAssistants();
     } catch (error: any) {
@@ -178,13 +178,13 @@ export default function ProfileScreen() {
       const AsyncStorage = require('@react-native-async-storage/async-storage').default;
       const assistantsTokens = await AsyncStorage.getItem('assistants_tokens');
       const tokens = assistantsTokens ? JSON.parse(assistantsTokens) : {};
-      
+
       tokens[login] = {
         access_token: accessToken,
         refresh_token: refreshToken,
         saved_at: new Date().toISOString(),
       };
-      
+
       await AsyncStorage.setItem('assistants_tokens', JSON.stringify(tokens));
     } catch (error) {
       console.error('Save assistant tokens error:', error);
@@ -226,13 +226,13 @@ export default function ProfileScreen() {
       setIsExporting(true);
       setShowStreamingExport(true);
       setExportProgress({ stage: 'preparing', current: 0, total: 100, message: 'Подготовка...' });
-      
+
       const folderPath = await streamingExportDatabase((progress) => {
         setExportProgress(progress);
       });
-      
+
       Alert.alert(
-        'Экспорт завершен!', 
+        'Экспорт завершен!',
         `Данные сохранены в папку:\n${folderPath}\n\nДля больших файлов рекомендуем заархивировать папку через файловый менеджер.`,
         [{ text: 'ОК', onPress: () => setShowStreamingExport(false) }]
       );
@@ -443,7 +443,7 @@ export default function ProfileScreen() {
           >
             <View style={styles.avatarContainer}>
               <Text style={styles.avatarText}>
-                {user.role === 'ASSISTANT' 
+                {user.role === 'ASSISTANT'
                   ? (user.login?.[0] || 'A').toUpperCase()
                   : (user.gmail?.[0] || 'U').toUpperCase()
                 }
@@ -453,10 +453,10 @@ export default function ProfileScreen() {
               {user.role === 'ASSISTANT' ? user.login : user.gmail}
             </Text>
             <View style={styles.roleBadge}>
-              <MaterialIcons 
-                name={user.role === 'ASSISTANT' ? 'person' : 'verified-user'} 
-                size={16} 
-                color="#fff" 
+              <MaterialIcons
+                name={user.role === 'ASSISTANT' ? 'person' : 'verified-user'}
+                size={16}
+                color="#fff"
               />
               <Text style={styles.roleText}>{user.role === 'ASSISTANT' ? 'Ассистент' : 'Администратор'}</Text>
             </View>
@@ -466,6 +466,15 @@ export default function ProfileScreen() {
         <View style={[styles.content, { backgroundColor: colors.background.screen }]}>
           {/* Быстрые действия */}
           <View style={styles.quickActions}>
+            {isAdmin() && (
+              <TouchableOpacity
+                style={[styles.quickAction, { backgroundColor: colors.background.card }]}
+                onPress={() => navigation.navigate('PendingActions' as any)}
+              >
+                <MaterialIcons name="assignment" size={24} color="#f59e0b" />
+                <Text style={[styles.quickActionText, { color: colors.text.normal }]}>Заявки</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
               style={[styles.quickAction, { backgroundColor: colors.background.card }]}
               onPress={() => setShowSettings(true)}
@@ -497,7 +506,7 @@ export default function ProfileScreen() {
               <Text style={[styles.sectionTitle, { color: colors.text.normal }]}>
                 <MaterialIcons name="people" size={20} color={colors.primary.blue} /> Ассистенты
               </Text>
-              
+
               {loadingAssistants ? (
                 <ActivityIndicator color={colors.primary.blue} style={{ marginVertical: 20 }} />
               ) : (
@@ -531,20 +540,20 @@ export default function ProfileScreen() {
                   end={{ x: 1, y: 1 }}
                 >
                   <View style={styles.subscriptionHeader}>
-                    <View style={[styles.premiumIconContainer, { 
+                    <View style={[styles.premiumIconContainer, {
                       backgroundColor: isDark ? 'rgba(212, 175, 55, 0.15)' : 'rgba(147, 51, 234, 0.1)'
                     }]}>
-                      <MaterialIcons 
-                        name="workspace-premium" 
-                        size={32} 
-                        color={isDark ? colors.primary.gold : colors.primary.purple} 
+                      <MaterialIcons
+                        name="workspace-premium"
+                        size={32}
+                        color={isDark ? colors.primary.gold : colors.primary.purple}
                       />
                     </View>
                     <Text style={[styles.subscriptionHeaderTitle, { color: colors.text.normal }]}>
                       Премиум Подписка
                     </Text>
                   </View>
-                  
+
                   <View
                     style={[
                       styles.statusBadge,
@@ -563,13 +572,13 @@ export default function ProfileScreen() {
 
                   <View style={styles.subscriptionDetails}>
                     <View style={styles.detailRow}>
-                      <View style={[styles.detailIconContainer, { 
+                      <View style={[styles.detailIconContainer, {
                         backgroundColor: isDark ? 'rgba(59, 188, 255, 0.15)' : 'rgba(59, 130, 246, 0.1)'
                       }]}>
-                        <MaterialIcons 
-                          name="calendar-today" 
-                          size={18} 
-                          color={isDark ? colors.primary.blue : colors.primary.blue} 
+                        <MaterialIcons
+                          name="calendar-today"
+                          size={18}
+                          color={isDark ? colors.primary.blue : colors.primary.blue}
                         />
                       </View>
                       <View style={styles.detailTextContainer}>
@@ -579,13 +588,13 @@ export default function ProfileScreen() {
                     </View>
 
                     <View style={styles.detailRow}>
-                      <View style={[styles.detailIconContainer, { 
+                      <View style={[styles.detailIconContainer, {
                         backgroundColor: isDark ? 'rgba(154, 111, 232, 0.15)' : 'rgba(147, 51, 234, 0.1)'
                       }]}>
-                        <MaterialIcons 
-                          name="event" 
-                          size={18} 
-                          color={isDark ? colors.primary.purple : colors.primary.purple} 
+                        <MaterialIcons
+                          name="event"
+                          size={18}
+                          color={isDark ? colors.primary.purple : colors.primary.purple}
                         />
                       </View>
                       <View style={styles.detailTextContainer}>
@@ -595,13 +604,13 @@ export default function ProfileScreen() {
                     </View>
 
                     <View style={styles.detailRow}>
-                      <View style={[styles.detailIconContainer, { 
+                      <View style={[styles.detailIconContainer, {
                         backgroundColor: isDark ? 'rgba(212, 175, 55, 0.15)' : 'rgba(147, 51, 234, 0.1)'
                       }]}>
-                        <MaterialIcons 
-                          name="payments" 
-                          size={18} 
-                          color={isDark ? colors.primary.gold : colors.primary.purple} 
+                        <MaterialIcons
+                          name="payments"
+                          size={18}
+                          color={isDark ? colors.primary.gold : colors.primary.purple}
                         />
                       </View>
                       <View style={styles.detailTextContainer}>
@@ -618,8 +627,8 @@ export default function ProfileScreen() {
                 onPress={() => navigation.navigate('Subscription' as any)}
               >
                 <LinearGradient
-                  colors={isDark 
-                    ? ['#2d2d2d', '#3a3528'] 
+                  colors={isDark
+                    ? ['#2d2d2d', '#3a3528']
                     : ['#3b82f6', '#8b5cf6']
                   }
                   style={styles.subscriptionGradient}
@@ -627,8 +636,8 @@ export default function ProfileScreen() {
                   end={{ x: 1, y: 1 }}
                 >
                   <View style={styles.subscriptionContent}>
-                    <View style={[styles.subscriptionIconContainer, { 
-                      backgroundColor: 'rgba(255, 255, 255, 0.2)' 
+                    <View style={[styles.subscriptionIconContainer, {
+                      backgroundColor: 'rgba(255, 255, 255, 0.2)'
                     }]}>
                       <MaterialIcons name="workspace-premium" size={32} color="#fff" />
                     </View>
@@ -757,7 +766,7 @@ export default function ProfileScreen() {
 
           <ScrollView style={[styles.modalContent, { backgroundColor: colors.background.screen }]}>
             <Text style={[styles.modalSectionTitle, { color: colors.text.normal }]}>Внешний вид</Text>
-            
+
             <View style={[styles.settingItem, { backgroundColor: colors.background.card, borderColor: colors.border.light }]}>
               <View style={[styles.settingIconContainer, { backgroundColor: isDark ? 'rgba(212, 175, 55, 0.2)' : `${colors.primary.purple}20` }]}>
                 <MaterialIcons name={isDark ? "dark-mode" : "light-mode"} size={24} color={isDark ? colors.primary.gold : colors.primary.purple} />
@@ -780,7 +789,7 @@ export default function ProfileScreen() {
             </View>
 
             <Text style={[styles.modalSectionTitle, { color: colors.text.normal }]}>Данные</Text>
-            
+
             <SettingItem
               icon="file-download"
               title="Экспорт данных"
@@ -788,7 +797,7 @@ export default function ProfileScreen() {
               onPress={handleExport}
               color="#3b82f6"
             />
-            
+
             <SettingItem
               icon="file-upload"
               title="Импорт данных"
@@ -796,9 +805,9 @@ export default function ProfileScreen() {
               onPress={handleImport}
               color="#8b5cf6"
             />
-            
+
             <Text style={[styles.modalSectionTitle, { color: colors.text.normal }]}>Очистка</Text>
-            
+
             <SettingItem
               icon="delete-sweep"
               title="Очистить историю"
@@ -806,7 +815,7 @@ export default function ProfileScreen() {
               onPress={handleClearHistory}
               color="#f59e0b"
             />
-            
+
             <SettingItem
               icon="delete-forever"
               title="Очистить базу данных"

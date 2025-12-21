@@ -5,6 +5,7 @@ import {
   initDatabase,
   addItem,
   getItems,
+  getAllItems,
   updateItemQuantity,
   clearDatabase,
   closeDatabase,
@@ -37,6 +38,7 @@ export type ImportResult = { imported: boolean; message?: string; itemsWithoutPr
 export interface DatabaseContextType {
   addItem: (item: Omit<Item, 'id' | 'createdAt'>) => Promise<void>;
   getItems: () => Promise<Item[]>;
+  getAllItems: () => Promise<Item[]>;
   getItemsPage: (limit: number, offset: number, searchTerm?: string, warehouse?: string, itemType?: 'all' | 'обувь' | 'одежда') => Promise<{ items: Item[]; hasMore: boolean }>;
   getDistinctWarehouses: () => Promise<string[]>;
   updateItemQuantity: (id: number, boxSizeQuantities: string, totalQuantity: number, totalValue: number) => Promise<void>;
@@ -116,6 +118,16 @@ export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         return await getItems();
       } catch (error) {
         console.error('Error in getItems:', error);
+        throw error;
+      }
+    },
+
+    getAllItems: async () => {
+      if (!dbInitialized) throw new Error('Database not initialized');
+      try {
+        return await getAllItems();
+      } catch (error) {
+        console.error('Error in getAllItems:', error);
         throw error;
       }
     },
@@ -284,11 +296,6 @@ export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     },
 
-    /**
-     * Возвращаем явно ImportResult.
-     * Здесь мы мы просто оборачиваем pickZipAndImport (из importExport.ts), 
-     * гарантирую корректный тип результата.
-     */
     pickAndImportZip: async (): Promise<ImportResult> => {
       if (!dbInitialized) throw new Error('Database not initialized');
       try {
