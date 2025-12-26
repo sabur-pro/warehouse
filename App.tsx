@@ -7,7 +7,12 @@ import { AuthProvider } from './src/contexts/AuthContext';
 import { ThemeProvider, useTheme } from './src/contexts/ThemeContext';
 import { SyncRefreshProvider } from './src/components/sync/SyncStatusBar';
 import RootNavigator from './src/navigation/RootNavigator';
+import LogService from './src/services/LogService';
 import './global.css';
+
+// Инициализируем LogService сразу при загрузке модуля
+LogService.initialize();
+
 
 function AppContent() {
   const { isDark } = useTheme();

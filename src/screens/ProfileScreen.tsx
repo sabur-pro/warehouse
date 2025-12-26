@@ -29,6 +29,7 @@ import {
 import AssistantService, { Assistant } from '../services/AssistantService';
 import SubscriptionService, { Subscription } from '../services/SubscriptionService';
 import { useSyncRefresh } from '../components/sync/SyncStatusBar';
+import LogService from '../services/LogService';
 
 type ProfileStackParamList = {
   ProfileMain: undefined;
@@ -319,6 +320,19 @@ export default function ProfileScreen() {
         }
       ]
     );
+  };
+
+  const handleShareLogs = async () => {
+    try {
+      const logsCount = LogService.getLogsCount();
+      if (logsCount === 0) {
+        Alert.alert('Нет логов', 'Логи пока не были записаны');
+        return;
+      }
+      await LogService.shareLogsFile();
+    } catch (error: any) {
+      Alert.alert('Ошибка', error.message || 'Не удалось экспортировать логи');
+    }
   };
 
   const handleSignOut = () => {
@@ -814,6 +828,14 @@ export default function ProfileScreen() {
               description="Загрузить данные из ZIP файла"
               onPress={handleImport}
               color="#8b5cf6"
+            />
+
+            <SettingItem
+              icon="bug-report"
+              title="Скачать логи"
+              description="Экспорт логов для отладки"
+              onPress={handleShareLogs}
+              color="#10b981"
             />
 
             <Text style={[styles.modalSectionTitle, { color: colors.text.normal }]}>Очистка</Text>

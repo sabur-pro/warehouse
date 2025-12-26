@@ -1,6 +1,6 @@
 import AuthService from './AuthService';
 import ImageService from './ImageService';
-import { getDatabaseInstance, runWithRetry, getAllWithRetry, getFirstWithRetry, clearDatabase } from '../../database/database';
+import { getDatabaseInstance, runWithRetry, getAllWithRetry, getFirstWithRetry, clearDatabase, markLegacyDataForSync } from '../../database/database';
 
 interface SyncItem {
   localId?: number;
@@ -56,6 +56,35 @@ class SyncService {
   // Callback для прогресса sync
   private onSyncProgress: ((progress: SyncProgress) => void) | null = null;
 
+  // ===== MUTEX для предотвращения параллельных синхронизаций =====
+  private isSyncing = false;
+  private syncQueue: (() => Promise<void>)[] = [];
+
+  /**
+   * Проверить идёт ли синхронизация
+   */
+  isSyncInProgress(): boolean {
+    return this.isSyncing;
+  }
+
+  /**
+   * Выполнить операцию синхронизации с мьютексом
+   * Если уже идёт синхронизация - пропускаем
+   */
+  private async withSyncLock<T>(operation: () => Promise<T>): Promise<T | null> {
+    if (this.isSyncing) {
+      console.log('⏳ Sync already in progress, skipping...');
+      return null;
+    }
+
+    this.isSyncing = true;
+    try {
+      return await operation();
+    } finally {
+      this.isSyncing = false;
+    }
+  }
+
   /**
    * Установить callback для отслеживания прогресса синхронизации
    */
@@ -110,9 +139,19 @@ class SyncService {
   }
 
   /**
-   * Push изменений от ассистента на сервер (с пакетной обработкой)
+   * Push изменений от ассистента на сервер (с защитой от параллельного выполнения)
    */
   async assistantPush(): Promise<void> {
+    const result = await this.withSyncLock(() => this._assistantPushInternal());
+    if (result === null) {
+      console.log('⏳ assistantPush skipped - sync already in progress');
+    }
+  }
+
+  /**
+   * Push изменений от ассистента на сервер (с пакетной обработкой) - внутренний метод
+   */
+  private async _assistantPushInternal(): Promise<void> {
     const accessToken = await AuthService.getAccessToken();
     if (!accessToken) {
       console.warn('No access token, skipping sync');
@@ -124,6 +163,21 @@ class SyncService {
 
     try {
       console.log('🔄 Starting assistant push sync (batch mode)...');
+
+      // 0. МИГРАЦИЯ: Пометить старые данные для синхронизации
+      // Это нужно для устройств, где sync колонки уже существовали, но данные не были помечены
+      const legacyResult = await markLegacyDataForSync();
+      if (legacyResult.itemsMarked > 0 || legacyResult.transactionsMarked > 0) {
+        console.log(`📋 Legacy data marked for sync: ${legacyResult.itemsMarked} items, ${legacyResult.transactionsMarked} transactions`);
+        if (this.onSyncProgress) {
+          this.onSyncProgress({
+            phase: 'syncing_items',
+            current: 0,
+            total: 1,
+            message: `Найдено ${legacyResult.itemsMarked} старых товаров для синхронизации...`,
+          });
+        }
+      }
 
       // 1. Загрузить изображения для items с imageNeedsUpload=1
       const itemsWithImages = await getAllWithRetry<any>(
@@ -258,7 +312,9 @@ class SyncService {
 
         if (responseData) {
           // Обновить serverId и needsSync для items из этого batch
+          console.log(`📥 Received ${responseData.items?.length || 0} items in response`);
           for (const item of responseData.items || []) {
+            console.log(`   Setting serverId=${item.serverId} for localId=${item.localId}`);
             await runWithRetry(
               db,
               'UPDATE items SET serverId=?, needsSync=0, syncedAt=? WHERE id=?',
@@ -369,9 +425,19 @@ class SyncService {
   }
 
   /**
-   * Pull изменений с сервера для ассистента
+   * Pull изменений с сервера для ассистента (с защитой от параллельного выполнения)
    */
   async assistantPull(): Promise<void> {
+    const result = await this.withSyncLock(() => this._assistantPullInternal());
+    if (result === null) {
+      console.log('⏳ assistantPull skipped - sync already in progress');
+    }
+  }
+
+  /**
+   * Pull изменений с сервера для ассистента - внутренний метод
+   */
+  private async _assistantPullInternal(): Promise<void> {
     const accessToken = await AuthService.getAccessToken();
     if (!accessToken) {
       console.warn('No access token, skipping sync');
@@ -526,9 +592,19 @@ class SyncService {
   // ============================================
 
   /**
-   * Pull изменений с сервера для админа
+   * Pull изменений с сервера для админа (с защитой от параллельного выполнения)
    */
   async adminPull(): Promise<void> {
+    const result = await this.withSyncLock(() => this._adminPullInternal());
+    if (result === null) {
+      console.log('⏳ adminPull skipped - sync already in progress');
+    }
+  }
+
+  /**
+   * Pull изменений с сервера для админа - внутренний метод
+   */
+  private async _adminPullInternal(): Promise<void> {
     const accessToken = await AuthService.getAccessToken();
     if (!accessToken) {
       console.warn('No access token, skipping sync');

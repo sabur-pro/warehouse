@@ -532,6 +532,15 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
       if (!itemsColumnNames.includes('needsSync')) {
         console.log('Adding needsSync column to items');
         await execWithRetry(databaseInstance!, 'ALTER TABLE items ADD COLUMN needsSync INTEGER DEFAULT 0;');
+
+        // ВАЖНО: Помечаем ВСЕ существующие записи без serverId как требующие синхронизации
+        // Это нужно для миграции старых данных
+        console.log('Marking all existing items without serverId as needing sync (legacy data migration)...');
+        const legacyUpdateResult = await execWithRetry(
+          databaseInstance!,
+          'UPDATE items SET needsSync = 1, imageNeedsUpload = CASE WHEN imageUri IS NOT NULL AND imageUri != \'\' THEN 1 ELSE 0 END WHERE serverId IS NULL;'
+        );
+        console.log('Legacy items marked for sync');
       }
       if (!itemsColumnNames.includes('syncedAt')) {
         console.log('Adding syncedAt column to items');
@@ -561,6 +570,14 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
       if (!transColumnNames.includes('needsSync')) {
         console.log('Adding needsSync column to transactions');
         await execWithRetry(databaseInstance!, 'ALTER TABLE transactions ADD COLUMN needsSync INTEGER DEFAULT 0;');
+
+        // ВАЖНО: Помечаем ВСЕ существующие транзакции без serverId как требующие синхронизации
+        console.log('Marking all existing transactions without serverId as needing sync (legacy data migration)...');
+        await execWithRetry(
+          databaseInstance!,
+          'UPDATE transactions SET needsSync = 1 WHERE serverId IS NULL;'
+        );
+        console.log('Legacy transactions marked for sync');
       }
       if (!transColumnNames.includes('syncedAt')) {
         console.log('Adding syncedAt column to transactions');
@@ -1678,5 +1695,57 @@ export const deleteTransaction = async (transactionId: number): Promise<{ succes
 // ============================================
 // ЭКСПОРТ ВСПОМОГАТЕЛЬНЫХ ФУНКЦИЙ ДЛЯ SYNC
 // ============================================
+
+/**
+ * Помечает ВСЕ существующие данные без serverId как требующие синхронизации.
+ * Используется для миграции legacy данных с устройств, где уже была установлена старая версия.
+ * Вызывать при первом входе пользователя после обновления.
+ */
+export const markLegacyDataForSync = async (): Promise<{ itemsMarked: number; transactionsMarked: number }> => {
+  return withLock(async () => {
+    const db = await initDatabase();
+
+    try {
+      console.log('🔄 Marking legacy data for sync...');
+
+      // Подсчитать и пометить items без serverId
+      const itemsToMark = await getFirstWithRetry<{ count: number }>(
+        db,
+        'SELECT COUNT(*) as count FROM items WHERE serverId IS NULL AND needsSync = 0 AND isDeleted = 0;'
+      );
+      const itemsCount = itemsToMark?.count || 0;
+
+      if (itemsCount > 0) {
+        await runWithRetry(
+          db,
+          'UPDATE items SET needsSync = 1, imageNeedsUpload = CASE WHEN imageUri IS NOT NULL AND imageUri != \'\' THEN 1 ELSE 0 END WHERE serverId IS NULL AND needsSync = 0;'
+        );
+        console.log(`✅ Marked ${itemsCount} legacy items for sync`);
+      }
+
+      // Подсчитать и пометить transactions без serverId
+      const transactionsToMark = await getFirstWithRetry<{ count: number }>(
+        db,
+        'SELECT COUNT(*) as count FROM transactions WHERE serverId IS NULL AND needsSync = 0 AND isDeleted = 0;'
+      );
+      const transactionsCount = transactionsToMark?.count || 0;
+
+      if (transactionsCount > 0) {
+        await runWithRetry(
+          db,
+          'UPDATE transactions SET needsSync = 1 WHERE serverId IS NULL AND needsSync = 0;'
+        );
+        console.log(`✅ Marked ${transactionsCount} legacy transactions for sync`);
+      }
+
+      console.log(`🔄 Legacy data migration complete: ${itemsCount} items, ${transactionsCount} transactions`);
+
+      return { itemsMarked: itemsCount, transactionsMarked: transactionsCount };
+    } catch (error: any) {
+      console.error('❌ Error marking legacy data for sync:', error);
+      throw error;
+    }
+  });
+};
 
 export { runWithRetry, getAllWithRetry, getFirstWithRetry, execWithRetry };
