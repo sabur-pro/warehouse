@@ -19,6 +19,7 @@ import TransactionDetailsModal from '../../../components/TransactionDetailsModal
 import { GroupedTransaction } from '../../../components/TransactionsList';
 import { useTheme } from '../../contexts/ThemeContext';
 import { getThemeColors } from '../../../constants/theme';
+import { useSyncRefresh } from '../sync/SyncStatusBar';
 
 const ITEM_LIMIT = 50;
 
@@ -253,6 +254,14 @@ const HistoryContentNew: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchQuery, filterDate]);
 
+  // === АВТОМАТИЧЕСКОЕ ОБНОВЛЕНИЕ ПОСЛЕ СИНХРОНИЗАЦИИ ===
+  const handleSyncRefresh = useCallback(() => {
+    console.log('🔄 HistoryContentNew: sync completed, reloading transactions...');
+    loadTransactions(false, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useSyncRefresh('HistoryContentNew', handleSyncRefresh);
+
   const handleLoadMore = () => {
     if (hasMore && !loadingMore) {
       loadTransactions(true, false);
@@ -327,6 +336,8 @@ const HistoryContentNew: React.FC = () => {
 
     let isPriceUpdate = false;
     let isRegularUpdate = false;
+    let isAdminApprovedUpdate = false;
+    let isAdminApprovedDelete = false;
 
     // СНАЧАЛА проверяем grouped транзакции (приоритет у продажи!)
     if (item.type === 'grouped') {
@@ -359,6 +370,12 @@ const HistoryContentNew: React.FC = () => {
         if (details.type === 'price_update') {
           isPriceUpdate = true;
           actionText = 'Обновление цены';
+        } else if (details.type === 'admin_approved_update') {
+          isAdminApprovedUpdate = true;
+          actionText = 'Обновление (одобрено)';
+        } else if (details.type === 'admin_approved_delete') {
+          isAdminApprovedDelete = true;
+          actionText = 'Удаление (одобрено)';
         } else if (details.type === 'update' && details.changes && details.changes.length > 0) {
           isRegularUpdate = true;
           actionText = 'Обновление';
@@ -373,6 +390,12 @@ const HistoryContentNew: React.FC = () => {
     if (isPriceUpdate) {
       icon = 'edit';
       color = '#3b82f6';
+    } else if (isAdminApprovedUpdate) {
+      icon = 'check-circle';
+      color = '#22c55e';
+    } else if (isAdminApprovedDelete) {
+      icon = 'delete-forever';
+      color = '#ef4444';
     } else if (isRegularUpdate) {
       icon = 'sync';
       color = '#f59e0b';

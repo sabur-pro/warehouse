@@ -22,7 +22,7 @@ const WarehouseScreen: React.FC = () => {
     try {
       const parsedData = JSON.parse(data);
       const { itemId, boxIndex, size } = parsedData;
-      
+
       // Открываем карточку товара через ref
       if (itemListRef.current?.openItemById) {
         itemListRef.current.openItemById(itemId, { boxIndex, size });
@@ -31,15 +31,15 @@ const WarehouseScreen: React.FC = () => {
       console.error('Error parsing QR data:', error);
     }
   };
-  
+
   const scanButtonColor = isDark ? colors.primary.gold : colors.primary.purple;
-  
+
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background.screen }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background.screen }]} edges={['top']}>
       <ItemList ref={itemListRef} />
       {/* Кнопка сканера QR - доступна для всех ролей */}
       <TouchableOpacity
-        style={[styles.scanButton, { 
+        style={[styles.scanButton, {
           backgroundColor: scanButtonColor,
           shadowColor: scanButtonColor,
         }]}
@@ -53,7 +53,7 @@ const WarehouseScreen: React.FC = () => {
       {isAssistant() && (
         <AddItemButton />
       )}
-      
+
       {/* Сканер QR-кодов */}
       <QRScanner
         visible={scannerVisible}

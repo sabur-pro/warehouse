@@ -168,6 +168,7 @@ export default function PendingActionsScreen() {
             side: 'Сторона',
             totalQuantity: 'Общее кол-во',
             totalValue: 'Общая стоимость',
+            totalRecommendedValue: 'Рекомендованная цена',
             boxSizeQuantities: 'Размеры/количества',
             imageUri: 'Фото',
         };
@@ -179,13 +180,43 @@ export default function PendingActionsScreen() {
             return '—';
         }
         if (field === 'boxSizeQuantities') {
+            // Попробуем распарсить и показать краткую сводку
+            try {
+                const boxes = typeof value === 'string' ? JSON.parse(value) : value;
+                if (Array.isArray(boxes)) {
+                    let totalQty = 0;
+                    let sizeCount = 0;
+                    boxes.forEach((box: any[]) => {
+                        if (Array.isArray(box)) {
+                            box.forEach((item: any) => {
+                                if (item && typeof item.quantity === 'number') {
+                                    totalQty += item.quantity;
+                                    sizeCount++;
+                                }
+                            });
+                        }
+                    });
+                    return `${boxes.length} кор., ${sizeCount} разм., ${totalQty} шт.`;
+                }
+            } catch {
+                // Если не удалось распарсить
+            }
             return 'изменено';
         }
-        if (field === 'totalValue') {
+        if (field === 'totalValue' || field === 'totalRecommendedValue') {
             return `${Number(value).toLocaleString('ru-RU')} ₽`;
         }
         if (typeof value === 'number') {
             return String(value);
+        }
+        if (typeof value === 'object') {
+            // Для объектов показываем краткую сводку
+            try {
+                const keys = Object.keys(value);
+                return `объект (${keys.length} полей)`;
+            } catch {
+                return 'объект';
+            }
         }
         const str = String(value);
         return str.length > 25 ? str.substring(0, 25) + '...' : str;

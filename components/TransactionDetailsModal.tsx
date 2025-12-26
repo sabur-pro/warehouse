@@ -594,6 +594,46 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
     const oldData = details.oldData || {};
     const newData = details.newData || {};
 
+    // Хелпер для форматирования значений полей
+    const formatFieldValue = (value: any, field: string): string => {
+      if (value === null || value === undefined || value === '') {
+        return '—';
+      }
+      if (field === 'boxSizeQuantities') {
+        try {
+          const boxes = typeof value === 'string' ? JSON.parse(value) : value;
+          if (Array.isArray(boxes)) {
+            let totalQty = 0;
+            let sizeCount = 0;
+            boxes.forEach((box: any[]) => {
+              if (Array.isArray(box)) {
+                box.forEach((item: any) => {
+                  if (item && typeof item.quantity === 'number') {
+                    totalQty += item.quantity;
+                    sizeCount++;
+                  }
+                });
+              }
+            });
+            return `${boxes.length} кор., ${sizeCount} разм., ${totalQty} шт.`;
+          }
+        } catch {
+          return 'изменено';
+        }
+      }
+      if (field === 'totalValue' || field === 'totalRecommendedValue') {
+        return `${Number(value).toLocaleString('ru-RU')} ₽`;
+      }
+      if (typeof value === 'number') {
+        return String(value);
+      }
+      if (typeof value === 'object') {
+        return JSON.stringify(value).substring(0, 25) + '...';
+      }
+      const str = String(value);
+      return str.length > 25 ? str.substring(0, 25) + '...' : str;
+    };
+
     // Находим изменённые поля
     const changes: { field: string; label: string; old: any; new: any }[] = [];
     const fieldLabels: { [key: string]: string } = {
@@ -606,10 +646,16 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
       side: 'Сторона',
       totalQuantity: 'Общее кол-во',
       totalValue: 'Общая стоимость',
+      totalRecommendedValue: 'Рекомендованная цена',
+      boxSizeQuantities: 'Размеры/количества',
     };
 
+    // Скрытые поля
+    const hiddenFields = ['id', 'serverId', 'createdAt', 'updatedAt', 'version', 'isDeleted', 'needsSync', 'syncedAt', 'imageNeedsUpload', 'serverImageUrl'];
+
     for (const key of Object.keys(newData)) {
-      if (oldData[key] !== undefined && JSON.stringify(oldData[key]) !== JSON.stringify(newData[key])) {
+      if (hiddenFields.includes(key)) continue;
+      if (JSON.stringify(oldData[key]) !== JSON.stringify(newData[key])) {
         changes.push({
           field: key,
           label: fieldLabels[key] || key,
@@ -629,13 +675,13 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
               {changes.map((change, index) => (
                 <View key={index} style={[styles.row, { marginLeft: 10, flexDirection: 'column', alignItems: 'flex-start', marginBottom: 8 }]}>
                   <Text style={[styles.label, { color: colors.text.muted }]}>{change.label}:</Text>
-                  <View style={{ flexDirection: 'row', marginTop: 2 }}>
+                  <View style={{ flexDirection: 'row', marginTop: 2, flexWrap: 'wrap' }}>
                     <Text style={[styles.value, { color: '#ef4444', textDecorationLine: 'line-through' }]}>
-                      {String(change.old || '—').substring(0, 30)}
+                      {formatFieldValue(change.old, change.field)}
                     </Text>
                     <MaterialIcons name="arrow-forward" size={16} color={colors.text.muted} style={{ marginHorizontal: 8 }} />
                     <Text style={[styles.value, { color: '#22c55e' }]}>
-                      {String(change.new || '—').substring(0, 30)}
+                      {formatFieldValue(change.new, change.field)}
                     </Text>
                   </View>
                 </View>

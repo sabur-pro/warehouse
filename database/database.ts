@@ -313,11 +313,17 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
           console.log('Adding itemType column with default value "обувь" for existing items');
           await execWithRetry(databaseInstance!, 'ALTER TABLE items ADD COLUMN itemType TEXT NOT NULL DEFAULT \'обувь\';');
         }
+        // Миграция: заполнить NULL или пустые значения для legacy данных
+        console.log('Migrating legacy items: filling NULL/empty itemType with default');
+        await execWithRetry(databaseInstance!, `UPDATE items SET itemType = 'обувь' WHERE itemType IS NULL OR itemType = '';`);
 
         if (!columnNames.includes('qrCodeType')) {
           console.log('Adding qrCodeType column with default value "none"');
           await execWithRetry(databaseInstance!, 'ALTER TABLE items ADD COLUMN qrCodeType TEXT NOT NULL DEFAULT \'none\';');
         }
+        // Миграция: заполнить NULL или пустые значения для legacy данных
+        console.log('Migrating legacy items: filling NULL/empty qrCodeType with default');
+        await execWithRetry(databaseInstance!, `UPDATE items SET qrCodeType = 'none' WHERE qrCodeType IS NULL OR qrCodeType = '';`);
 
         if (!columnNames.includes('qrCodes')) {
           console.log('Adding qrCodes column');

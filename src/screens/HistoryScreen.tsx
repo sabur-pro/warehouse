@@ -12,16 +12,16 @@ const HistoryScreen: React.FC = () => {
   const colors = getThemeColors(isDark);
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background.screen }]}>
-      <View style={[styles.header, { 
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background.screen }]} edges={['top']}>
+      <View style={[styles.header, {
         backgroundColor: colors.background.card,
         borderBottomColor: colors.border.normal
       }]}>
         <Text style={[styles.headerTitle, { color: colors.text.normal }]}>История транзакций</Text>
-        <MaterialIcons 
-          name="history" 
-          size={24} 
-          color={isDark ? colors.primary.gold : '#10b981'} 
+        <MaterialIcons
+          name="history"
+          size={24}
+          color={isDark ? colors.primary.gold : '#10b981'}
         />
       </View>
       <HistoryContentNew />

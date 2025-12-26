@@ -5,12 +5,13 @@ import { NavigationContainer } from '@react-navigation/native';
 import { DatabaseProvider } from './hooks/useDatabase';
 import { AuthProvider } from './src/contexts/AuthContext';
 import { ThemeProvider, useTheme } from './src/contexts/ThemeContext';
+import { SyncRefreshProvider } from './src/components/sync/SyncStatusBar';
 import RootNavigator from './src/navigation/RootNavigator';
 import './global.css';
 
 function AppContent() {
   const { isDark } = useTheme();
-  
+
   return (
     <>
       <NavigationContainer>
@@ -26,7 +27,9 @@ export default function App() {
     <ThemeProvider>
       <AuthProvider>
         <DatabaseProvider>
-          <AppContent />
+          <SyncRefreshProvider>
+            <AppContent />
+          </SyncRefreshProvider>
         </DatabaseProvider>
       </AuthProvider>
     </ThemeProvider>

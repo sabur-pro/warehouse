@@ -97,16 +97,19 @@ class AuthService {
         return response;
       },
       async (error) => {
-        // Log detailed error information
+        // Log detailed error information (skip expected 404 for subscription)
         if (error.response) {
-          console.error('🔴 API Error Response:', {
-            url: error.config?.url,
-            method: error.config?.method?.toUpperCase(),
-            status: error.response.status,
-            statusText: error.response.statusText,
-            data: error.response.data,
-            headers: error.response.headers,
-          });
+          const isSubscription404 = error.response.status === 404 && error.config?.url?.includes('/subscription');
+          if (!isSubscription404) {
+            console.error('🔴 API Error Response:', {
+              url: error.config?.url,
+              method: error.config?.method?.toUpperCase(),
+              status: error.response.status,
+              statusText: error.response.statusText,
+              data: error.response.data,
+              headers: error.response.headers,
+            });
+          }
         } else if (error.request) {
           console.error('🔴 API No Response:', {
             url: error.config?.url,

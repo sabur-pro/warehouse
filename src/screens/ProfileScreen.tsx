@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,7 @@ import {
   RefreshControl,
   Switch,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -27,6 +28,7 @@ import {
 } from '../../database/streamingImportExport';
 import AssistantService, { Assistant } from '../services/AssistantService';
 import SubscriptionService, { Subscription } from '../services/SubscriptionService';
+import { useSyncRefresh } from '../components/sync/SyncStatusBar';
 
 type ProfileStackParamList = {
   ProfileMain: undefined;
@@ -134,6 +136,14 @@ export default function ProfileScreen() {
     }
     setRefreshing(false);
   };
+
+  // === АВТОМАТИЧЕСКОЕ ОБНОВЛЕНИЕ ПОСЛЕ СИНХРОНИЗАЦИИ ===
+  const handleSyncRefresh = useCallback(() => {
+    console.log('🔄 ProfileScreen: sync completed, reloading data...');
+    onRefresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useSyncRefresh('ProfileScreen', handleSyncRefresh);
 
   const handleAddAssistant = async () => {
     if (!assistantLogin || !assistantPassword || !assistantPhone) {
@@ -414,9 +424,9 @@ export default function ProfileScreen() {
   );
 
   return (
-    <>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background.screen }]} edges={['top']}>
       <ScrollView
-        style={[styles.container, { backgroundColor: colors.background.screen }]}
+        style={{ flex: 1 }}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -846,7 +856,7 @@ export default function ProfileScreen() {
           </View>
         </Modal>
       </Modal>
-    </>
+    </SafeAreaView>
   );
 }
 

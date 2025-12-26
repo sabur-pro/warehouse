@@ -1,5 +1,5 @@
 // components/ItemList.tsx
-import { useEffect, useState, useRef, forwardRef, useImperativeHandle } from 'react';
+import { useEffect, useState, useRef, forwardRef, useImperativeHandle, useCallback } from 'react';
 import {
   View,
   Text,
@@ -24,6 +24,7 @@ import { ItemGrid } from './ItemGrid';
 import ItemDetailsModal from './ItemDetailsModal';
 import { useTheme } from '../src/contexts/ThemeContext';
 import { getThemeColors } from '../constants/theme';
+import { useSyncRefresh } from '../src/components/sync/SyncStatusBar';
 
 type ItemWithExtras = Item & {
   parsedBoxSizeQuantities?: unknown;
@@ -33,7 +34,7 @@ type ItemWithExtras = Item & {
 export const ItemList = forwardRef((props, ref) => {
   const { isDark } = useTheme();
   const colors = getThemeColors(isDark);
-  
+
   const [items, setItems] = useState<ItemWithExtras[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -171,6 +172,14 @@ export const ItemList = forwardRef((props, ref) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // === АВТОМАТИЧЕСКОЕ ОБНОВЛЕНИЕ ПОСЛЕ СИНХРОНИЗАЦИИ ===
+  const handleSyncRefresh = useCallback(() => {
+    console.log('🔄 ItemList: sync completed, reloading data...');
+    loadFirstPage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useSyncRefresh('ItemList', handleSyncRefresh);
+
   const handleItemPress = (item: Item, context?: { boxIndex?: number; size?: number | string }) => {
     setSelectedItem(item);
     setScannedContext(context || null);
@@ -258,7 +267,7 @@ export const ItemList = forwardRef((props, ref) => {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
         <Ionicons name="search-outline" size={64} color={isDark ? '#4a4a4a' : '#d1d5db'} style={{ marginBottom: 16 }} />
-        
+
         {hasFilters ? (
           <>
             <Text style={{ color: colors.text.normal, fontSize: 16, textAlign: 'center', fontWeight: '600' }}>
@@ -302,16 +311,16 @@ export const ItemList = forwardRef((props, ref) => {
     <TouchableWithoutFeedback onPress={handleOutsidePress}>
       <View style={{ flex: 1 }}>
         {/* Верхняя строка: поиск и селектор склада */}
-        <View style={{ 
-          padding: 8, 
-          backgroundColor: colors.background.card, 
-          borderBottomWidth: 1, 
-          borderBottomColor: colors.border.normal 
+        <View style={{
+          padding: 8,
+          backgroundColor: colors.background.card,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border.normal
         }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
             <TextInput
-              style={[styles.searchInput, { 
-                flex: 1, 
+              style={[styles.searchInput, {
+                flex: 1,
                 marginRight: 8,
                 backgroundColor: colors.background.card,
                 borderColor: colors.border.normal,
@@ -350,17 +359,17 @@ export const ItemList = forwardRef((props, ref) => {
               onPress={() => setSelectedItemType('all')}
               style={[
                 styles.filterTag,
-                { 
+                {
                   backgroundColor: selectedItemType === 'all' ? accentColor : (isDark ? colors.background.light : '#f3f4f6'),
                   borderColor: selectedItemType === 'all' ? accentColor : colors.border.normal
                 }
               ]}
               activeOpacity={0.7}
             >
-              <Ionicons 
-                name="apps" 
-                size={16} 
-                color={selectedItemType === 'all' ? '#fff' : colors.text.muted} 
+              <Ionicons
+                name="apps"
+                size={16}
+                color={selectedItemType === 'all' ? '#fff' : colors.text.muted}
                 style={{ marginRight: 4 }}
               />
               <Text style={[
@@ -375,17 +384,17 @@ export const ItemList = forwardRef((props, ref) => {
               onPress={() => setSelectedItemType('обувь')}
               style={[
                 styles.filterTag,
-                { 
+                {
                   backgroundColor: selectedItemType === 'обувь' ? accentColor : (isDark ? colors.background.light : '#f3f4f6'),
                   borderColor: selectedItemType === 'обувь' ? accentColor : colors.border.normal
                 }
               ]}
               activeOpacity={0.7}
             >
-              <Ionicons 
-                name="footsteps" 
-                size={16} 
-                color={selectedItemType === 'обувь' ? '#fff' : colors.text.muted} 
+              <Ionicons
+                name="footsteps"
+                size={16}
+                color={selectedItemType === 'обувь' ? '#fff' : colors.text.muted}
                 style={{ marginRight: 4 }}
               />
               <Text style={[
@@ -400,17 +409,17 @@ export const ItemList = forwardRef((props, ref) => {
               onPress={() => setSelectedItemType('одежда')}
               style={[
                 styles.filterTag,
-                { 
+                {
                   backgroundColor: selectedItemType === 'одежда' ? accentColor : (isDark ? colors.background.light : '#f3f4f6'),
                   borderColor: selectedItemType === 'одежда' ? accentColor : colors.border.normal
                 }
               ]}
               activeOpacity={0.7}
             >
-              <Ionicons 
-                name="shirt-outline" 
-                size={16} 
-                color={selectedItemType === 'одежда' ? '#fff' : colors.text.muted} 
+              <Ionicons
+                name="shirt-outline"
+                size={16}
+                color={selectedItemType === 'одежда' ? '#fff' : colors.text.muted}
                 style={{ marginRight: 4 }}
               />
               <Text style={[

@@ -76,6 +76,7 @@ const CustomTabBar: React.FC<CustomTabBarProps> = ({ state, descriptors, navigat
   const { isDark } = useTheme();
   const colors = getThemeColors(isDark);
 
+  // Простой способ - SyncStatusBar сам вызовет triggerRefreshAll через контекст
   return (
     <View style={[styles.tabBarWrapper, { backgroundColor: colors.background.screen }]}>
       <SyncStatusBar />

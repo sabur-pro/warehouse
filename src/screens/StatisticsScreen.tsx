@@ -1,5 +1,5 @@
 // src/screens/StatisticsScreen.tsx
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -21,6 +21,7 @@ import BarChart from '../components/charts/BarChart';
 import ImprovedPieChart from '../components/charts/ImprovedPieChart';
 import ProgressBar from '../components/charts/ProgressBar';
 import CircularProgress from '../components/charts/CircularProgress';
+import { useSyncRefresh } from '../components/sync/SyncStatusBar';
 
 const StatisticsScreen: React.FC = () => {
   const { isDark } = useTheme();
@@ -30,9 +31,16 @@ const StatisticsScreen: React.FC = () => {
 
   const { statistics, loading, error, refetch } = useStatistics(selectedPeriod, customDate);
 
+  // === АВТОМАТИЧЕСКОЕ ОБНОВЛЕНИЕ ПОСЛЕ СИНХРОНИЗАЦИИ ===
+  const handleSyncRefresh = useCallback(() => {
+    console.log('🔄 StatisticsScreen: sync completed, reloading stats...');
+    refetch();
+  }, [refetch]);
+  useSyncRefresh('StatisticsScreen', handleSyncRefresh);
+
   if (loading) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: colors.background.screen }]}>
+      <SafeAreaView style={[styles.container, { backgroundColor: colors.background.screen }]} edges={['top']}>
         <View style={[styles.header, { backgroundColor: colors.background.card, borderBottomColor: colors.border.normal }]}>
           <Text style={[styles.headerTitle, { color: colors.text.normal }]}>Статистика</Text>
           <MaterialIcons name="analytics" size={24} color={isDark ? colors.primary.gold : colors.primary.blue} />
@@ -44,7 +52,7 @@ const StatisticsScreen: React.FC = () => {
 
   if (error || !statistics) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: colors.background.screen }]}>
+      <SafeAreaView style={[styles.container, { backgroundColor: colors.background.screen }]} edges={['top']}>
         <View style={[styles.header, { backgroundColor: colors.background.card, borderBottomColor: colors.border.normal }]}>
           <Text style={[styles.headerTitle, { color: colors.text.normal }]}>Статистика</Text>
           <MaterialIcons name="analytics" size={24} color={isDark ? colors.primary.gold : colors.primary.blue} />
@@ -80,14 +88,14 @@ const StatisticsScreen: React.FC = () => {
   ];
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background.screen }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background.screen }]} edges={['top']}>
       <View style={[styles.header, { backgroundColor: colors.background.card, borderBottomColor: colors.border.normal }]}>
         <Text style={[styles.headerTitle, { color: colors.text.normal }]}>Статистика</Text>
         <MaterialIcons name="analytics" size={24} color={isDark ? colors.primary.gold : colors.primary.blue} />
       </View>
-      
-      <ScrollView 
-        style={[styles.content, { backgroundColor: colors.background.screen }]} 
+
+      <ScrollView
+        style={[styles.content, { backgroundColor: colors.background.screen }]}
         contentContainerStyle={styles.scrollContent}
         refreshControl={
           <RefreshControl
@@ -121,7 +129,7 @@ const StatisticsScreen: React.FC = () => {
               ]}
               color="#3b82f6"
             />
-            
+
             <StatCard
               icon="monetization-on"
               title="Общая стоимость"
@@ -129,7 +137,7 @@ const StatisticsScreen: React.FC = () => {
               color="#10b981"
               subtitle="сомонӣ"
             />
-            
+
             <CombinedStatCard
               items={[
                 {
@@ -164,7 +172,7 @@ const StatisticsScreen: React.FC = () => {
         {/* Показатели за период */}
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.text.normal }]}>Показатели за период</Text>
-          
+
           <View style={styles.statsGrid}>
             <CombinedStatCard
               items={[
@@ -183,7 +191,7 @@ const StatisticsScreen: React.FC = () => {
               ]}
               color="#3b82f6"
             />
-            
+
             <CombinedStatCard
               items={[
                 {
@@ -201,7 +209,7 @@ const StatisticsScreen: React.FC = () => {
               ]}
               color="#10b981"
             />
-            
+
             <CombinedStatCard
               items={[
                 {
@@ -226,15 +234,15 @@ const StatisticsScreen: React.FC = () => {
         {statistics.periodStats.salesCount > 0 && (
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: colors.text.normal }]}>Визуализация продаж</Text>
-            
+
             <BarChart
               data={periodData}
               title="Продажи и прибыль за период"
               height={250}
             />
-            
+
             <View style={styles.chartSpacing} />
-            
+
             {/* Диаграмма соотношения обуви и одежды */}
             {(statistics.periodStats.shoesQuantity > 0 || statistics.periodStats.clothesQuantity > 0) && (
               <>
@@ -257,9 +265,9 @@ const StatisticsScreen: React.FC = () => {
                 <View style={styles.chartSpacing} />
               </>
             )}
-            
+
             <View style={styles.chartSpacing} />
-            
+
             {/* Прогресс-бары */}
             <View style={[styles.progressContainer, { backgroundColor: colors.background.card }]}>
               <ProgressBar

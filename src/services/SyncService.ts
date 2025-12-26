@@ -31,13 +31,86 @@ interface SyncTransaction {
   details?: string;
 }
 
+/**
+ * Прогресс синхронизации для UI
+ */
+export interface SyncProgress {
+  phase: 'uploading_images' | 'syncing_items' | 'syncing_transactions' | 'complete' | 'error';
+  current: number;
+  total: number;
+  message: string;
+}
+
 class SyncService {
   // ============================================
   // АССИСТЕНТ
   // ============================================
 
+  // Размер batch для синхронизации
+  private readonly BATCH_SIZE = 50;
+  // Количество попыток для каждого batch
+  private readonly BATCH_RETRY_COUNT = 3;
+  // Задержка между попытками (ms)
+  private readonly BATCH_RETRY_DELAY = 1000;
+
+  // Callback для прогресса sync
+  private onSyncProgress: ((progress: SyncProgress) => void) | null = null;
+
   /**
-   * Push изменений от ассистента на сервер
+   * Установить callback для отслеживания прогресса синхронизации
+   */
+  setSyncProgressCallback(callback: ((progress: SyncProgress) => void) | null): void {
+    this.onSyncProgress = callback;
+  }
+
+  /**
+   * Разбить массив на chunks
+   */
+  private chunk<T>(array: T[], size: number): T[][] {
+    const chunks: T[][] = [];
+    for (let i = 0; i < array.length; i += size) {
+      chunks.push(array.slice(i, i + size));
+    }
+    return chunks;
+  }
+
+  /**
+   * Отправить batch с retry логикой
+   * Возвращает response.data или null если все попытки неудачны
+   */
+  private async sendBatchWithRetry(
+    api: any,
+    endpoint: string,
+    payload: any,
+    accessToken: string,
+    batchIndex: number,
+    totalBatches: number
+  ): Promise<any | null> {
+    for (let attempt = 1; attempt <= this.BATCH_RETRY_COUNT; attempt++) {
+      try {
+        const response = await api.post(endpoint, payload, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        return response.data;
+      } catch (error: any) {
+        console.warn(`⚠️ Batch ${batchIndex + 1}/${totalBatches} attempt ${attempt}/${this.BATCH_RETRY_COUNT} failed:`, error.message);
+
+        if (attempt < this.BATCH_RETRY_COUNT) {
+          // Ждём перед следующей попыткой (exponential backoff)
+          const delay = this.BATCH_RETRY_DELAY * attempt;
+          console.log(`   Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        } else {
+          console.error(`❌ Batch ${batchIndex + 1}/${totalBatches} failed after ${this.BATCH_RETRY_COUNT} attempts`);
+          return null; // Все попытки исчерпаны
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Push изменений от ассистента на сервер (с пакетной обработкой)
    */
   async assistantPush(): Promise<void> {
     const accessToken = await AuthService.getAccessToken();
@@ -50,7 +123,7 @@ class SyncService {
     const api = AuthService.getApiInstance();
 
     try {
-      console.log('🔄 Starting assistant push sync...');
+      console.log('🔄 Starting assistant push sync (batch mode)...');
 
       // 1. Загрузить изображения для items с imageNeedsUpload=1
       const itemsWithImages = await getAllWithRetry<any>(
@@ -60,9 +133,20 @@ class SyncService {
 
       console.log(`📤 Found ${itemsWithImages.length} items with images to upload`);
 
+      // Обновить прогресс: загрузка изображений
+      if (this.onSyncProgress && itemsWithImages.length > 0) {
+        this.onSyncProgress({
+          phase: 'uploading_images',
+          current: 0,
+          total: itemsWithImages.length,
+          message: `Загрузка изображений... 0/${itemsWithImages.length}`,
+        });
+      }
+
       const failedImageUploads: { itemId: number; error: string }[] = [];
 
-      for (const item of itemsWithImages) {
+      for (let i = 0; i < itemsWithImages.length; i++) {
+        const item = itemsWithImages[i];
         if (item.imageUri) {
           try {
             const imageUrl = await ImageService.uploadImage(item.imageUri, accessToken);
@@ -82,6 +166,16 @@ class SyncService {
             failedImageUploads.push({ itemId: item.id, error: errorMessage });
           }
         }
+
+        // Обновить прогресс загрузки изображений
+        if (this.onSyncProgress) {
+          this.onSyncProgress({
+            phase: 'uploading_images',
+            current: i + 1,
+            total: itemsWithImages.length,
+            message: `Загрузка изображений... ${i + 1}/${itemsWithImages.length}`,
+          });
+        }
       }
 
       // Если есть ошибки загрузки изображений - прервать синхронизацию
@@ -93,79 +187,183 @@ class SyncService {
       }
 
       // 2. Получить items и transactions для синхронизации
-      const items = await getAllWithRetry<any>(db, 'SELECT * FROM items WHERE needsSync=1');
-      const transactions = await getAllWithRetry<any>(db, 'SELECT * FROM transactions WHERE needsSync=1');
+      const allItems = await getAllWithRetry<any>(db, 'SELECT * FROM items WHERE needsSync=1');
+      const allTransactions = await getAllWithRetry<any>(db, 'SELECT * FROM transactions WHERE needsSync=1');
 
-      if (items.length === 0 && transactions.length === 0) {
+      if (allItems.length === 0 && allTransactions.length === 0) {
         console.log('✅ Nothing to sync');
+        if (this.onSyncProgress) {
+          this.onSyncProgress({ phase: 'complete', current: 0, total: 0, message: 'Нет данных для синхронизации' });
+        }
         return;
       }
 
-      console.log(`📤 Syncing ${items.length} items and ${transactions.length} transactions`);
+      console.log(`📤 Syncing ${allItems.length} items and ${allTransactions.length} transactions (batch size: ${this.BATCH_SIZE})`);
 
-      // 3. Отправить на сервер
-      const response = await api.post('/sync/assistant/push', {
-        items: items.map((item: any) => ({
-          localId: item.id,
-          serverId: item.serverId,
-          name: item.name,
-          code: item.code,
-          warehouse: item.warehouse,
-          numberOfBoxes: item.numberOfBoxes,
-          boxSizeQuantities: item.boxSizeQuantities,
-          sizeType: item.sizeType,
-          itemType: item.itemType,
-          row: item.row,
-          position: item.position,
-          side: item.side,
-          imageUrl: item.serverImageUrl,
-          totalQuantity: item.totalQuantity,
-          totalValue: item.totalValue,
-          qrCodeType: item.qrCodeType,
-          qrCodes: item.qrCodes,
-          createdAt: item.createdAt,
-          version: item.version,
-          isDeleted: item.isDeleted === 1,
-        })),
-        transactions: transactions.map((tx: any) => ({
-          localId: tx.id,
-          serverId: tx.serverId,
-          itemId: tx.itemId,
-          action: tx.action,
-          itemName: tx.itemName,
-          timestamp: tx.timestamp,
-          details: tx.details,
-          isDeleted: tx.isDeleted === 1,
-        })),
-      }, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
+      // 3. Разбить на batches
+      const itemBatches = this.chunk(allItems, this.BATCH_SIZE);
+      const transactionBatches = this.chunk(allTransactions, this.BATCH_SIZE);
+      const totalBatches = itemBatches.length + transactionBatches.length;
+      let completedBatches = 0;
+      let failedItemsCount = 0;
+      let failedTransactionsCount = 0;
 
-      // 4. Обновить serverId и needsSync для items
-      for (const item of response.data.items || []) {
-        await runWithRetry(
-          db,
-          'UPDATE items SET serverId=?, needsSync=0, syncedAt=? WHERE id=?',
-          [item.serverId, Date.now(), item.localId]
+      // 4. Отправить items batch по batch
+      for (let i = 0; i < itemBatches.length; i++) {
+        const batch = itemBatches[i];
+
+        if (this.onSyncProgress) {
+          this.onSyncProgress({
+            phase: 'syncing_items',
+            current: completedBatches,
+            total: totalBatches,
+            message: `Синхронизация товаров... ${i + 1}/${itemBatches.length} (${batch.length} шт.)`,
+          });
+        }
+
+        const payload = {
+          items: batch.map((item: any) => ({
+            localId: item.id,
+            serverId: item.serverId,
+            name: item.name,
+            code: item.code,
+            warehouse: item.warehouse,
+            numberOfBoxes: item.numberOfBoxes,
+            boxSizeQuantities: item.boxSizeQuantities,
+            sizeType: item.sizeType,
+            itemType: item.itemType,
+            row: item.row,
+            position: item.position,
+            side: item.side,
+            imageUrl: item.serverImageUrl,
+            totalQuantity: item.totalQuantity,
+            totalValue: item.totalValue,
+            qrCodeType: item.qrCodeType,
+            qrCodes: item.qrCodes,
+            createdAt: item.createdAt,
+            version: item.version,
+            isDeleted: item.isDeleted === 1,
+          })),
+          transactions: [], // Items только в этом batch
+        };
+
+        const responseData = await this.sendBatchWithRetry(
+          api,
+          '/sync/assistant/push',
+          payload,
+          accessToken,
+          i,
+          itemBatches.length
         );
+
+        if (responseData) {
+          // Обновить serverId и needsSync для items из этого batch
+          for (const item of responseData.items || []) {
+            await runWithRetry(
+              db,
+              'UPDATE items SET serverId=?, needsSync=0, syncedAt=? WHERE id=?',
+              [item.serverId, Date.now(), item.localId]
+            );
+          }
+          console.log(`✅ Items batch ${i + 1}/${itemBatches.length} synced (${batch.length} items)`);
+        } else {
+          // Batch не удалось отправить - items остаются needsSync=1
+          failedItemsCount += batch.length;
+          console.warn(`⚠️ Items batch ${i + 1}/${itemBatches.length} failed (${batch.length} items will retry next sync)`);
+        }
+
+        completedBatches++;
       }
 
-      // 5. Обновить serverId и needsSync для transactions
-      for (const tx of response.data.transactions || []) {
-        await runWithRetry(
-          db,
-          'UPDATE transactions SET serverId=?, needsSync=0, syncedAt=? WHERE id=?',
-          [tx.serverId, Date.now(), tx.localId]
+      // 5. Отправить transactions batch по batch
+      for (let i = 0; i < transactionBatches.length; i++) {
+        const batch = transactionBatches[i];
+
+        if (this.onSyncProgress) {
+          this.onSyncProgress({
+            phase: 'syncing_transactions',
+            current: completedBatches,
+            total: totalBatches,
+            message: `Синхронизация истории... ${i + 1}/${transactionBatches.length} (${batch.length} шт.)`,
+          });
+        }
+
+        const payload = {
+          items: [], // Transactions только в этом batch
+          transactions: batch.map((tx: any) => ({
+            localId: tx.id,
+            serverId: tx.serverId,
+            itemId: tx.itemId,
+            action: tx.action,
+            itemName: tx.itemName,
+            timestamp: tx.timestamp,
+            details: tx.details,
+            isDeleted: tx.isDeleted === 1,
+          })),
+        };
+
+        const responseData = await this.sendBatchWithRetry(
+          api,
+          '/sync/assistant/push',
+          payload,
+          accessToken,
+          i,
+          transactionBatches.length
         );
+
+        if (responseData) {
+          // Обновить serverId и needsSync для transactions из этого batch
+          for (const tx of responseData.transactions || []) {
+            await runWithRetry(
+              db,
+              'UPDATE transactions SET serverId=?, needsSync=0, syncedAt=? WHERE id=?',
+              [tx.serverId, Date.now(), tx.localId]
+            );
+          }
+          console.log(`✅ Transactions batch ${i + 1}/${transactionBatches.length} synced (${batch.length} transactions)`);
+        } else {
+          // Batch не удалось отправить - transactions остаются needsSync=1
+          failedTransactionsCount += batch.length;
+          console.warn(`⚠️ Transactions batch ${i + 1}/${transactionBatches.length} failed (${batch.length} transactions will retry next sync)`);
+        }
+
+        completedBatches++;
       }
 
-      console.log('✅ Assistant push completed successfully');
+      // Завершение - формируем сообщение с учётом ошибок
+      const syncedItems = allItems.length - failedItemsCount;
+      const syncedTransactions = allTransactions.length - failedTransactionsCount;
+      let completionMessage = `Синхронизировано: ${syncedItems} товаров, ${syncedTransactions} записей`;
+
+      if (failedItemsCount > 0 || failedTransactionsCount > 0) {
+        completionMessage += ` (не удалось: ${failedItemsCount} товаров, ${failedTransactionsCount} записей)`;
+      }
+
+      // Показать прогресс завершения
+      if (this.onSyncProgress) {
+        this.onSyncProgress({
+          phase: 'complete',
+          current: totalBatches,
+          total: totalBatches,
+          message: completionMessage,
+        });
+      }
+
+      console.log('✅ Assistant push completed successfully (batch mode)');
     } catch (error: any) {
       console.error('❌ Assistant push failed:', {
         message: error.message,
         status: error.response?.status,
         data: error.response?.data,
       });
+      if (this.onSyncProgress) {
+        this.onSyncProgress({
+          phase: 'error',
+          current: 0,
+          total: 0,
+          message: error.message || 'Ошибка синхронизации',
+        });
+      }
       throw error;
     }
   }
@@ -684,6 +882,75 @@ class SyncService {
       throw error;
     }
   }
+
+  /**
+   * Анализ качества данных - проверка на неполные данные из legacy версий
+   * Вызывается после первой синхронизации для показа уведомлений пользователю
+   */
+  async analyzeDataQuality(): Promise<DataQualityReport> {
+    const db = await getDatabaseInstance();
+
+    // Получить все активные товары
+    const allItems = await getAllWithRetry<any>(
+      db,
+      'SELECT id, name, boxSizeQuantities, qrCodeType, qrCodes, itemType FROM items WHERE isDeleted=0'
+    );
+
+    let itemsWithoutRecommendedPrice = 0;
+    let itemsWithoutQrCode = 0;
+    const issues: string[] = [];
+
+    for (const item of allItems) {
+      // Проверка recommendedSellingPrice в boxSizeQuantities
+      try {
+        const boxes = JSON.parse(item.boxSizeQuantities || '[]');
+        let hasRecommendedPrice = false;
+        for (const box of boxes) {
+          if (Array.isArray(box)) {
+            for (const sq of box) {
+              if (sq && typeof sq.recommendedSellingPrice === 'number' && sq.recommendedSellingPrice > 0) {
+                hasRecommendedPrice = true;
+                break;
+              }
+            }
+          }
+          if (hasRecommendedPrice) break;
+        }
+        if (!hasRecommendedPrice && boxes.length > 0) {
+          itemsWithoutRecommendedPrice++;
+        }
+      } catch {
+        // Игнорируем ошибки парсинга
+      }
+
+      // Проверка QR-кода
+      if (!item.qrCodeType || item.qrCodeType === 'none') {
+        itemsWithoutQrCode++;
+      }
+    }
+
+    // Формируем сообщения о проблемах
+    if (itemsWithoutRecommendedPrice > 0) {
+      issues.push(`${itemsWithoutRecommendedPrice} товар(ов) без рекомендованной цены`);
+    }
+    if (itemsWithoutQrCode > 0) {
+      issues.push(`${itemsWithoutQrCode} товар(ов) без QR-кода`);
+    }
+
+    return {
+      totalItems: allItems.length,
+      itemsWithoutRecommendedPrice,
+      itemsWithoutQrCode,
+      issues,
+    };
+  }
+}
+
+export interface DataQualityReport {
+  totalItems: number;
+  itemsWithoutRecommendedPrice: number;
+  itemsWithoutQrCode: number;
+  issues: string[];
 }
 
 export default new SyncService();
