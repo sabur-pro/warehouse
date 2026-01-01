@@ -16,6 +16,7 @@ import StatisticsScreen from '../screens/StatisticsScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import SubscriptionScreen from '../screens/SubscriptionScreen';
 import PendingActionsScreen from '../screens/PendingActionsScreen';
+import SettingsScreen from '../screens/SettingsScreen';
 import { useAuth } from '../contexts/AuthContext';
 
 const Tab = createBottomTabNavigator<RootTabParamList>();
@@ -60,6 +61,13 @@ function ProfileNavigator() {
         component={PendingActionsScreen}
         options={{
           headerShown: false,
+        }}
+      />
+      <ProfileStack.Screen
+        name="Settings"
+        component={SettingsScreen}
+        options={{
+          headerShown: false, // SettingsScreen draws its own header
         }}
       />
     </ProfileStack.Navigator>

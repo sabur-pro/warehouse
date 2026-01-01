@@ -1,5 +1,5 @@
 // components/TransactionDetailsModal.tsx
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -10,14 +10,17 @@ import {
   Dimensions,
   Alert,
   BackHandler,
+  Image,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import { Transaction } from '../database/types';
+import { Transaction, Item } from '../database/types';
 import { useDatabase } from '../hooks/useDatabase';
+import { getItemById } from '../database/database';
 import { GroupedTransaction } from './TransactionsList';
 import { useAuth } from '../src/contexts/AuthContext';
 import { useTheme } from '../src/contexts/ThemeContext';
 import { getThemeColors } from '../constants/theme';
+import SyncService from '../src/services/SyncService';
 
 const { width: screenWidth } = Dimensions.get('window');
 
@@ -83,7 +86,7 @@ interface PriceUpdateInfo {
 }
 
 interface TransactionDetails {
-  type: 'sale' | 'create' | 'update' | 'delete' | 'wholesale' | 'price_update' | 'admin_approved_delete' | 'admin_approved_update';
+  type: 'sale' | 'create' | 'update' | 'delete' | 'wholesale' | 'price_update' | 'admin_approved_delete' | 'admin_approved_update' | 'admin_approved_sale_deletion';
   sale?: SaleInfo;
   wholesale?: WholesaleInfo;
   initialSizes?: CreateInfo['initialSizes'];
@@ -132,6 +135,37 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
   const mainTransaction = transactions[0];
   const { deleteTransaction } = useDatabase();
 
+  // State для хранения данных товара (картинка)
+  const [itemData, setItemData] = useState<Item | null>(null);
+
+  // Получаем картинку - сначала из транзакции, потом из БД если нужно
+  const transactionImageUri = mainTransaction.itemImageUri;
+
+  // Загрузка данных товара при открытии модалки (только если нет картинки в транзакции)
+  useEffect(() => {
+    if (!visible) {
+      setItemData(null);
+      return;
+    }
+
+    // Если уже есть картинка в транзакции - не ищем
+    if (transactionImageUri) {
+      console.log('📦 Using image from transaction:', transactionImageUri);
+      return;
+    }
+
+    // Иначе пробуем найти по ID/имени
+    console.log('🔍 TransactionDetailsModal: searching for item, itemId=', mainTransaction.itemId, 'itemName=', mainTransaction.itemName);
+    if (mainTransaction.itemId || mainTransaction.itemName) {
+      getItemById(mainTransaction.itemId || 0, mainTransaction.itemName)
+        .then(item => {
+          console.log('📦 Fetched item:', item?.id, 'imageUri:', item?.imageUri);
+          setItemData(item);
+        })
+        .catch(err => console.error('Failed to fetch item:', err));
+    }
+  }, [visible, transactionImageUri, mainTransaction.itemId, mainTransaction.itemName]);
+
   // Обработка системной кнопки "назад" на Android
   useEffect(() => {
     if (!visible) return;
@@ -145,16 +179,74 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
   }, [visible, onClose]);
 
   const handleDelete = () => {
+    const isAssistantUser = isAssistant();
+    const title = isAssistantUser ? 'Запросить удаление?' : 'Удалить транзакцию?';
+    const message = isAssistantUser
+      ? 'Будет отправлен запрос на удаление транзакции администратору для одобрения.'
+      : 'Это действие отменит продажу и вернёт товар на склад. Это нельзя отменить.';
+    const buttonText = isAssistantUser ? 'Отправить запрос' : 'Удалить';
+
     Alert.alert(
-      'Удалить транзакцию?',
-      'Это действие отменит продажу и вернёт товар на склад. Это нельзя отменить.',
+      title,
+      message,
       [
         { text: 'Отмена', style: 'cancel' },
         {
-          text: 'Удалить',
+          text: buttonText,
           style: 'destructive',
           onPress: async () => {
             try {
+              if (isAssistantUser) {
+                // Сначала синхронизируемся чтобы получить актуальные данные
+                try {
+                  console.log('🔄 Syncing before delete request...');
+                  await SyncService.assistantPull();
+                } catch (syncErr) {
+                  console.warn('Sync before delete failed:', syncErr);
+                }
+
+                // Загружаем данные товара если их нет (для itemServerId и itemCode)
+                let currentItemData = itemData;
+                if (!currentItemData && (mainTransaction.itemId || mainTransaction.itemName)) {
+                  try {
+                    currentItemData = await getItemById(mainTransaction.itemId || 0, mainTransaction.itemName);
+                    console.log('📦 Loaded item data:', currentItemData?.id, currentItemData?.serverId, currentItemData?.code);
+                  } catch (err) {
+                    console.warn('Failed to load item data:', err);
+                  }
+                }
+
+                // Ассистент отправляет запрос на одобрение
+                const transactionDetails = parseDetails(mainTransaction.details);
+                await SyncService.requestApproval(
+                  'DELETE_TRANSACTION',
+                  mainTransaction.serverId || mainTransaction.id,
+                  {
+                    transaction: {
+                      id: mainTransaction.id,
+                      serverId: mainTransaction.serverId,
+                      itemId: mainTransaction.itemId,
+                      itemName: mainTransaction.itemName,
+                      action: mainTransaction.action,
+                      timestamp: mainTransaction.timestamp,
+                    },
+                    // Добавляем код и serverId товара для уникальной идентификации на сервере
+                    itemCode: currentItemData?.code,
+                    itemServerId: currentItemData?.serverId,
+                    details: transactionDetails,
+                  },
+                  {}, // newData - пустой объект для удаления (DTO требует объект)
+                  'Запрос на удаление транзакции продажи'
+                );
+                Alert.alert(
+                  'Запрос отправлен',
+                  'Администратор получит уведомление и рассмотрит ваш запрос на удаление.'
+                );
+                onClose();
+                return;
+              }
+
+              // Админ удаляет напрямую
               const res = await deleteTransaction(mainTransaction.id);
               if (res.success) {
                 onTransactionDeleted?.();
@@ -162,8 +254,12 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
               } else {
                 Alert.alert('Ошибка', res.message || 'Не удалось удалить транзакцию');
               }
-            } catch (error) {
-              Alert.alert('Ошибка', 'Не удалось удалить транзакцию');
+            } catch (error: any) {
+              console.error('Error in handleDelete:', error);
+              Alert.alert(
+                'Ошибка',
+                error.response?.data?.message || error.message || 'Не удалось выполнить операцию'
+              );
             }
           }
         }
@@ -590,6 +686,60 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
     );
   };
 
+  // Рендер для admin_approved_sale_deletion (удаление продажи с возвратом товара)
+  const renderAdminApprovedSaleDeletionDetails = (details: any) => {
+    const deletedTransaction = details.deletedTransaction || {};
+    const transactionInfo = deletedTransaction.transaction || {};
+    const saleDetails = deletedTransaction.details || {};
+    const restoredQuantity = details.restoredQuantity || 0;
+
+    return (
+      <View>
+        <Text style={[styles.sectionTitle, { color: colors.text.normal }]}>Возврат продажи (одобрено):</Text>
+        <View>
+          {transactionInfo.itemName && (
+            <View style={styles.row}>
+              <Text style={[styles.label, { color: colors.text.muted }]}>Товар:</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{transactionInfo.itemName}</Text>
+            </View>
+          )}
+          {saleDetails.sale && (
+            <>
+              <View style={styles.row}>
+                <Text style={[styles.label, { color: colors.text.muted }]}>Размер:</Text>
+                <Text style={[styles.value, { color: colors.text.normal }]}>{saleDetails.sale.size}</Text>
+              </View>
+              <View style={styles.row}>
+                <Text style={[styles.label, { color: colors.text.muted }]}>Количество:</Text>
+                <Text style={[styles.value, { color: colors.text.normal }]}>{saleDetails.sale.quantity} шт.</Text>
+              </View>
+              <View style={styles.row}>
+                <Text style={[styles.label, { color: colors.text.muted }]}>Цена продажи:</Text>
+                <Text style={[styles.value, { color: colors.text.normal }]}>{saleDetails.sale.salePrice} ₽</Text>
+              </View>
+            </>
+          )}
+          {restoredQuantity > 0 && (
+            <View style={styles.row}>
+              <Text style={[styles.label, { color: colors.text.muted }]}>Возвращено:</Text>
+              <Text style={[styles.value, { color: '#22c55e' }]}>{restoredQuantity} шт.</Text>
+            </View>
+          )}
+          <View style={[styles.infoBox, {
+            backgroundColor: isDark ? 'rgba(34, 197, 94, 0.2)' : '#f0fdf4',
+            borderColor: '#22c55e',
+            marginTop: 12
+          }]}>
+            <MaterialIcons name="restore" size={20} color="#22c55e" style={{ marginRight: 8 }} />
+            <Text style={[styles.infoText, { color: isDark ? '#4ade80' : '#16a34a' }]}>
+              Продажа отменена, товар возвращён на склад.
+            </Text>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
   const renderAdminApprovedUpdateDetails = (details: any) => {
     const oldData = details.oldData || {};
     const newData = details.newData || {};
@@ -736,6 +886,9 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
     if (details.type === 'admin_approved_update') {
       return renderAdminApprovedUpdateDetails(details);
     }
+    if (details.type === 'admin_approved_sale_deletion') {
+      return renderAdminApprovedSaleDeletionDetails(details);
+    }
 
     // Проверяем на price_update
     if (details.type === 'price_update') {
@@ -780,6 +933,9 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
     }
     if (details?.type === 'admin_approved_update') {
       return 'Обновление (одобрено)';
+    }
+    if (details?.type === 'admin_approved_sale_deletion') {
+      return 'Возврат продажи';
     }
 
     switch (mainTransaction.action) {
@@ -834,11 +990,41 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
 
         {/* Content */}
         <ScrollView style={styles.modalContent} contentContainerStyle={styles.contentPadding}>
-          <Text style={[styles.itemName, { color: colors.text.normal }]}>{mainTransaction.itemName}</Text>
-          <Text style={[styles.actionText, { color: colors.text.muted }]}>{getActionText()}</Text>
-          <Text style={[styles.timestamp, { color: colors.text.muted }]}>
-            {new Date(mainTransaction.timestamp * 1000).toLocaleString('ru-RU')}
-          </Text>
+          {/* Header with item info and image */}
+          <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: 16 }}>
+            {/* Left side - name, action, time */}
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.itemName, { color: colors.text.normal }]}>{mainTransaction.itemName}</Text>
+              <Text style={[styles.actionText, { color: colors.text.muted }]}>{getActionText()}</Text>
+              <Text style={[styles.timestamp, { color: colors.text.muted }]}>
+                {new Date(mainTransaction.timestamp * 1000).toLocaleString('ru-RU')}
+              </Text>
+            </View>
+            {/* Right side - item image */}
+            {(transactionImageUri || itemData?.imageUri) && (
+              <View style={{
+                marginLeft: 12,
+                borderRadius: 12,
+                overflow: 'hidden',
+                shadowColor: '#000',
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.15,
+                shadowRadius: 4,
+                elevation: 3,
+              }}>
+                <Image
+                  source={{ uri: transactionImageUri || itemData?.imageUri || '' }}
+                  style={{
+                    width: 70,
+                    height: 70,
+                    borderRadius: 12,
+                    backgroundColor: colors.background.card,
+                  }}
+                  resizeMode="cover"
+                />
+              </View>
+            )}
+          </View>
           {renderContent()}
         </ScrollView>
       </View>

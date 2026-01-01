@@ -6,6 +6,7 @@ import {
   StyleSheet,
   ScrollView,
   RefreshControl,
+  TouchableOpacity,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -43,7 +44,9 @@ const StatisticsScreen: React.FC = () => {
       <SafeAreaView style={[styles.container, { backgroundColor: colors.background.screen }]} edges={['top']}>
         <View style={[styles.header, { backgroundColor: colors.background.card, borderBottomColor: colors.border.normal }]}>
           <Text style={[styles.headerTitle, { color: colors.text.normal }]}>Статистика</Text>
-          <MaterialIcons name="analytics" size={24} color={isDark ? colors.primary.gold : colors.primary.blue} />
+          <TouchableOpacity onPress={refetch} activeOpacity={0.7}>
+            <MaterialIcons name="analytics" size={24} color={isDark ? colors.primary.gold : colors.primary.blue} />
+          </TouchableOpacity>
         </View>
         <LoadingSpinner text="Загрузка статистики..." />
       </SafeAreaView>
@@ -55,7 +58,9 @@ const StatisticsScreen: React.FC = () => {
       <SafeAreaView style={[styles.container, { backgroundColor: colors.background.screen }]} edges={['top']}>
         <View style={[styles.header, { backgroundColor: colors.background.card, borderBottomColor: colors.border.normal }]}>
           <Text style={[styles.headerTitle, { color: colors.text.normal }]}>Статистика</Text>
-          <MaterialIcons name="analytics" size={24} color={isDark ? colors.primary.gold : colors.primary.blue} />
+          <TouchableOpacity onPress={refetch} activeOpacity={0.7}>
+            <MaterialIcons name="analytics" size={24} color={isDark ? colors.primary.gold : colors.primary.blue} />
+          </TouchableOpacity>
         </View>
         <EmptyState
           icon="error"
@@ -91,7 +96,9 @@ const StatisticsScreen: React.FC = () => {
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background.screen }]} edges={['top']}>
       <View style={[styles.header, { backgroundColor: colors.background.card, borderBottomColor: colors.border.normal }]}>
         <Text style={[styles.headerTitle, { color: colors.text.normal }]}>Статистика</Text>
-        <MaterialIcons name="analytics" size={24} color={isDark ? colors.primary.gold : colors.primary.blue} />
+        <TouchableOpacity onPress={refetch} activeOpacity={0.7}>
+          <MaterialIcons name="analytics" size={24} color={isDark ? colors.primary.gold : colors.primary.blue} />
+        </TouchableOpacity>
       </View>
 
       <ScrollView

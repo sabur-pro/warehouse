@@ -1,5 +1,5 @@
 // src/components/history/HistoryContentNew.tsx
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, forwardRef, useImperativeHandle } from 'react';
 import {
   View,
   Text,
@@ -30,7 +30,11 @@ interface DateGroup {
   transactions: GroupedTransaction[];
 }
 
-const HistoryContentNew: React.FC = () => {
+export interface HistoryContentNewRef {
+  refresh: () => void;
+}
+
+const HistoryContentNew = forwardRef<HistoryContentNewRef>((_, ref) => {
   const { isDark } = useTheme();
   const colors = getThemeColors(isDark);
 
@@ -272,6 +276,11 @@ const HistoryContentNew: React.FC = () => {
     loadTransactions(false, true);
   };
 
+  // Expose refresh method to parent via ref
+  useImperativeHandle(ref, () => ({
+    refresh: handleRefresh,
+  }), []);
+
   const handleSearch = () => {
     // Просто сбрасываем offset, useEffect сделает загрузку
     if (searchQuery.trim()) {
@@ -338,6 +347,7 @@ const HistoryContentNew: React.FC = () => {
     let isRegularUpdate = false;
     let isAdminApprovedUpdate = false;
     let isAdminApprovedDelete = false;
+    let isAdminApprovedSaleDeletion = false;
 
     // СНАЧАЛА проверяем grouped транзакции (приоритет у продажи!)
     if (item.type === 'grouped') {
@@ -370,6 +380,9 @@ const HistoryContentNew: React.FC = () => {
         if (details.type === 'price_update') {
           isPriceUpdate = true;
           actionText = 'Обновление цены';
+        } else if (details.type === 'admin_approved_sale_deletion') {
+          // Возврат продажи - специальный тип
+          actionText = 'Возврат продажи';
         } else if (details.type === 'admin_approved_update') {
           isAdminApprovedUpdate = true;
           actionText = 'Обновление (одобрено)';
@@ -400,9 +413,22 @@ const HistoryContentNew: React.FC = () => {
       icon = 'sync';
       color = '#f59e0b';
     } else {
-      const iconData = getActionIconAndColor(mainAction);
-      icon = iconData.icon;
-      color = iconData.color;
+      // Проверяем admin_approved_sale_deletion здесь
+      try {
+        const details = JSON.parse(item.transactions[0].details || '{}');
+        if (details.type === 'admin_approved_sale_deletion') {
+          isAdminApprovedSaleDeletion = true;
+        }
+      } catch { }
+
+      if (isAdminApprovedSaleDeletion) {
+        icon = 'restore';
+        color = '#22c55e';
+      } else {
+        const iconData = getActionIconAndColor(mainAction);
+        icon = iconData.icon;
+        color = iconData.color;
+      }
     }
     const formattedTime = new Date(item.transactions[0].timestamp * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 
@@ -411,7 +437,8 @@ const HistoryContentNew: React.FC = () => {
         <View style={[
           styles.transactionItem,
           { backgroundColor: colors.background.card },
-          item.type === 'grouped' && styles.groupedTransactionItem
+          item.type === 'grouped' && styles.groupedTransactionItem,
+          isAdminApprovedSaleDeletion && { borderLeftWidth: 4, borderLeftColor: '#22c55e' }
         ]}>
           <View style={[styles.iconContainer, { backgroundColor: `${color}20` }]}>
             <MaterialIcons name={icon} size={24} color={color} />
@@ -606,7 +633,7 @@ const HistoryContentNew: React.FC = () => {
       )}
     </View>
   );
-};
+});
 
 // Helper functions
 const getMonthName = (month: number): string => {
@@ -652,7 +679,10 @@ const parseDetailsType = (details: string | null | undefined): string => {
   if (!details) return 'Детали';
   try {
     const parsed = JSON.parse(details);
-    if (parsed.type === 'price_update') {
+    if (parsed.type === 'admin_approved_sale_deletion') {
+      const saleInfo = parsed.deletedTransaction?.details?.sale;
+      return `Возврат - Размер ${saleInfo?.size || 'N/A'}, ${parsed.restoredQuantity || 1} шт.`;
+    } else if (parsed.type === 'price_update') {
       return `Обновление цены - было ${parsed.oldTotalValue?.toFixed(2) || '0'} сом., стало ${parsed.newTotalValue?.toFixed(2) || '0'} сом.`;
     } else if (parsed.type === 'update' && parsed.changes && parsed.changes.length > 0) {
       return `Обновление - ${parsed.changes.length} изменений`;

@@ -7,6 +7,8 @@ import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system';
 import * as Print from 'expo-print';
 import { QRCodeInfo, parseQRCodes } from '../utils/qrCodeUtils';
+import { useTheme } from '../src/contexts/ThemeContext';
+import { getThemeColors } from '../constants/theme';
 
 interface QRCodeDisplayProps {
   qrCodes: string | null;
@@ -19,6 +21,8 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ qrCodes, itemName,
   const qrRefs = useRef<{ [key: string]: any }>({});
   const parsedQRCodes = parseQRCodes(qrCodes);
   const [isExpanded, setIsExpanded] = useState(false);
+  const { isDark } = useTheme();
+  const colors = getThemeColors(isDark);
 
   if (!qrCodes || parsedQRCodes.length === 0) {
     return null;
@@ -37,7 +41,7 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ qrCodes, itemName,
       qrRef.toDataURL(async (data: string) => {
         try {
           const label = getQRLabel(qrCode, index);
-          
+
           // Создаем HTML для PDF с одним QR кодом по центру
           const htmlContent = `
             <!DOCTYPE html>
@@ -260,17 +264,33 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ qrCodes, itemName,
     return `QR #${index + 1}`;
   };
 
+  // Цвета для QR-секции
+  const qrHeaderBg = isDark ? 'rgba(212, 175, 55, 0.15)' : 'rgba(59, 130, 246, 0.1)';
+  const qrHeaderBorder = isDark ? colors.primary.gold : '#bfdbfe';
+  const qrIconColor = isDark ? colors.primary.gold : '#3B82F6';
+  const qrTitleColor = isDark ? colors.primary.gold : '#1e40af';
+  const qrSubtitleColor = isDark ? colors.text.muted : '#2563eb';
+  const qrContentBg = isDark ? colors.background.card : '#f8fafc';
+  const qrCardBg = isDark ? colors.background.screen : '#ffffff';
+  const qrCardBorder = isDark ? colors.border.normal : '#e2e8f0';
+  const downloadBtnBg = isDark ? colors.primary.gold : '#22c55e';
+
   return (
     <View className="mb-3">
       {/* Заголовок секции - кликабельный для сворачивания/разворачивания */}
       <TouchableOpacity
         onPress={() => setIsExpanded(!isExpanded)}
-        className="bg-blue-50 border border-blue-200 p-3 rounded-xl mb-2"
+        style={{
+          backgroundColor: qrHeaderBg,
+          borderColor: qrHeaderBorder,
+          borderWidth: 1
+        }}
+        className="p-3 rounded-xl mb-2"
       >
         <View className="flex-row items-center justify-between">
           <View className="flex-row items-center flex-1">
-            <Ionicons name="qr-code" size={22} color="#3B82F6" />
-            <Text className="text-base font-semibold text-blue-800 ml-2">
+            <Ionicons name="qr-code" size={22} color={qrIconColor} />
+            <Text style={{ color: qrTitleColor }} className="text-base font-semibold ml-2">
               QR-коды ({parsedQRCodes.length})
             </Text>
           </View>
@@ -281,21 +301,22 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ qrCodes, itemName,
                   e.stopPropagation();
                   handleDownloadAll();
                 }}
-                className="bg-green-500 px-3 py-1 rounded-full flex-row items-center mr-2"
+                style={{ backgroundColor: downloadBtnBg }}
+                className="px-3 py-1 rounded-full flex-row items-center mr-2"
               >
                 <Ionicons name="download-outline" size={14} color="white" />
                 <Text className="text-white text-xs font-semibold ml-1">Скачать все</Text>
               </TouchableOpacity>
             )}
-            <Ionicons 
-              name={isExpanded ? "chevron-up" : "chevron-down"} 
-              size={20} 
-              color="#3B82F6" 
+            <Ionicons
+              name={isExpanded ? "chevron-up" : "chevron-down"}
+              size={20}
+              color={qrIconColor}
             />
           </View>
         </View>
         {!isExpanded && (
-          <Text className="text-blue-600 text-xs mt-1">
+          <Text style={{ color: qrSubtitleColor }} className="text-xs mt-1">
             Нажмите, чтобы открыть QR-коды
           </Text>
         )}
@@ -303,26 +324,37 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ qrCodes, itemName,
 
       {/* Содержимое QR кодов - показывается только когда развернуто */}
       {isExpanded && (
-        <View className="bg-gray-50 p-3 rounded-xl">
+        <View style={{ backgroundColor: qrContentBg }} className="p-3 rounded-xl">
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
             <View className="flex-row" style={{ gap: 12 }}>
               {parsedQRCodes.map((qrCode, index) => (
                 <View
                   key={qrCode.id}
-                  className="bg-white p-4 rounded-xl border-2 border-gray-200 items-center"
-                  style={{ width: 200 }}
+                  style={{
+                    backgroundColor: qrCardBg,
+                    borderColor: qrCardBorder,
+                    borderWidth: 2,
+                    width: 200
+                  }}
+                  className="p-4 rounded-xl items-center"
                 >
-                  <Text className="text-sm font-semibold text-gray-700 mb-2 text-center">
+                  <Text style={{ color: colors.text.normal }} className="text-sm font-semibold mb-2 text-center">
                     {getQRLabel(qrCode, index)}
                   </Text>
-                  <QRCode
-                    value={qrCode.data}
-                    size={150}
-                    getRef={(ref) => (qrRefs.current[qrCode.id] = ref)}
-                  />
+                  {/* QR код рендерится с белым фоном для читаемости */}
+                  <View style={{ backgroundColor: '#ffffff', padding: 8, borderRadius: 8 }}>
+                    <QRCode
+                      value={qrCode.data}
+                      size={134}
+                      getRef={(ref) => (qrRefs.current[qrCode.id] = ref)}
+                      backgroundColor="#ffffff"
+                      color="#000000"
+                    />
+                  </View>
                   <TouchableOpacity
                     onPress={() => handleDownloadQR(qrCode, index)}
-                    className="mt-3 bg-green-500 px-4 py-2 rounded-full flex-row items-center"
+                    style={{ backgroundColor: downloadBtnBg }}
+                    className="mt-3 px-4 py-2 rounded-full flex-row items-center"
                   >
                     <Ionicons name="download-outline" size={16} color="white" />
                     <Text className="text-white text-xs font-semibold ml-1">Скачать</Text>
@@ -336,3 +368,4 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ qrCodes, itemName,
     </View>
   );
 };
+

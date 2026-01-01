@@ -15,9 +15,10 @@ import {
   DeviceEventEmitter,
   TouchableOpacity,
   Animated,
+  useWindowDimensions,
 } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { useDatabase } from '../hooks/useDatabase';
 import { Item, ItemType } from '../database/types';
 import { ItemGrid } from './ItemGrid';
@@ -31,9 +32,24 @@ type ItemWithExtras = Item & {
   sizeText?: string;
 };
 
-export const ItemList = forwardRef((props, ref) => {
+interface ItemListProps {
+  onRefresh?: () => void;
+}
+
+export const ItemList = forwardRef<any, ItemListProps>(({ onRefresh }, ref) => {
   const { isDark } = useTheme();
   const colors = getThemeColors(isDark);
+
+  // Используем размеры экрана для адаптивной сетки
+  const { width: screenWidth } = useWindowDimensions();
+
+  // Рассчитываем количество колонок в зависимости от ширины экрана
+  // < 400px: 2 колонки (маленький телефон)
+  // 400-600px: 3 колонки (обычный телефон)
+  // 600-900px: 4 колонки (планшет портрет или телефон landscape)
+  // 900-1200px: 5 колонок (планшет landscape)
+  // > 1200px: 6 колонок (большой планшет)
+  const numColumns = screenWidth < 400 ? 2 : screenWidth < 600 ? 3 : screenWidth < 900 ? 4 : screenWidth < 1200 ? 5 : 6;
 
   const [items, setItems] = useState<ItemWithExtras[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -210,6 +226,9 @@ export const ItemList = forwardRef((props, ref) => {
         Alert.alert('Ошибка', 'Не удалось открыть товар');
       }
     },
+    refresh: () => {
+      loadFirstPage();
+    },
   }));
 
   const handleLoadMore = () => {
@@ -354,7 +373,7 @@ export const ItemList = forwardRef((props, ref) => {
           </View>
 
           {/* Фильтры по типу товара */}
-          <View style={{ flexDirection: 'row', gap: 8 }}>
+          <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
             <TouchableOpacity
               onPress={() => setSelectedItemType('all')}
               style={[
@@ -429,6 +448,33 @@ export const ItemList = forwardRef((props, ref) => {
                 Одежда
               </Text>
             </TouchableOpacity>
+
+            {/* Spacer */}
+            <View style={{ flex: 1 }} />
+
+            {/* Refresh button */}
+            <TouchableOpacity
+              onPress={() => {
+                if (onRefresh) {
+                  onRefresh();
+                } else {
+                  loadFirstPage();
+                }
+              }}
+              style={[
+                styles.refreshButton,
+                {
+                  backgroundColor: isDark ? 'rgba(212, 175, 55, 0.15)' : 'rgba(59, 130, 246, 0.1)',
+                }
+              ]}
+              activeOpacity={0.7}
+            >
+              <MaterialIcons
+                name="refresh"
+                size={20}
+                color={accentColor}
+              />
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -437,8 +483,9 @@ export const ItemList = forwardRef((props, ref) => {
           renderItem={({ item }) => (
             <ItemGrid item={item} onPress={() => handleItemPress(item)} searchTerm={debouncedSearch} />
           )}
-          keyExtractor={(item) => String(item.id)}
-          numColumns={3}
+          keyExtractor={(item, index) => `${item.id}_${item.serverId || 'local'}_${index}`}
+          numColumns={numColumns}
+          key={`grid-${numColumns}`}
           contentContainerStyle={{ padding: 8, flexGrow: 1 }}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={() => loadFirstPage()} />
@@ -505,5 +552,12 @@ const styles = StyleSheet.create({
   },
   filterTagTextActive: {
     // color set dynamically
+  },
+  refreshButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

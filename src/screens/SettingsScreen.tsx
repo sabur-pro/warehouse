@@ -15,21 +15,33 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useDatabase, ImportResult } from '../../hooks/useDatabase';
 import * as FileSystem from 'expo-file-system';
-import { 
+import {
   streamingExportDatabase,
   streamingImportFromFolder,
   StreamingExportProgress,
-  StreamingImportProgress 
+  StreamingImportProgress
 } from '../../database/streamingImportExport';
+import { generateLocalTestData } from '../../database/database';
 import * as DocumentPicker from 'expo-document-picker';
+import { useTheme } from '../contexts/ThemeContext';
+import { getThemeColors } from '../../constants/theme';
+import { useNavigation } from '@react-navigation/native';
+import LogService from '../services/LogService';
+import SyncService from '../services/SyncService';
 
 const SettingsScreen: React.FC = () => {
+  const navigation = useNavigation();
+  const { isDark } = useTheme();
+  const colors = getThemeColors(isDark);
+
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState<string>('');
   const [exportProgress, setExportProgress] = useState<StreamingExportProgress | null>(null);
   const [importProgress, setImportProgress] = useState<StreamingImportProgress | null>(null);
   const [showStreamingExport, setShowStreamingExport] = useState(false);
-  
+
   const {
     clearDatabase,
     exportDatabase,
@@ -41,23 +53,13 @@ const SettingsScreen: React.FC = () => {
   const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 
   const handleExport = async () => {
-    // Предлагаем выбор типа экспорта
     Alert.alert(
       'Тип экспорта',
       'Выберите способ экспорта:',
       [
-        {
-          text: 'Обычный (ZIP)',
-          onPress: handleStandardExport
-        },
-        {
-          text: 'Большие объемы (Папка)',
-          onPress: handleStreamingExport
-        },
-        {
-          text: 'Отмена',
-          style: 'cancel'
-        }
+        { text: 'Обычный (ZIP)', onPress: handleStandardExport },
+        { text: 'Большие объемы (Папка)', onPress: handleStreamingExport },
+        { text: 'Отмена', style: 'cancel' }
       ]
     );
   };
@@ -82,20 +84,15 @@ const SettingsScreen: React.FC = () => {
       setIsExporting(true);
       setShowStreamingExport(true);
       setExportProgress({ stage: 'preparing', current: 0, total: 100, message: 'Подготовка...' });
-      
+
       const folderPath = await streamingExportDatabase((progress) => {
         setExportProgress(progress);
       });
-      
+
       Alert.alert(
-        'Экспорт завершен!', 
+        'Экспорт завершен!',
         `Данные сохранены в папку:\n${folderPath}\n\nДля больших файлов рекомендуем заархивировать папку через файловый менеджер.`,
-        [
-          {
-            text: 'ОК',
-            onPress: () => setShowStreamingExport(false)
-          }
-        ]
+        [{ text: 'ОК', onPress: () => setShowStreamingExport(false) }]
       );
     } catch (e) {
       console.error('Streaming export error:', e);
@@ -116,41 +113,18 @@ const SettingsScreen: React.FC = () => {
       if (res.imported) {
         let message = 'Импорт завершён успешно!';
         if (res.itemsWithoutPrice && res.itemsWithoutPrice > 0) {
-          message += `\n\n⚠️ Внимание: ${res.itemsWithoutPrice} товар(ов) импортированы без цены и помечены красной рамкой. Пожалуйста, откройте эти товары и добавьте цены.`;
+          message += `\n\n⚠️ Внимание: ${res.itemsWithoutPrice} товар(ов) импортированы без цены.`;
         }
         Alert.alert('Успех', message);
       } else {
         const message = res.message ?? 'cancelled';
-        if (message === 'cancelled') {
-          Alert.alert(
-            'Импорт отменён',
-            'Вы отменили выбор файла или система не открыла диалог. Попробуйте снова: нажмите "Импорт" и выберите ZIP-файл.'
-          );
-        } else if (message.includes('слишком большой')) {
-          Alert.alert(
-            'Файл слишком большой',
-            message + '\n\nСоветы по уменьшению размера:\n• Сжать изображения\n• Удалить ненужные товары\n• Разделить на несколько файлов'
-          );
-        } else if (message.includes('памяти')) {
-          Alert.alert(
-            'Недостаточно памяти',
-            message + '\n\nПопробуйте:\n• Перезапустить приложение\n• Закрыть другие приложения\n• Использовать файл меньшего размера'
-          );
-        } else {
+        if (message !== 'cancelled') {
           Alert.alert('Ошибка импорта', String(message));
         }
       }
     } catch (e) {
       console.error('Import error:', e);
-      const errorMessage = String((e as any)?.message || e);
-      if (errorMessage.includes('OutOfMemoryError') || errorMessage.includes('памяти')) {
-        Alert.alert(
-          'Недостаточно памяти',
-          'Файл слишком большой для обработки.\n\nРешения:\n• Перезапустить приложение\n• Сжать изображения в архиве\n• Разделить данные на несколько файлов\n• Использовать устройство с большим объемом RAM'
-        );
-      } else {
-        Alert.alert('Ошибка', 'Не удалось импортировать файл: ' + errorMessage);
-      }
+      Alert.alert('Ошибка', 'Не удалось импортировать файл: ' + String((e as any)?.message || e));
     } finally {
       setIsImporting(false);
     }
@@ -168,10 +142,9 @@ const SettingsScreen: React.FC = () => {
   };
 
   const handlePickItemsCsvForLargeImport = async () => {
-    // НЕ устанавливаем setIsImporting(true) здесь - только покажем диалог
     Alert.alert(
       'Выбор файлов для импорта',
-      'Для импорта больших данных нужно выбрать несколько файлов:\n\n1. items.csv (обязательно)\n2. transactions.csv (опционально)\n3. Изображения из папки images/ (опционально)\n\nНачнем с items.csv',
+      'Начнем с items.csv',
       [
         { text: 'Отмена', style: 'cancel' },
         { text: 'Выбрать файлы', onPress: () => pickMultipleFilesForImport() }
@@ -181,39 +154,29 @@ const SettingsScreen: React.FC = () => {
 
   const pickMultipleFilesForImport = async () => {
     try {
-      // Шаг 1: Выбираем items.csv
       const itemsResult = await DocumentPicker.getDocumentAsync({
         type: ['text/csv', 'text/comma-separated-values', '*/*'],
-        copyToCacheDirectory: true, // Копируем в кеш
+        copyToCacheDirectory: true,
         multiple: false
       });
 
-      if (itemsResult.canceled || !itemsResult.assets || itemsResult.assets.length === 0) {
-        // Пользователь отменил выбор
-        return;
-      }
+      if (itemsResult.canceled || !itemsResult.assets || itemsResult.assets.length === 0) return;
 
       const itemsUri = itemsResult.assets[0].uri;
       const itemsName = itemsResult.assets[0].name || '';
-      
-      console.log('Selected items.csv:', itemsUri);
 
       if (!itemsName.toLowerCase().includes('items.csv')) {
         Alert.alert('Ошибка', 'Пожалуйста, выберите файл items.csv');
         return;
       }
 
-      // Шаг 2: Предлагаем выбрать transactions.csv
       Alert.alert(
         'Выбрать transactions.csv?',
-        'Хотите импортировать историю транзакций?\n\n(Можно пропустить если нужны только товары)',
+        'Хотите импортировать историю транзакций?',
         [
-          { 
-            text: 'Пропустить', 
-            onPress: () => askForImages(itemsUri, null)
-          },
-          { 
-            text: 'Выбрать', 
+          { text: 'Пропустить', onPress: () => askForImages(itemsUri, null) },
+          {
+            text: 'Выбрать',
             onPress: async () => {
               const transResult = await DocumentPicker.getDocumentAsync({
                 type: ['text/csv', 'text/comma-separated-values', '*/*'],
@@ -221,15 +184,9 @@ const SettingsScreen: React.FC = () => {
                 multiple: false
               });
 
-              const transUri = (!transResult.canceled && transResult.assets && transResult.assets.length > 0) 
-                ? transResult.assets[0].uri 
+              const transUri = (!transResult.canceled && transResult.assets && transResult.assets.length > 0)
+                ? transResult.assets[0].uri
                 : null;
-
-              if (transUri) {
-                console.log('Selected transactions.csv:', transUri);
-              }
-
-              // Переходим к выбору изображений
               askForImages(itemsUri, transUri);
             }
           }
@@ -244,16 +201,10 @@ const SettingsScreen: React.FC = () => {
   const askForImages = (itemsUri: string, transactionsUri: string | null) => {
     Alert.alert(
       'Выбрать изображения?',
-      'Хотите загрузить изображения товаров?\n\n📸 Можно выбрать несколько файлов (до 50 за раз)\n\n💡 Совет: Если экспортировали из старой версии, выберите изображения из папки "images" экспорта. Система автоматически сопоставит их с товарами.\n\n(Можно пропустить если изображения не нужны)',
+      'Хотите загрузить изображения товаров?',
       [
-        { 
-          text: 'Пропустить', 
-          onPress: () => proceedToImportWithFiles(itemsUri, transactionsUri, [])
-        },
-        { 
-          text: 'Выбрать', 
-          onPress: () => pickImages(itemsUri, transactionsUri)
-        }
+        { text: 'Пропустить', onPress: () => proceedToImportWithFiles(itemsUri, transactionsUri, []) },
+        { text: 'Выбрать', onPress: () => pickImages(itemsUri, transactionsUri) }
       ]
     );
   };
@@ -267,101 +218,52 @@ const SettingsScreen: React.FC = () => {
       });
 
       let imageUris: string[] = [];
-      
       if (!imageResult.canceled && imageResult.assets && imageResult.assets.length > 0) {
         imageUris = imageResult.assets.map(asset => asset.uri);
-        console.log(`Selected ${imageUris.length} images`);
       }
-
       proceedToImportWithFiles(itemsUri, transactionsUri, imageUris);
     } catch (error) {
       console.error('Image pick error:', error);
-      Alert.alert('Ошибка выбора изображений', 'Продолжаем импорт без изображений');
       proceedToImportWithFiles(itemsUri, transactionsUri, []);
     }
   };
 
   const proceedToImportWithFiles = async (
-    itemsUri: string, 
+    itemsUri: string,
     transactionsUri: string | null,
     imageUris: string[]
   ) => {
-    // ТЕПЕРЬ устанавливаем флаг загрузки - начинается реальный импорт
     setIsImporting(true);
-    
     try {
-      // Создаем временную папку для импорта
       const tempImportDir = `${FileSystem.documentDirectory}temp_large_import_${Date.now()}/`;
       await FileSystem.makeDirectoryAsync(tempImportDir, { intermediates: true });
-      
-      // Создаем папку для изображений
       const imagesDir = `${tempImportDir}images/`;
       await FileSystem.makeDirectoryAsync(imagesDir, { intermediates: true });
 
-      console.log('Copying files to temp directory:', tempImportDir);
-
-      // Копируем items.csv
-      const itemsDestPath = `${tempImportDir}items.csv`;
-      await FileSystem.copyAsync({ from: itemsUri, to: itemsDestPath });
-      console.log('Copied items.csv to:', itemsDestPath);
-
-      // Копируем transactions.csv если есть
+      await FileSystem.copyAsync({ from: itemsUri, to: `${tempImportDir}items.csv` });
       if (transactionsUri) {
-        const transDestPath = `${tempImportDir}transactions.csv`;
-        await FileSystem.copyAsync({ from: transactionsUri, to: transDestPath });
-        console.log('Copied transactions.csv to:', transDestPath);
+        await FileSystem.copyAsync({ from: transactionsUri, to: `${tempImportDir}transactions.csv` });
       }
 
-      // Копируем изображения если есть
-      if (imageUris.length > 0) {
-        console.log(`Copying ${imageUris.length} images...`);
-        console.log('Image URIs:', imageUris);
-        
-        for (let i = 0; i < imageUris.length; i++) {
-          try {
-            const imageUri = imageUris[i];
-            // Получаем имя файла из URI - очищаем от спецсимволов
-            let fileName = imageUri.split('/').pop() || `image_${i}.jpg`;
-            
-            // Декодируем URL-encoded имена файлов
-            try {
-              fileName = decodeURIComponent(fileName);
-            } catch (e) {
-              console.warn('Failed to decode filename:', fileName);
-            }
-            
-            // Убираем query parameters если есть (например ?timestamp=123)
-            fileName = fileName.split('?')[0];
-            
-            const destPath = `${imagesDir}${fileName}`;
-            await FileSystem.copyAsync({ from: imageUri, to: destPath });
-            console.log(`✓ Copied image ${i + 1}/${imageUris.length}: ${fileName}`);
-          } catch (imgError) {
-            console.warn(`Failed to copy image ${i}:`, imgError);
-          }
-        }
-        console.log(`✓ All ${imageUris.length} images copied to ${imagesDir}`);
-        
-        // Выводим список всех файлов в папке для отладки
+      for (let i = 0; i < imageUris.length; i++) {
         try {
-          const filesInDir = await FileSystem.readDirectoryAsync(imagesDir);
-          console.log(`Files in images directory (${filesInDir.length}):`, filesInDir);
-        } catch (e) {
-          console.warn('Failed to read images directory:', e);
+          const imageUri = imageUris[i];
+          let fileName = imageUri.split('/').pop() || `image_${i}.jpg`;
+          try { fileName = decodeURIComponent(fileName); } catch (e) { }
+          fileName = fileName.split('?')[0];
+          await FileSystem.copyAsync({ from: imageUri, to: `${imagesDir}${fileName}` });
+        } catch (imgError) {
+          console.warn(`Failed to copy image ${i}:`, imgError);
         }
       }
 
-      // Импортируем из временной папки
       await handleLargeFileImport(tempImportDir);
-      
-      // Очищаем временную папку
+
       try {
         await FileSystem.deleteAsync(tempImportDir, { idempotent: true });
-        console.log('Cleaned up temp directory');
       } catch (cleanupError) {
         console.warn('Failed to cleanup temp directory:', cleanupError);
       }
-      
     } catch (error) {
       console.error('Import preparation error:', error);
       Alert.alert('Ошибка', String((error as any)?.message || error));
@@ -371,55 +273,27 @@ const SettingsScreen: React.FC = () => {
 
   const handleLargeFileImport = async (folderUri: string) => {
     try {
-      console.log('Starting large file import from folder:', folderUri);
-      
-      // Импортируем из папки потоково
       const result = await streamingImportFromFolder(folderUri, (progress) => {
         setImportProgress(progress);
-        console.log(`Import progress: ${progress.current}/${progress.total} - ${progress.message}`);
       });
-      
+
       let message = '✅ Импорт завершён успешно!';
-      
-      // Добавляем информацию об изображениях
       if (result.imagesImported !== undefined && result.imagesTotal !== undefined) {
-        if (result.imagesImported > 0) {
-          message += `\n\n📸 Изображения: ${result.imagesImported}`;
-          if (result.imagesTotal > result.imagesImported) {
-            message += ` (выбрано ${result.imagesTotal})`;
-          }
-        } else if (result.imagesTotal > 0) {
-          message += `\n\n⚠️ Изображения не сопоставлены (${result.imagesTotal} выбрано)`;
-          message += `\n\n💡 Совет: Проверьте консоль для подробностей`;
-        }
+        if (result.imagesImported > 0) message += `\n\n📸 Изображения: ${result.imagesImported}`;
       }
-      
-      // Добавляем информацию о ценах
       if (result.itemsWithoutPrice && result.itemsWithoutPrice > 0) {
         message += `\n\n🔴 ${result.itemsWithoutPrice} товар(ов) без цены`;
       }
-      
       Alert.alert('Импорт завершён', message);
       setImportProgress(null);
     } catch (error) {
       console.error('Folder import error:', error);
-      const errorMsg = String((error as any)?.message || error);
-      
-      if (errorMsg.includes('items.csv не найден')) {
-        Alert.alert(
-          'Файл не найден',
-          'Не удалось найти items.csv в подготовленной папке.\n\nПопробуйте снова или используйте "Импорт данных (ZIP)"',
-          [{ text: 'OK' }]
-        );
-      } else {
-        Alert.alert('Ошибка импорта', errorMsg);
-      }
+      Alert.alert('Ошибка импорта', String((error as any)?.message || error));
       setImportProgress(null);
     } finally {
       setIsImporting(false);
     }
   };
-
 
   const handleClearDatabase = async () => {
     Alert.alert(
@@ -435,7 +309,6 @@ const SettingsScreen: React.FC = () => {
               await clearDatabase();
               Alert.alert('Успех', 'База данных очищена');
             } catch (error) {
-              console.error('Error clearing database:', error);
               Alert.alert('Ошибка', 'Не удалось очистить базу данных');
             }
           },
@@ -458,13 +331,78 @@ const SettingsScreen: React.FC = () => {
               await clearTransactions();
               Alert.alert('Успех', 'История очищена');
             } catch (error) {
-              console.error('Failed to clear transactions:', error);
               Alert.alert('Ошибка', 'Не удалось очистить историю');
             }
           }
         }
       ]
     );
+  };
+
+  const handleGenerateTestData = async () => {
+    Alert.alert(
+      'Генерация тестовых данных',
+      'Это действие создаст 3000 товаров и 15000 транзакций для нагрузочного тестирования. Это может занять несколько минут. Продолжить?',
+      [
+        { text: 'Отмена', style: 'cancel' },
+        {
+          text: 'Генерировать',
+          onPress: async () => {
+            try {
+              setIsGenerating(true);
+              setGenerationProgress('Инициализация...');
+              await sleep(500);
+
+              await generateLocalTestData((msg) => {
+                setGenerationProgress(msg);
+              });
+
+              Alert.alert('Успех', 'Тестовые данные успешно сгенерированы! Теперь можно тестировать синхронизацию.');
+            } catch (error) {
+              Alert.alert('Ошибка', 'Не удалось сгенерировать данные: ' + String((error as any)?.message || error));
+            } finally {
+              setIsGenerating(false);
+              setGenerationProgress('');
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const handleDownloadLogs = async () => {
+    try {
+      await LogService.shareLogsFile();
+    } catch (error: any) {
+      Alert.alert('Ошибка', error.message || 'Не удалось экспортировать логи');
+    }
+  };
+
+  const handleDiagnoseImages = async () => {
+    try {
+      const result = await SyncService.diagnosePendingImages();
+
+      let message = `📊 Статистика изображений:\n\n`;
+      message += `📤 Всего к загрузке: ${result.total}\n`;
+      message += `✅ Готовы к отправке: ${result.ready}\n`;
+      message += `❌ Отсутствуют: ${result.missing}\n`;
+
+      if (result.missingItems.length > 0) {
+        message += `\n🗑️ Поврежденные/отсутствующие:\n`;
+        // Показать первые 10
+        const shown = result.missingItems.slice(0, 10);
+        shown.forEach(item => {
+          message += `• ${item.name} (ID: ${item.id})\n`;
+        });
+        if (result.missingItems.length > 10) {
+          message += `... и ещё ${result.missingItems.length - 10} товаров`;
+        }
+      }
+
+      Alert.alert('Диагностика изображений', message);
+    } catch (error: any) {
+      Alert.alert('Ошибка', error.message || 'Не удалось проверить изображения');
+    }
   };
 
   const SettingItem: React.FC<{
@@ -474,9 +412,13 @@ const SettingsScreen: React.FC = () => {
     onPress: () => void;
     color?: string;
     destructive?: boolean;
-  }> = ({ icon, title, description, onPress, color = '#10b981', destructive = false }) => (
+  }> = ({ icon, title, description, onPress, color = colors.primary.blue, destructive = false }) => (
     <TouchableOpacity
-      style={[styles.settingItem, destructive && styles.destructiveItem]}
+      style={[
+        styles.settingItem,
+        { backgroundColor: colors.background.card, borderColor: colors.border.light },
+        destructive && { borderColor: '#ef4444' }
+      ]}
       onPress={onPress}
       activeOpacity={0.7}
     >
@@ -484,55 +426,70 @@ const SettingsScreen: React.FC = () => {
         <MaterialIcons name={icon} size={24} color={color} />
       </View>
       <View style={styles.settingContent}>
-        <Text style={[styles.settingTitle, destructive && styles.destructiveText]}>
+        <Text style={[styles.settingTitle, { color: colors.text.normal }, destructive && { color: '#ef4444' }]}>
           {title}
         </Text>
-        <Text style={styles.settingDescription}>{description}</Text>
+        <Text style={[styles.settingDescription, { color: colors.text.muted }]}>{description}</Text>
       </View>
-      <MaterialIcons name="chevron-right" size={24} color="#9ca3af" />
+      <MaterialIcons name="chevron-right" size={24} color={colors.text.muted} />
     </TouchableOpacity>
   );
 
   const SectionHeader: React.FC<{ title: string }> = ({ title }) => (
-    <Text style={styles.sectionHeader}>{title}</Text>
+    <Text style={[styles.sectionHeader, { color: colors.text.normal }]}>{title}</Text>
   );
 
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Настройки</Text>
-        <MaterialIcons name="settings" size={24} color="#10b981" />
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background.screen }]}>
+      <View style={[styles.header, { backgroundColor: colors.background.card, borderBottomColor: colors.border.light }]}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
+          <MaterialIcons name="arrow-back" size={24} color={colors.text.normal} />
+        </TouchableOpacity>
+        <Text style={[styles.headerTitle, { color: colors.text.normal }]}>Настройки</Text>
+        <MaterialIcons name="settings" size={24} color={isDark ? colors.primary.gold : colors.primary.purple} />
       </View>
-      
+
       <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent}>
         <SectionHeader title="Данные" />
-        
+
         <SettingItem
           icon="file-download"
           title="Экспорт данных"
           description="Создать ZIP архив с товарами и изображениями"
           onPress={handleExport}
-          color="#3b82f6"
+          color={isDark ? '#60a5fa' : '#3b82f6'}
         />
-        
+
         <SettingItem
           icon="file-upload"
           title="Импорт данных (ZIP)"
           description="Для ZIP файлов до 30MB - быстрый импорт"
           onPress={handleImport}
-          color="#8b5cf6"
+          color={isDark ? '#a78bfa' : '#8b5cf6'}
         />
-        
+
         <SettingItem
           icon="folder-open"
           title="Импорт больших данных"
           description="Для файлов >30MB - выбор файлов по очереди"
           onPress={handleLargeImport}
-          color="#06b6d4"
+          color={isDark ? '#22d3ee' : '#06b6d4'}
         />
-        
+
+        {/* Временно отключено
+        <SectionHeader title="Тестирование" />
+
+        <SettingItem
+          icon="science"
+          title="Сгенерировать тест-данные"
+          description="3000 товаров + 15000 транзакций (Load Test)"
+          onPress={handleGenerateTestData}
+          color="#ec4899"
+        />
+        */}
+
         <SectionHeader title="Очистка" />
-        
+
         <SettingItem
           icon="delete-sweep"
           title="Очистить историю"
@@ -540,7 +497,7 @@ const SettingsScreen: React.FC = () => {
           onPress={handleClearHistory}
           color="#f59e0b"
         />
-        
+
         <SettingItem
           icon="delete-forever"
           title="Очистить базу данных"
@@ -549,111 +506,97 @@ const SettingsScreen: React.FC = () => {
           color="#ef4444"
           destructive
         />
-        
+
+        <SectionHeader title="Отладка" />
+
+        <SettingItem
+          icon="bug-report"
+          title="Скачать логи"
+          description="Экспортировать логи приложения для отладки"
+          onPress={handleDownloadLogs}
+          color={isDark ? '#10b981' : '#059669'}
+        />
+
+        <SettingItem
+          icon="image-search"
+          title="Диагностика изображений"
+          description="Проверить какие изображения готовы к отправке"
+          onPress={handleDiagnoseImages}
+          color={isDark ? '#f59e0b' : '#d97706'}
+        />
+
         <SectionHeader title="О приложении" />
-        
-        <View style={styles.appInfo}>
-          <Text style={styles.appName}>Склад</Text>
-          <Text style={styles.appVersion}>Версия 1.0.3</Text>
-          <Text style={styles.appDescription}>
+
+        <View style={[styles.appInfo, { backgroundColor: colors.background.card }]}>
+          <Text style={[styles.appName, { color: colors.text.normal }]}>Склад</Text>
+          <Text style={[styles.appVersion, { color: colors.text.muted }]}>Версия 1.0.3</Text>
+          <Text style={[styles.appDescription, { color: colors.text.muted }]}>
             Система управления складскими запасами с современным интерфейсом и аналитикой созданно командой NOROV
           </Text>
         </View>
       </ScrollView>
 
-      {/* Modal overlay for exporting */}
+      {/* Modals and Overlays */}
       <Modal visible={isExporting} transparent animationType="fade">
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <ActivityIndicator size="large" color="#10b981" />
-            <Text style={styles.modalText}>Выполняется экспорт...</Text>
+          <View style={[styles.modalContent, { backgroundColor: colors.background.card }]}>
+            <ActivityIndicator size="large" color={colors.primary.blue} />
+            <Text style={[styles.modalText, { color: colors.text.normal }]}>Выполняется экспорт...</Text>
           </View>
         </View>
       </Modal>
 
-      {/* Modal overlay for importing */}
       <Modal visible={isImporting && !importProgress} transparent animationType="fade">
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <ActivityIndicator size="large" color="#10b981" />
-            <Text style={styles.modalText}>Выполняется импорт...</Text>
+          <View style={[styles.modalContent, { backgroundColor: colors.background.card }]}>
+            <ActivityIndicator size="large" color={colors.primary.blue} />
+            <Text style={[styles.modalText, { color: colors.text.normal }]}>Выполняется импорт...</Text>
           </View>
         </View>
       </Modal>
 
-      {/* Modal for streaming import progress */}
       <Modal visible={isImporting && !!importProgress} transparent animationType="fade">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { width: '80%' }]}>
-            <Text style={[styles.modalText, { marginBottom: 20 }]}>Импорт больших данных</Text>
-            
+          <View style={[styles.modalContent, { width: '80%', backgroundColor: colors.background.card }]}>
+            <Text style={[styles.modalText, { marginBottom: 20, color: colors.text.normal }]}>Импорт больших данных</Text>
             {importProgress && (
               <>
-                <Text style={{ marginBottom: 10, textAlign: 'center' }}>
-                  {importProgress.message}
-                </Text>
-                
-                <View style={{ width: '100%', marginBottom: 10 }}>
-                  <View style={{ height: 6, backgroundColor: '#e5e7eb', borderRadius: 3, overflow: 'hidden' }}>
-                    <View 
-                      style={{ 
-                        height: 6, 
-                        backgroundColor: '#8b5cf6', 
-                        borderRadius: 3,
-                        width: `${importProgress.total > 0 ? (importProgress.current / importProgress.total) * 100 : 0}%`
-                      }} 
-                    />
-                  </View>
-                </View>
-                
-                <Text style={{ fontSize: 12, color: '#6b7280', textAlign: 'center' }}>
-                  {importProgress.current}/{importProgress.total} 
-                  {importProgress.total > 0 && ` (${Math.round((importProgress.current / importProgress.total) * 100)}%)`}
-                </Text>
+                <Text style={{ marginBottom: 10, textAlign: 'center', color: colors.text.normal }}>{importProgress.message}</Text>
+                <ActivityIndicator size="large" color={colors.primary.blue} style={{ marginTop: 20 }} />
               </>
             )}
-            
-            <ActivityIndicator size="large" color="#8b5cf6" style={{ marginTop: 20 }} />
           </View>
         </View>
       </Modal>
 
-      {/* Modal for streaming export progress */}
       <Modal visible={showStreamingExport} transparent animationType="fade">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { width: '80%' }]}>
-            <Text style={[styles.modalText, { marginBottom: 20 }]}>Экспорт больших данных</Text>
-            
+          <View style={[styles.modalContent, { width: '80%', backgroundColor: colors.background.card }]}>
+            <Text style={[styles.modalText, { marginBottom: 20, color: colors.text.normal }]}>Экспорт больших данных</Text>
             {exportProgress && (
               <>
-                <Text style={{ marginBottom: 10, textAlign: 'center' }}>
-                  {exportProgress.message}
-                </Text>
-                
-                <View style={{ width: '100%', marginBottom: 10 }}>
-                  <View style={{ height: 6, backgroundColor: '#e5e7eb', borderRadius: 3, overflow: 'hidden' }}>
-                    <View 
-                      style={{ 
-                        height: 6, 
-                        backgroundColor: '#10b981', 
-                        borderRadius: 3,
-                        width: `${exportProgress.total > 0 ? (exportProgress.current / exportProgress.total) * 100 : 0}%`
-                      }} 
-                    />
-                  </View>
-                </View>
-                
-                <Text style={{ fontSize: 12, color: '#6b7280', textAlign: 'center' }}>
-                  {exportProgress.current}/{exportProgress.total} 
-                  {exportProgress.total > 0 && ` (${Math.round((exportProgress.current / exportProgress.total) * 100)}%)`}
-                </Text>
+                <Text style={{ marginBottom: 10, textAlign: 'center', color: colors.text.normal }}>{exportProgress.message}</Text>
+                <ActivityIndicator size="large" color={colors.primary.blue} style={{ marginTop: 20 }} />
               </>
             )}
-            
-            <ActivityIndicator size="large" color="#10b981" style={{ marginTop: 20 }} />
           </View>
         </View>
       </Modal>
+
+      <Modal visible={isGenerating} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { width: '80%', backgroundColor: colors.background.card }]}>
+            <ActivityIndicator size="large" color="#ec4899" />
+            <Text style={[styles.modalText, { marginTop: 20, textAlign: 'center', color: colors.text.normal }]}>
+              {generationProgress}
+            </Text>
+            <Text style={{ marginTop: 10, color: colors.text.muted, fontSize: 12, textAlign: 'center' }}>
+              Пожалуйста, не закрывайте приложение
+            </Text>
+          </View>
+        </View>
+      </Modal>
+
     </SafeAreaView>
   );
 };
@@ -661,7 +604,6 @@ const SettingsScreen: React.FC = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f9fafb',
   },
   header: {
     flexDirection: 'row',
@@ -670,14 +612,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 16,
     paddingTop: 16,
-    backgroundColor: '#fff',
     borderBottomWidth: 1,
-    borderBottomColor: '#e5e7eb',
+  },
+  backButton: {
+    padding: 4,
+    marginRight: 8,
   },
   headerTitle: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#111827',
+    flex: 1,
+    textAlign: 'center',
+    marginRight: 32, // Compensate for back button to center title
   },
   content: {
     flex: 1,
@@ -688,7 +634,6 @@ const styles = StyleSheet.create({
   sectionHeader: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#374151',
     marginTop: 24,
     marginBottom: 12,
     marginLeft: 4,
@@ -696,10 +641,10 @@ const styles = StyleSheet.create({
   settingItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#fff',
     borderRadius: 12,
     padding: 16,
     marginBottom: 8,
+    borderWidth: 1,
     shadowColor: '#000',
     shadowOffset: {
       width: 0,
@@ -708,10 +653,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.05,
     shadowRadius: 2,
     elevation: 1,
-  },
-  destructiveItem: {
-    borderWidth: 1,
-    borderColor: '#fee2e2',
   },
   iconContainer: {
     width: 48,
@@ -727,18 +668,12 @@ const styles = StyleSheet.create({
   settingTitle: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#111827',
     marginBottom: 4,
-  },
-  destructiveText: {
-    color: '#ef4444',
   },
   settingDescription: {
     fontSize: 14,
-    color: '#6b7280',
   },
   appInfo: {
-    backgroundColor: '#fff',
     borderRadius: 12,
     padding: 20,
     alignItems: 'center',
@@ -755,30 +690,26 @@ const styles = StyleSheet.create({
   appName: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#111827',
     marginBottom: 4,
   },
   appVersion: {
     fontSize: 14,
-    color: '#6b7280',
     marginBottom: 12,
   },
   appDescription: {
     fontSize: 14,
-    color: '#6b7280',
     textAlign: 'center',
     lineHeight: 20,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.35)',
+    backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'center',
     alignItems: 'center',
   },
   modalContent: {
     width: 220,
     padding: 24,
-    backgroundColor: '#fff',
     borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
@@ -787,9 +718,7 @@ const styles = StyleSheet.create({
     marginTop: 16,
     fontSize: 16,
     fontWeight: '600',
-    color: '#111827',
   },
 });
 
 export default SettingsScreen;
-

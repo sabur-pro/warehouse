@@ -101,33 +101,67 @@ const getActionText = (action: Transaction['action']): string => {
   }
 };
 
-const parseDetailsType = (details: string | null | undefined): string => {
-  if (!details) return 'Детали';
+const parseDetailsType = (details: string | null | undefined): { text: string; detailsType?: string } => {
+  if (!details) return { text: 'Детали' };
   try {
     const parsed = JSON.parse(details);
-    if (parsed.type === 'sale' || parsed.type === 'update') {
-      return `Продажа - Размер ${parsed.size || parsed.sale?.size || 'N/A'}`;
+    if (parsed.type === 'admin_approved_sale_deletion') {
+      const saleInfo = parsed.deletedTransaction?.details?.sale;
+      return {
+        text: `Возврат - Размер ${saleInfo?.size || 'N/A'}, ${parsed.restoredQuantity || 1} шт.`,
+        detailsType: 'admin_approved_sale_deletion'
+      };
+    } else if (parsed.type === 'admin_approved_delete') {
+      return { text: 'Удаление товара (одобрено)', detailsType: 'admin_approved_delete' };
+    } else if (parsed.type === 'admin_approved_update') {
+      return { text: 'Обновление (одобрено)', detailsType: 'admin_approved_update' };
+    } else if (parsed.type === 'sale' || parsed.type === 'update') {
+      return { text: `Продажа - Размер ${parsed.size || parsed.sale?.size || 'N/A'}` };
     } else if (parsed.type === 'wholesale') {
-      return `Оптовая продажа - ${parsed.wholesale?.totalBoxes || 0} коробок`;
+      return { text: `Оптовая продажа - ${parsed.wholesale?.totalBoxes || 0} коробок` };
     } else if (parsed.type === 'create') {
-      return `Создание - ${parsed.initialSizes?.length || 0} размеров`;
+      return { text: `Создание - ${parsed.initialSizes?.length || 0} размеров` };
     } else if (parsed.type === 'delete') {
-      return `Удаление - ${parsed.finalSizes?.length || 0} размеров`;
+      return { text: `Удаление - ${parsed.finalSizes?.length || 0} размеров` };
     }
-    return parsed.type ? `${parsed.type}` : 'Детали';
+    return { text: parsed.type ? `${parsed.type}` : 'Детали' };
   } catch {
-    return details.substring(0, 30) + '...';
+    return { text: details.substring(0, 30) + '...' };
   }
 };
 
-const TransactionItem: React.FC<{ 
-  transaction: Transaction; 
+const TransactionItem: React.FC<{
+  transaction: Transaction;
   onPress: (group: GroupedTransaction) => void;
   colors: ReturnType<typeof getThemeColors>;
 }> = ({ transaction, onPress, colors }) => {
-  const { icon, color } = getActionIconAndColor(transaction.action);
+  const parsedDetails = parseDetailsType(transaction.details);
+
+  // Определяем иконку и цвет на основе details.type
+  let icon: keyof typeof MaterialIcons.glyphMap;
+  let color: string;
+  let actionText: string;
+
+  if (parsedDetails.detailsType === 'admin_approved_sale_deletion') {
+    icon = 'restore';
+    color = '#22c55e'; // Green
+    actionText = 'Возврат продажи';
+  } else if (parsedDetails.detailsType === 'admin_approved_delete') {
+    icon = 'delete-forever';
+    color = '#ef4444';
+    actionText = 'Удаление (одобрено)';
+  } else if (parsedDetails.detailsType === 'admin_approved_update') {
+    icon = 'check-circle';
+    color = '#3b82f6';
+    actionText = 'Обновление (одобрено)';
+  } else {
+    const iconData = getActionIconAndColor(transaction.action);
+    icon = iconData.icon;
+    color = iconData.color;
+    actionText = getActionText(transaction.action);
+  }
+
   const formattedTime = new Date(transaction.timestamp * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-  const actionText = getActionText(transaction.action);
   const group: GroupedTransaction = {
     id: `single-${transaction.id}`,
     type: 'single',
@@ -138,7 +172,11 @@ const TransactionItem: React.FC<{
 
   return (
     <TouchableOpacity onPress={() => onPress(group)} activeOpacity={0.7}>
-      <View style={[styles.transactionItem, { backgroundColor: colors.background.card }]}>
+      <View style={[
+        styles.transactionItem,
+        { backgroundColor: colors.background.card },
+        parsedDetails.detailsType === 'admin_approved_sale_deletion' && { borderLeftWidth: 4, borderLeftColor: '#22c55e' }
+      ]}>
         <View style={[styles.iconContainer, { backgroundColor: `${color}20` }]}>
           <MaterialIcons name={icon} size={24} color={color} />
         </View>
@@ -146,7 +184,7 @@ const TransactionItem: React.FC<{
           <Text style={[styles.actionText, { color: colors.text.normal }]}>{actionText}</Text>
           <Text style={[styles.itemName, { color: colors.text.muted }]} numberOfLines={1}>{transaction.itemName}</Text>
           <Text style={[styles.details, { color: colors.text.muted }]} numberOfLines={1}>
-            {parseDetailsType(transaction.details)}
+            {parsedDetails.text}
           </Text>
           <Text style={[styles.time, { color: colors.text.muted }]}>{formattedTime}</Text>
         </View>
@@ -155,20 +193,20 @@ const TransactionItem: React.FC<{
   );
 };
 
-const GroupedTransactionItem: React.FC<{ 
-  transactions: Transaction[]; 
+const GroupedTransactionItem: React.FC<{
+  transactions: Transaction[];
   onPress: (group: GroupedTransaction) => void;
   colors: ReturnType<typeof getThemeColors>;
 }> = ({ transactions, onPress, colors }) => {
   const mainTransaction = transactions[0];
-  
+
   // Определяем тип группированной транзакции
   const wholesaleTx = transactions.find(tx => tx.action === 'wholesale');
   const saleTx = transactions.find(tx => tx.action === 'sale');
-  
+
   let mainAction: Transaction['action'] = 'update';
   let actionText = 'Продажа';
-  
+
   if (wholesaleTx) {
     mainAction = 'wholesale';
     actionText = 'Продажа оптом';
@@ -176,7 +214,7 @@ const GroupedTransactionItem: React.FC<{
     mainAction = 'sale';
     actionText = 'Продажа';
   }
-  
+
   const { icon, color } = getActionIconAndColor(mainAction);
   const formattedTime = new Date(mainTransaction.timestamp * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
   const group: GroupedTransaction = {
@@ -186,7 +224,7 @@ const GroupedTransactionItem: React.FC<{
     timestamp: mainTransaction.timestamp,
     itemName: mainTransaction.itemName,
   };
-  
+
   return (
     <TouchableOpacity onPress={() => onPress(group)} activeOpacity={0.7}>
       <View style={[styles.groupedTransactionItem, { backgroundColor: colors.background.card }]}>
@@ -197,9 +235,9 @@ const GroupedTransactionItem: React.FC<{
           <Text style={[styles.actionText, { color: colors.text.normal }]}>{actionText}</Text>
           <Text style={[styles.itemName, { color: colors.text.muted }]} numberOfLines={1}>{mainTransaction.itemName}</Text>
           <Text style={[styles.details, { color: colors.text.muted }]} numberOfLines={1}>
-            {transactions.length > 1 
+            {transactions.length > 1
               ? (mainAction === 'wholesale' ? 'Оптовая продажа и обновление' : 'Продажа и обновление') + ` - ${transactions.length} действия`
-              : parseDetailsType(mainTransaction.details)
+              : parseDetailsType(mainTransaction.details).text
             }
           </Text>
           <Text style={[styles.time, { color: colors.text.muted }]}>{formattedTime}</Text>
@@ -222,7 +260,7 @@ interface TransactionsListProps {
 const TransactionsList: React.FC<TransactionsListProps> = ({ onClose }) => {
   const { isDark } = useTheme();
   const colors = getThemeColors(isDark);
-  
+
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [groupedTransactions, setGroupedTransactions] = useState<GroupedTransaction[]>([]);
   const [dayGroups, setDayGroups] = useState<DayGroup[]>([]);
@@ -238,28 +276,28 @@ const TransactionsList: React.FC<TransactionsListProps> = ({ onClose }) => {
   const groupRelatedTransactions = (txs: Transaction[]): GroupedTransaction[] => {
     const result: GroupedTransaction[] = [];
     const processedIds = new Set<number>();
-    
+
     for (let i = 0; i < txs.length; i++) {
       if (processedIds.has(txs[i].id)) continue;
-      
+
       const currentTx = txs[i];
-      
+
       // Check if this is a sale/update/wholesale transaction that might have a related update
       if (currentTx.action === 'sale' || currentTx.action === 'update' || currentTx.action === 'wholesale') {
         // Try to find related transactions (same item, around the same time)
         const relatedTransactions: Transaction[] = [currentTx];
-        
+
         for (let j = i + 1; j < txs.length; j++) {
           if (processedIds.has(txs[j].id)) continue;
-          
+
           // Check if transactions are related (same item and within 5 seconds)
-          if (txs[j].itemId === currentTx.itemId && 
-              Math.abs(txs[j].timestamp - currentTx.timestamp) < 5) {
+          if (txs[j].itemId === currentTx.itemId &&
+            Math.abs(txs[j].timestamp - currentTx.timestamp) < 5) {
             relatedTransactions.push(txs[j]);
             processedIds.add(txs[j].id);
           }
         }
-        
+
         if (relatedTransactions.length > 1) {
           // Group related transactions
           result.push({
@@ -273,7 +311,7 @@ const TransactionsList: React.FC<TransactionsListProps> = ({ onClose }) => {
           continue;
         }
       }
-      
+
       // Single transaction
       result.push({
         id: `single-${currentTx.id}`,
@@ -284,14 +322,14 @@ const TransactionsList: React.FC<TransactionsListProps> = ({ onClose }) => {
       });
       processedIds.add(currentTx.id);
     }
-    
+
     return result.sort((a, b) => b.timestamp - a.timestamp);
   };
 
   const loadTransactions = useCallback(async (isLoadMore = false, isRefresh = false) => {
     if (isLoadMore && loadingMore) return;
     if (isRefresh && refreshing) return;
-    
+
     if (!isLoadMore && !isRefresh) {
       setInitialLoading(true);
       setOffset(0);
@@ -301,20 +339,20 @@ const TransactionsList: React.FC<TransactionsListProps> = ({ onClose }) => {
       setRefreshing(true);
       setOffset(0);
     }
-    
+
     try {
       const currentOffset = isLoadMore ? offset : 0;
       const { transactions: newTransactions, hasMore: more } = await getTransactionsPage(ITEM_LIMIT, currentOffset);
       const allTransactions = (isLoadMore && !isRefresh) ? [...transactions, ...newTransactions] : newTransactions;
       setTransactions(allTransactions);
-      
+
       // Group related transactions
       const grouped = groupRelatedTransactions(allTransactions);
       setGroupedTransactions(grouped);
-      
+
       // Also maintain day groups for backward compatibility
       setDayGroups(groupTransactionsByDay(allTransactions));
-      
+
       if (!isLoadMore || isRefresh) {
         setOffset(newTransactions.length);
       } else {

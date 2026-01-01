@@ -1,8 +1,8 @@
 // src/screens/WarehouseScreen.tsx
 import React, { useState, useRef } from 'react';
-import { View, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, Text } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { ItemList } from '../../components/ItemList';
 import { AddItemButton } from '../../components/AddItemButton';
@@ -11,12 +11,17 @@ import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { getThemeColors, shadows } from '../../constants/theme';
 
+interface ItemListRef {
+  openItemById: (itemId: number, context?: { boxIndex?: number; size?: number | string }) => void;
+  refresh: () => void;
+}
+
 const WarehouseScreen: React.FC = () => {
   const { user, isAssistant } = useAuth();
   const { isDark } = useTheme();
   const colors = getThemeColors(isDark);
   const [scannerVisible, setScannerVisible] = useState(false);
-  const itemListRef = useRef<any>(null);
+  const itemListRef = useRef<ItemListRef>(null);
 
   const handleQRScanned = (data: string) => {
     try {
@@ -32,11 +37,15 @@ const WarehouseScreen: React.FC = () => {
     }
   };
 
+  const handleRefresh = () => {
+    itemListRef.current?.refresh();
+  };
+
   const scanButtonColor = isDark ? colors.primary.gold : colors.primary.purple;
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background.screen }]} edges={['top']}>
-      <ItemList ref={itemListRef} />
+      <ItemList ref={itemListRef} onRefresh={handleRefresh} />
       {/* Кнопка сканера QR - доступна для всех ролей */}
       <TouchableOpacity
         style={[styles.scanButton, {
@@ -67,6 +76,18 @@ const WarehouseScreen: React.FC = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+  },
+  headerTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
   },
   scanButton: {
     position: 'absolute',

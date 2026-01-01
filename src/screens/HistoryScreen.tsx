@@ -1,15 +1,20 @@
 // src/screens/HistoryScreen.tsx
-import React from 'react';
-import { View, StyleSheet, Text } from 'react-native';
+import React, { useRef } from 'react';
+import { View, StyleSheet, Text, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
-import HistoryContentNew from '../components/history/HistoryContentNew';
+import HistoryContentNew, { HistoryContentNewRef } from '../components/history/HistoryContentNew';
 import { useTheme } from '../contexts/ThemeContext';
 import { getThemeColors } from '../../constants/theme';
 
 const HistoryScreen: React.FC = () => {
   const { isDark } = useTheme();
   const colors = getThemeColors(isDark);
+  const historyContentRef = useRef<HistoryContentNewRef>(null);
+
+  const handleRefresh = () => {
+    historyContentRef.current?.refresh();
+  };
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background.screen }]} edges={['top']}>
@@ -18,13 +23,15 @@ const HistoryScreen: React.FC = () => {
         borderBottomColor: colors.border.normal
       }]}>
         <Text style={[styles.headerTitle, { color: colors.text.normal }]}>История транзакций</Text>
-        <MaterialIcons
-          name="history"
-          size={24}
-          color={isDark ? colors.primary.gold : '#10b981'}
-        />
+        <TouchableOpacity onPress={handleRefresh} activeOpacity={0.7}>
+          <MaterialIcons
+            name="history"
+            size={24}
+            color={isDark ? colors.primary.gold : '#10b981'}
+          />
+        </TouchableOpacity>
       </View>
-      <HistoryContentNew />
+      <HistoryContentNew ref={historyContentRef} />
     </SafeAreaView>
   );
 };

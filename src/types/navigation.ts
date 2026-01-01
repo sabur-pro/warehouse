@@ -11,6 +11,7 @@ export type ProfileStackParamList = {
   ProfileMain: undefined;
   Subscription: undefined;
   PendingActions: undefined;
+  Settings: undefined;
 };
 
 export type AuthStackParamList = {

@@ -18,6 +18,8 @@ import { getThemeColors, colors as defaultColors } from '../constants/theme';
 import { createQRCodesForItem } from '../utils/qrCodeUtils';
 import SyncService from '../src/services/SyncService';
 import NetInfo from '@react-native-community/netinfo';
+import ImageService from '../src/services/ImageService';
+import AuthService from '../src/services/AuthService';
 
 interface ItemDetailsModalProps {
   item: Item;
@@ -41,7 +43,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
 
   // Состояния для оптовой продажи
   const [showWholesaleModal, setShowWholesaleModal] = useState(false);
-  const [selectedBoxes, setSelectedBoxes] = useState<{ boxIndex: number, price: string }[]>([]);
+  const [selectedBoxes, setSelectedBoxes] = useState<{ boxIndex: number, price: string, selected: boolean }[]>([]);
 
   // Состояния для QR-кодов
   const [showCreateQRModal, setShowCreateQRModal] = useState(false);
@@ -355,6 +357,30 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
           return;
         }
 
+        // Проверяем, изменилось ли изображение
+        const imageChanged = editedImageUri !== currentItem.imageUri;
+        let newImageUrl: string | null = currentItem.serverImageUrl || null;
+
+        // Если изображение изменилось, загружаем его на сервер
+        if (imageChanged && editedImageUri) {
+          try {
+            const accessToken = await AuthService.getAccessToken();
+            if (!accessToken) {
+              Alert.alert('Ошибка', 'Не удалось получить токен авторизации');
+              return;
+            }
+            newImageUrl = await ImageService.uploadImage(editedImageUri, accessToken);
+            console.log('📸 Image uploaded for update request:', newImageUrl);
+          } catch (error) {
+            console.error('❌ Failed to upload image:', error);
+            Alert.alert('Ошибка', 'Не удалось загрузить изображение на сервер');
+            return;
+          }
+        } else if (imageChanged && !editedImageUri) {
+          // Изображение было удалено
+          newImageUrl = null;
+        }
+
         const oldData = {
           id: currentItem.id,
           name: currentItem.name,
@@ -367,6 +393,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
           boxSizeQuantities: currentItem.boxSizeQuantities,
           totalQuantity: currentItem.totalQuantity,
           totalValue: currentItem.totalValue,
+          imageUrl: currentItem.serverImageUrl || null,
         };
 
         const newData = {
@@ -381,6 +408,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
           boxSizeQuantities: newBoxJson,
           totalQuantity: newTotalQuantity,
           totalValue: newTotalValue,
+          imageUrl: newImageUrl,
         };
 
         await SyncService.requestApproval(
@@ -496,6 +524,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
         action: 'update',
         itemId: currentItem.id,
         itemName: currentItem.name,
+        itemImageUri: currentItem.imageUri, // сохраняем картинку для офлайн отображения
         timestamp: Math.floor(Date.now() / 1000),
         details: JSON.stringify({
           type: 'sale',
@@ -573,7 +602,8 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
     // Инициализируем выбранные коробки пустыми значениями
     const initialBoxes = boxSizeQuantities.map((_, index) => ({
       boxIndex: index,
-      price: ''
+      price: '',
+      selected: false
     }));
     setSelectedBoxes(initialBoxes);
     setShowWholesaleModal(true);
@@ -582,7 +612,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
   const handleConfirmWholesale = async () => {
     // Проверяем, есть ли выбранные коробки с ценами
     const validSelectedBoxes = selectedBoxes.filter(sb =>
-      sb.price !== '' && !isNaN(parseFloat(sb.price)) && parseFloat(sb.price) > 0
+      sb.selected && sb.price !== '' && !isNaN(parseFloat(sb.price)) && parseFloat(sb.price) > 0
     );
 
     if (validSelectedBoxes.length === 0) {
@@ -631,6 +661,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
         action: 'wholesale',
         itemId: currentItem.id,
         itemName: currentItem.name,
+        itemImageUri: currentItem.imageUri, // сохраняем картинку для офлайн отображения
         timestamp: Math.floor(Date.now() / 1000),
         details: JSON.stringify({
           type: 'wholesale',
@@ -860,10 +891,11 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                       <View style={{ backgroundColor: colors.background.screen, borderColor: colors.border.normal }} className="absolute right-0 top-10 shadow-lg rounded-md z-10 border min-w-[140px]">
                         <TouchableOpacity
                           onPress={handleEditItem}
-                          className="px-4 py-3 flex-row items-center border-b border-gray-100"
+                          style={{ borderBottomColor: colors.border.light, borderBottomWidth: 1 }}
+                          className="px-4 py-3 flex-row items-center"
                         >
-                          <Ionicons name="pencil-outline" size={18} color="#4B5563" className="mr-2" />
-                          <Text className="text-gray-700 font-medium">Изменить</Text>
+                          <Ionicons name="pencil-outline" size={18} color={isDark ? colors.primary.gold : '#4B5563'} className="mr-2" />
+                          <Text style={{ color: colors.text.normal }} className="font-medium">Изменить</Text>
                         </TouchableOpacity>
                         <TouchableOpacity
                           onPress={handleDeleteItem}
@@ -908,15 +940,16 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                       <Text style={{ color: colors.text.muted }} className="mb-1">Тип размера: {currentItem.sizeType || 'не указан'}</Text>
                       <View className="mb-2">
                         <Text style={{ color: colors.text.muted }} className="text-xs mb-1">Количество коробок</Text>
-                        <View style={{ borderColor: colors.border.normal }} className="border rounded-lg">
+                        <View style={{ borderColor: colors.border.normal, backgroundColor: colors.background.card }} className="border rounded-lg">
                           <Picker
                             selectedValue={editedNumberOfBoxes}
                             onValueChange={setEditedNumberOfBoxes}
                             style={{ color: colors.text.normal }}
                             dropdownIconColor={colors.text.normal}
+                            itemStyle={{ color: colors.text.normal }}
                           >
                             {Array.from({ length: 20 }, (_, i) => i + 1).map(num => (
-                              <Picker.Item key={num} label={num.toString()} value={num} />
+                              <Picker.Item key={num} label={num.toString()} value={num} color={isDark ? '#E5E5E5' : '#333333'} />
                             ))}
                           </Picker>
                         </View>
@@ -930,15 +963,16 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                     <View style={{ backgroundColor: colors.background.card }} className="p-3 rounded-lg mt-1">
                       <View className="mb-2">
                         <Text style={{ color: colors.text.muted }} className="text-xs mb-1">Тип цены</Text>
-                        <View style={{ borderColor: colors.border.normal }} className="border rounded-lg">
+                        <View style={{ borderColor: colors.border.normal, backgroundColor: colors.background.card }} className="border rounded-lg">
                           <Picker
                             selectedValue={priceMode}
                             onValueChange={(itemValue: 'per_pair' | 'per_box') => setPriceMode(itemValue)}
                             style={{ color: colors.text.normal }}
                             dropdownIconColor={colors.text.normal}
+                            itemStyle={{ color: colors.text.normal }}
                           >
-                            <Picker.Item label="За пару" value="per_pair" />
-                            <Picker.Item label="За коробку" value="per_box" />
+                            <Picker.Item label="За пару" value="per_pair" color={isDark ? '#E5E5E5' : '#333333'} />
+                            <Picker.Item label="За коробку" value="per_box" color={isDark ? '#E5E5E5' : '#333333'} />
                           </Picker>
                         </View>
                       </View>
@@ -970,8 +1004,8 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                   </View>
 
                   <View className="mb-3">
-                    <Text className="text-gray-700 font-semibold">Размеры по коробкам</Text>
-                    <View className="bg-gray-50 p-3 rounded-lg mt-1">
+                    <Text style={{ color: colors.text.normal }} className="font-semibold">Размеры по коробкам</Text>
+                    <View style={{ backgroundColor: colors.background.card }} className="p-3 rounded-lg mt-1">
                       {boxSizeQuantities.map((box, boxIndex) => {
                         const totalInBox = box.reduce((sum, sq) => sum + (sq.quantity || 0), 0);
                         let displayPricePerPair = 0;
@@ -1011,7 +1045,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                                     >
                                       <Text className="text-white text-lg">-</Text>
                                     </TouchableOpacity>
-                                    <Text className="mx-3 font-bold">{sizeQty.quantity || 0}</Text>
+                                    <Text style={{ color: colors.text.normal }} className="mx-3 font-bold">{sizeQty.quantity || 0}</Text>
                                     <TouchableOpacity
                                       style={{ backgroundColor: isDark ? colors.primary.gold : defaultColors.primary.blue }}
                                       className="w-8 h-8 rounded-full items-center justify-center"
@@ -1034,10 +1068,10 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                     </View>
                   </View>
 
-                  <View className="mt-2 p-2 bg-blue-50 rounded-lg mb-3">
-                    <Text className="text-blue-800">Всего коробок: <Text className="font-bold">{editedNumberOfBoxes}</Text></Text>
-                    <Text className="text-blue-800">Всего товаров: <Text className="font-bold">{boxSizeQuantities.reduce((total, box) => total + box.reduce((sum, sq) => sum + sq.quantity, 0), 0)}</Text></Text>
-                    <Text className="text-blue-800">Общая стоимость закупки: <Text className="font-bold">{
+                  <View style={{ backgroundColor: isDark ? 'rgba(212, 175, 55, 0.15)' : 'rgba(59, 130, 246, 0.1)', borderColor: isDark ? colors.primary.gold : '#bfdbfe', borderWidth: 1 }} className="mt-2 p-2 rounded-lg mb-3">
+                    <Text style={{ color: isDark ? colors.primary.gold : '#1e40af' }}>Всего коробок: <Text className="font-bold">{editedNumberOfBoxes}</Text></Text>
+                    <Text style={{ color: isDark ? colors.primary.gold : '#1e40af' }}>Всего товаров: <Text className="font-bold">{boxSizeQuantities.reduce((total, box) => total + box.reduce((sum, sq) => sum + sq.quantity, 0), 0)}</Text></Text>
+                    <Text style={{ color: isDark ? colors.primary.gold : '#1e40af' }}>Общая стоимость закупки: <Text className="font-bold">{
                       boxSizeQuantities.reduce((grandTotal, box) => {
                         const totalInBox = box.reduce((sum, sq) => sum + sq.quantity, 0);
                         let displayPricePerPair = 0;
@@ -1050,7 +1084,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                         return grandTotal + totalInBox * displayPricePerPair;
                       }, 0).toFixed(2)
                     }</Text> сомонӣ</Text>
-                    <Text className="text-blue-800">Общая рекомендуемая стоимость: <Text className="font-bold">{
+                    <Text style={{ color: isDark ? colors.primary.gold : '#1e40af' }}>Общая рекомендуемая стоимость: <Text className="font-bold">{
                       boxSizeQuantities.reduce((grandTotal, box) => {
                         const totalInBox = box.reduce((sum, sq) => sum + sq.quantity, 0);
                         let displayRecommendedPricePerPair = 0;
@@ -1167,9 +1201,9 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                       )}
 
                       {(currentItem.totalValue === -1 || currentItem.totalValue < 0 || currentItem.totalValue === undefined) && (
-                        <View className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg">
-                          <Text className="text-red-600 font-bold text-center">⚠️ Внимание!</Text>
-                          <Text className="text-red-600 text-center text-sm mt-1">
+                        <View style={{ backgroundColor: isDark ? 'rgba(239, 68, 68, 0.15)' : '#fef2f2', borderColor: isDark ? '#ef4444' : '#fecaca', borderWidth: 1 }} className="mt-3 p-3 rounded-lg">
+                          <Text style={{ color: isDark ? '#fca5a5' : '#dc2626' }} className="font-bold text-center">⚠️ Внимание!</Text>
+                          <Text style={{ color: isDark ? '#fca5a5' : '#dc2626' }} className="text-center text-sm mt-1">
                             Этот товар импортирован без цены. Пожалуйста, перейдите в режим редактирования и добавьте цены для всех размеров.
                           </Text>
                         </View>
@@ -1181,9 +1215,9 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                         );
                         if (!hasRecommendedPrice) {
                           return (
-                            <View className="mt-3 p-3 bg-yellow-50 border border-yellow-300 rounded-lg">
-                              <Text className="text-yellow-800 font-bold text-center">⚠️ Рекомендация</Text>
-                              <Text className="text-yellow-700 text-center text-sm mt-1">
+                            <View style={{ backgroundColor: isDark ? 'rgba(251, 191, 36, 0.15)' : '#fefce8', borderColor: isDark ? '#fbbf24' : '#fcd34d', borderWidth: 1 }} className="mt-3 p-3 rounded-lg">
+                              <Text style={{ color: isDark ? '#fcd34d' : '#92400e' }} className="font-bold text-center">⚠️ Рекомендация</Text>
+                              <Text style={{ color: isDark ? '#fcd34d' : '#a16207' }} className="text-center text-sm mt-1">
                                 У этого товара нет рекомендуемой цены продажи. Перейдите в режим редактирования, чтобы добавить её.
                               </Text>
                             </View>
@@ -1212,7 +1246,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                                   {isAdmin() ? (
                                     <Text style={{ color: colors.text.muted }} className="text-xs mt-1">Цена: {safePrice.toFixed(2)} сомонӣ</Text>
                                   ) : (
-                                    <Text className="text-green-700 text-xs mt-1 font-semibold">Рек. цена: {safeRecommendedPrice.toFixed(2)} сомонӣ</Text>
+                                    <Text style={{ color: isDark ? colors.primary.gold : '#15803d' }} className="text-xs mt-1 font-semibold">Рек. цена: {safeRecommendedPrice.toFixed(2)} сомонӣ</Text>
                                   )}
                                 </View>
 
@@ -1221,19 +1255,21 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                                     style={({ pressed }) => [
                                       {
                                         backgroundColor: pressed
-                                          ? (isDark ? '#b8860b' : '#1e40af')
-                                          : (isDark ? colors.primary.gold : '#2563eb'),
-                                        width: 36,
-                                        height: 36,
-                                        borderRadius: 18,
+                                          ? (isDark ? '#b8860b' : '#15803d')
+                                          : (isDark ? colors.primary.gold : '#22c55e'),
+                                        width: 40,
+                                        height: 40,
+                                        borderRadius: 20,
                                         alignItems: 'center',
                                         justifyContent: 'center',
                                         opacity: isLoading ? 0.5 : 1,
-                                        shadowColor: '#000',
-                                        shadowOffset: { width: 0, height: 2 },
-                                        shadowOpacity: 0.25,
-                                        shadowRadius: 3.84,
-                                        elevation: 5,
+                                        shadowColor: isDark ? colors.primary.gold : '#22c55e',
+                                        shadowOffset: { width: 0, height: 3 },
+                                        shadowOpacity: 0.4,
+                                        shadowRadius: 4,
+                                        elevation: 6,
+                                        borderWidth: 2,
+                                        borderColor: isDark ? '#d4af37' : '#16a34a',
                                       }
                                     ]}
                                     onPress={() => {
@@ -1243,19 +1279,19 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                                     disabled={isLoading}
                                     hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                                   >
-                                    <Ionicons name="cart-outline" size={18} color="white" />
+                                    <Ionicons name="cart" size={22} color={isDark ? '#ffffff' : '#000000'} />
                                   </Pressable>
                                 )}
                               </View>
                             );
                           })}
                           {isAdmin() ? (
-                            <Text className="text-gray-800 font-medium mt-2">Стоимость закупки коробки: {box.reduce((sum, sq) => {
+                            <Text style={{ color: colors.text.normal }} className="font-medium mt-2">Стоимость закупки коробки: {box.reduce((sum, sq) => {
                               const price = (sq.price !== undefined && !isNaN(sq.price)) ? sq.price : 0;
                               return sum + (sq.quantity || 0) * price;
                             }, 0).toFixed(2)} сомонӣ</Text>
                           ) : (
-                            <Text className="text-green-700 font-medium mt-2">Рекомендуемая стоимость коробки: {box.reduce((sum, sq) => {
+                            <Text style={{ color: isDark ? colors.primary.gold : '#15803d' }} className="font-medium mt-2">Рекомендуемая стоимость коробки: {box.reduce((sum, sq) => {
                               const price = (sq.recommendedSellingPrice !== undefined && !isNaN(sq.recommendedSellingPrice)) ? sq.recommendedSellingPrice : 0;
                               return sum + (sq.quantity || 0) * price;
                             }, 0).toFixed(2)} сомонӣ</Text>
@@ -1279,18 +1315,18 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                   {/* QR-коды или кнопка создания - размещаем внизу */}
                   {currentItem.qrCodeType === 'none' || !currentItem.qrCodes ? (
                     <View className="mb-3">
-                      <View className="bg-yellow-50 border-2 border-dashed border-yellow-300 p-4 rounded-xl">
+                      <View style={{ backgroundColor: isDark ? 'rgba(251, 191, 36, 0.15)' : '#fefce8', borderColor: isDark ? colors.primary.gold : '#fcd34d', borderWidth: 2, borderStyle: 'dashed' }} className="p-4 rounded-xl">
                         <View className="flex-row items-center mb-2">
-                          <Ionicons name="qr-code-outline" size={24} color="#D97706" />
-                          <Text className="text-yellow-800 font-semibold ml-2">QR-коды отсутствуют</Text>
+                          <Ionicons name="qr-code-outline" size={24} color={isDark ? colors.primary.gold : '#D97706'} />
+                          <Text style={{ color: isDark ? colors.primary.gold : '#92400e' }} className="font-semibold ml-2">QR-коды отсутствуют</Text>
                         </View>
-                        <Text className="text-yellow-700 text-sm mb-3">
+                        <Text style={{ color: isDark ? colors.text.muted : '#a16207' }} className="text-sm mb-3">
                           Для этого товара не созданы QR-коды. Создайте их для удобного сканирования и отслеживания.
                         </Text>
                         {isAssistant() && (
                           <TouchableOpacity
                             onPress={() => setShowCreateQRModal(true)}
-                            style={{ backgroundColor: colors.primary.blue }}
+                            style={{ backgroundColor: isDark ? colors.primary.gold : colors.primary.blue }}
                             className="py-3 px-4 rounded-xl flex-row items-center justify-center"
                           >
                             <Ionicons name="qr-code" size={20} color="white" />
@@ -1311,7 +1347,8 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                   <View className="flex-row justify-between mt-6 space-x-3">
                     {isAssistant() && (
                       <TouchableOpacity
-                        className="flex-1 bg-orange-500 p-3 rounded-lg items-center"
+                        style={{ backgroundColor: isDark ? colors.primary.gold : '#f97316' }}
+                        className="flex-1 p-3 rounded-lg items-center"
                         onPress={handleWholesale}
                         disabled={isLoading || currentItem.totalQuantity === 0}
                       >
@@ -1319,7 +1356,8 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                       </TouchableOpacity>
                     )}
                     <TouchableOpacity
-                      className={isAssistant() ? "flex-1 bg-gray-500 p-3 rounded-lg items-center" : "bg-gray-500 p-3 rounded-lg items-center w-full"}
+                      style={{ backgroundColor: isDark ? colors.border.normal : '#6b7280' }}
+                      className={isAssistant() ? "flex-1 p-3 rounded-lg items-center" : "p-3 rounded-lg items-center w-full"}
                       onPress={onClose}
                       disabled={isLoading}
                     >
@@ -1369,8 +1407,15 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                   const currentSizeQty = boxSizeQuantities[currentBoxIndex]?.find(item => String(item.size) === String(currentSize));
                   const recommendedPrice = currentSizeQty?.recommendedSellingPrice || 0;
                   return (
-                    <View style={{ marginBottom: 12, padding: 12, backgroundColor: '#dcfce7', borderWidth: 1, borderColor: '#86efac', borderRadius: 8 }}>
-                      <Text style={{ color: '#166534', fontWeight: '600', textAlign: 'center' }}>
+                    <View style={{
+                      marginBottom: 12,
+                      padding: 12,
+                      backgroundColor: isDark ? 'rgba(34, 197, 94, 0.15)' : '#dcfce7',
+                      borderWidth: 1,
+                      borderColor: isDark ? '#4ade80' : '#86efac',
+                      borderRadius: 8
+                    }}>
+                      <Text style={{ color: isDark ? '#4ade80' : '#166534', fontWeight: '600', textAlign: 'center' }}>
                         Рекомендуемая цена: {recommendedPrice.toFixed(2)} сомонӣ
                       </Text>
                     </View>
@@ -1463,21 +1508,79 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                   colors={isDark ? colors.gradients.accent : defaultColors.gradients.main}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 0 }}
-                  style={{ padding: 16 }}
-                  className="flex-row items-center justify-between"
+                  style={{
+                    paddingVertical: 16,
+                    paddingHorizontal: 20,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                  }}
                 >
-                  <TouchableOpacity onPress={() => setShowWholesaleModal(false)}>
-                    <Ionicons name="close" size={24} color="white" />
+                  <TouchableOpacity
+                    onPress={() => setShowWholesaleModal(false)}
+                    style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: 18,
+                      backgroundColor: 'rgba(255,255,255,0.2)',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <Ionicons name="close" size={22} color="white" />
                   </TouchableOpacity>
-                  <Text className="text-white text-lg font-bold">Продажа оптом</Text>
-                  <TouchableOpacity onPress={handleConfirmWholesale} disabled={isLoading}>
-                    <Text className="text-white text-lg font-bold">Продать</Text>
+
+                  <View style={{ alignItems: 'center' }}>
+                    <Text style={{ color: 'white', fontSize: 18, fontWeight: 'bold' }}>Продажа оптом</Text>
+                    <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 12 }}>{currentItem.name}</Text>
+                  </View>
+
+                  <TouchableOpacity
+                    onPress={handleConfirmWholesale}
+                    disabled={isLoading || !selectedBoxes.some(sb => sb.price !== '' && parseFloat(sb.price) > 0)}
+                    style={{
+                      backgroundColor: (isLoading || !selectedBoxes.some(sb => sb.price !== '' && parseFloat(sb.price) > 0))
+                        ? 'rgba(255,255,255,0.3)'
+                        : '#22c55e',
+                      paddingHorizontal: 16,
+                      paddingVertical: 10,
+                      borderRadius: 20,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      shadowColor: '#000',
+                      shadowOffset: { width: 0, height: 2 },
+                      shadowOpacity: 0.25,
+                      shadowRadius: 4,
+                      elevation: 4,
+                    }}
+                  >
+                    <Ionicons name="cart" size={16} color="white" style={{ marginRight: 6 }} />
+                    <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 14 }}>Продать</Text>
                   </TouchableOpacity>
                 </LinearGradient>
 
                 {/* Content */}
-                <ScrollView className="flex-1 p-4" showsVerticalScrollIndicator={false}>
-                  <Text style={{ color: colors.text.normal }} className="text-lg font-bold mb-4">{currentItem.name}</Text>
+                <ScrollView
+                  style={{ flex: 1 }}
+                  contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
+                  showsVerticalScrollIndicator={true}
+                >
+                  {/* Инструкция */}
+                  <View style={{
+                    backgroundColor: isDark ? 'rgba(212, 175, 55, 0.1)' : 'rgba(59, 130, 246, 0.08)',
+                    borderRadius: 12,
+                    padding: 12,
+                    marginBottom: 16,
+                    borderLeftWidth: 4,
+                    borderLeftColor: isDark ? colors.primary.gold : colors.primary.blue,
+                  }}>
+                    <Text style={{ color: isDark ? colors.primary.gold : colors.primary.blue, fontWeight: '600', marginBottom: 4 }}>
+                      💡 Как продать оптом
+                    </Text>
+                    <Text style={{ color: colors.text.muted, fontSize: 13 }}>
+                      Выберите коробки для продажи и укажите цену для каждой. Нажмите "Продать" для подтверждения.
+                    </Text>
+                  </View>
 
                   {boxSizeQuantities.map((box, boxIndex) => {
                     const boxTotalQuantity = box.reduce((sum, item) => sum + getCurrentQuantity(boxIndex, item.size), 0);
@@ -1487,89 +1590,174 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                     }, 0);
                     const safeBoxTotalValue = isNaN(boxTotalValue) ? 0 : boxTotalValue;
                     const selectedBox = selectedBoxes.find(sb => sb.boxIndex === boxIndex);
-                    const isBoxSelected = selectedBox && selectedBox.price !== '';
+                    const isBoxSelected = selectedBox?.selected === true;
 
                     if (boxTotalQuantity === 0) return null;
 
                     return (
-                      <View key={boxIndex} style={{ backgroundColor: colors.background.card }} className="mb-4 p-4 rounded-lg">
-                        <View className="flex-row items-center justify-between mb-3">
-                          <Text style={{ color: colors.text.normal }} className="font-bold text-lg">Коробка {boxIndex + 1}</Text>
-                          <TouchableOpacity
-                            style={isBoxSelected ? { backgroundColor: colors.primary.blue, borderColor: colors.primary.blue, borderWidth: 2 } : { borderColor: colors.border.normal, borderWidth: 2 }}
-                            className="w-6 h-6 rounded items-center justify-center"
-                            onPress={() => {
-                              const updatedBoxes = [...selectedBoxes];
-                              const idx = updatedBoxes.findIndex(sb => sb.boxIndex === boxIndex);
-                              if (idx !== -1) {
-                                if (updatedBoxes[idx].price === '') {
-                                  updatedBoxes[idx].price = '0';
-                                } else {
-                                  updatedBoxes[idx].price = '';
-                                }
-                                setSelectedBoxes(updatedBoxes);
+                      <View
+                        key={boxIndex}
+                        style={{
+                          backgroundColor: colors.background.card,
+                          borderRadius: 16,
+                          marginBottom: 16,
+                          borderWidth: isBoxSelected ? 2 : 1,
+                          borderColor: isBoxSelected
+                            ? (isDark ? colors.primary.gold : '#22c55e')
+                            : colors.border.normal,
+                          overflow: 'hidden',
+                        }}
+                      >
+                        {/* Box Header */}
+                        <TouchableOpacity
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: 16,
+                            backgroundColor: isBoxSelected
+                              ? (isDark ? 'rgba(212, 175, 55, 0.15)' : 'rgba(34, 197, 94, 0.1)')
+                              : 'transparent',
+                          }}
+                          onPress={() => {
+                            const updatedBoxes = [...selectedBoxes];
+                            const idx = updatedBoxes.findIndex(sb => sb.boxIndex === boxIndex);
+                            if (idx !== -1) {
+                              updatedBoxes[idx].selected = !updatedBoxes[idx].selected;
+                              if (!updatedBoxes[idx].selected) {
+                                updatedBoxes[idx].price = '';
                               }
-                            }}
-                          >
-                            {isBoxSelected && <Text className="text-white text-xs">✓</Text>}
-                          </TouchableOpacity>
-                        </View>
-
-                        <View className="mb-3">
-                          <Text style={{ color: colors.text.muted }} className="mb-1">Всего товаров: {boxTotalQuantity} шт.</Text>
-                          <Text style={{ color: colors.text.muted }} className="mb-1">Себестоимость: {safeBoxTotalValue.toFixed(2)} сомонӣ</Text>
-                        </View>
-
-                        <View className="mb-3">
-                          <Text style={{ color: colors.text.normal }} className="font-medium mb-2">Размеры:</Text>
-                          {box.map((sizeQty, sizeIndex) => {
-                            const qty = getCurrentQuantity(boxIndex, sizeQty.size);
-                            const safePrice = (sizeQty.price !== undefined && !isNaN(sizeQty.price)) ? sizeQty.price : 0;
-                            if (qty === 0) return null;
-                            return (
-                              <View key={sizeIndex} className="flex-row justify-between mb-1">
-                                <Text style={{ color: colors.text.muted }}>Размер {sizeQty.size}: {qty} шт.</Text>
-                                <Text style={{ color: colors.text.muted }}>× {safePrice.toFixed(2)} сомонӣ</Text>
-                              </View>
-                            );
-                          })}
-                        </View>
-
-                        {isBoxSelected && (
-                          <View>
-                            <Text style={{ color: colors.text.normal }} className="font-medium mb-2">Цена продажи за коробку:</Text>
-                            <TextInput
-                              style={{ borderColor: colors.border.normal, backgroundColor: colors.background.screen, color: colors.text.normal }}
-                              className="border p-3 rounded-lg"
-                              placeholder="Введите цену (сомонӣ)"
-                              placeholderTextColor={colors.text.muted}
-                              value={selectedBox?.price || ''}
-                              onChangeText={(text) => {
-                                const updatedBoxes = [...selectedBoxes];
-                                const selectedBoxIndex = updatedBoxes.findIndex(sb => sb.boxIndex === boxIndex);
-                                if (selectedBoxIndex !== -1) {
-                                  updatedBoxes[selectedBoxIndex].price = text;
-                                  setSelectedBoxes(updatedBoxes);
-                                }
+                              setSelectedBoxes(updatedBoxes);
+                            }
+                          }}
+                        >
+                          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                            {/* Premium Checkbox */}
+                            <View
+                              style={{
+                                width: 28,
+                                height: 28,
+                                borderRadius: 8,
+                                backgroundColor: isBoxSelected
+                                  ? (isDark ? colors.primary.gold : '#22c55e')
+                                  : 'transparent',
+                                borderWidth: 2,
+                                borderColor: isBoxSelected
+                                  ? (isDark ? colors.primary.gold : '#22c55e')
+                                  : colors.border.normal,
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                marginRight: 12,
                               }}
-                              keyboardType="numeric"
-                            />
-                            {selectedBox?.price && !isNaN(parseFloat(selectedBox.price)) && parseFloat(selectedBox.price) > 0 && (
-                              <View className="mt-2 p-2 bg-blue-50 rounded">
-                                <Text className="text-blue-800 text-sm">
-                                  Прибыль: {(parseFloat(selectedBox.price) - safeBoxTotalValue).toFixed(2)} сомонӣ
-                                </Text>
+                            >
+                              {isBoxSelected && <Ionicons name="checkmark" size={18} color="white" />}
+                            </View>
+                            <View>
+                              <Text style={{ color: colors.text.normal, fontWeight: 'bold', fontSize: 16 }}>
+                                Коробка {boxIndex + 1}
+                              </Text>
+                              <Text style={{ color: colors.text.muted, fontSize: 13 }}>
+                                {boxTotalQuantity} шт. • {safeBoxTotalValue.toFixed(0)} сомонӣ
+                              </Text>
+                            </View>
+                          </View>
+                          <Ionicons
+                            name={isBoxSelected ? "chevron-up" : "chevron-down"}
+                            size={20}
+                            color={colors.text.muted}
+                          />
+                        </TouchableOpacity>
+
+                        {/* Box Details - показываем только если выбран */}
+                        {isBoxSelected && (
+                          <View style={{ padding: 16, paddingTop: 0 }}>
+                            {/* Sizes */}
+                            <View style={{
+                              backgroundColor: colors.background.screen,
+                              borderRadius: 12,
+                              padding: 12,
+                              marginBottom: 12,
+                            }}>
+                              <Text style={{ color: colors.text.normal, fontWeight: '600', marginBottom: 8 }}>Размеры:</Text>
+                              {box.map((sizeQty, sizeIndex) => {
+                                const qty = getCurrentQuantity(boxIndex, sizeQty.size);
+                                const safePrice = (sizeQty.price !== undefined && !isNaN(sizeQty.price)) ? sizeQty.price : 0;
+                                if (qty === 0) return null;
+                                return (
+                                  <View key={sizeIndex} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 }}>
+                                    <Text style={{ color: colors.text.muted }}>Размер {sizeQty.size}: {qty} шт.</Text>
+                                    <Text style={{ color: colors.text.muted }}>× {safePrice.toFixed(2)} с.</Text>
+                                  </View>
+                                );
+                              })}
+                              {/* Price Input */}
+                              <View>
+                                <Text style={{ color: colors.text.normal, fontWeight: '600', marginBottom: 8 }}>Цена продажи за коробку:</Text>
+                                <TextInput
+                                  style={{
+                                    borderColor: isDark ? colors.primary.gold : '#22c55e',
+                                    backgroundColor: colors.background.screen,
+                                    color: colors.text.normal,
+                                    borderWidth: 2,
+                                    padding: 14,
+                                    borderRadius: 12,
+                                    fontSize: 16,
+                                  }}
+                                  placeholder="Введите цену (сомонӣ)"
+                                  placeholderTextColor={colors.text.muted}
+                                  value={selectedBox?.price === '0' ? '' : (selectedBox?.price || '')}
+                                  onChangeText={(text) => {
+                                    const updatedBoxes = [...selectedBoxes];
+                                    const selectedBoxIndex = updatedBoxes.findIndex(sb => sb.boxIndex === boxIndex);
+                                    if (selectedBoxIndex !== -1) {
+                                      updatedBoxes[selectedBoxIndex].price = text;
+                                      setSelectedBoxes(updatedBoxes);
+                                    }
+                                  }}
+                                  keyboardType="numeric"
+                                />
+                                {selectedBox?.price && !isNaN(parseFloat(selectedBox.price)) && parseFloat(selectedBox.price) > 0 && (
+                                  <View style={{
+                                    backgroundColor: isDark ? 'rgba(34, 197, 94, 0.15)' : '#f0fdf4',
+                                    borderRadius: 10,
+                                    marginTop: 12,
+                                    padding: 12,
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    justifyContent: 'space-between',
+                                  }}>
+                                    <Text style={{ color: isDark ? '#4ade80' : '#16a34a', fontWeight: '600' }}>
+                                      Прибыль:
+                                    </Text>
+                                    <Text style={{ color: isDark ? '#4ade80' : '#15803d', fontWeight: 'bold', fontSize: 16 }}>
+                                      {(parseFloat(selectedBox.price) - safeBoxTotalValue).toFixed(2)} сомонӣ
+                                    </Text>
+                                  </View>
+                                )}
                               </View>
-                            )}
+                            </View>
                           </View>
                         )}
                       </View>
                     );
                   })}
 
+                  {/* Total Summary */}
                   {selectedBoxes.some(sb => sb.price !== '' && !isNaN(parseFloat(sb.price)) && parseFloat(sb.price) > 0) && (
-                    <View className="mt-4 p-4 bg-green-50 rounded-lg mb-6">
-                      <Text className="text-green-800 font-bold text-lg mb-2">Итого к продаже:</Text>
+                    <View style={{
+                      backgroundColor: isDark ? 'rgba(34, 197, 94, 0.15)' : '#f0fdf4',
+                      borderRadius: 16,
+                      padding: 16,
+                      marginTop: 8,
+                      borderWidth: 2,
+                      borderColor: isDark ? '#4ade80' : '#22c55e',
+                    }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+                        <Ionicons name="cube" size={20} color={isDark ? '#4ade80' : '#15803d'} style={{ marginRight: 8 }} />
+                        <Text style={{ color: isDark ? '#4ade80' : '#15803d', fontWeight: 'bold', fontSize: 18 }}>
+                          Итого к продаже
+                        </Text>
+                      </View>
                       {(() => {
                         let totalSalePrice = 0;
                         let totalCostPrice = 0;
@@ -1586,12 +1774,36 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                         });
 
                         return (
-                          <>
-                            <Text className="text-green-700">Коробок: {totalBoxes}</Text>
-                            <Text className="text-green-700">Себестоимость: {totalCostPrice.toFixed(2)} сомонӣ</Text>
-                            <Text className="text-green-700 font-bold">Цена продажи: {totalSalePrice.toFixed(2)} сомонӣ</Text>
-                            <Text className="text-green-700 font-bold text-lg mt-1">Прибыль: {(totalSalePrice - totalCostPrice).toFixed(2)} сомонӣ</Text>
-                          </>
+                          <View>
+                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                              <Text style={{ color: isDark ? '#86efac' : '#16a34a' }}>Коробок:</Text>
+                              <Text style={{ color: isDark ? '#86efac' : '#16a34a', fontWeight: '600' }}>{totalBoxes}</Text>
+                            </View>
+                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                              <Text style={{ color: isDark ? '#86efac' : '#16a34a' }}>Себестоимость:</Text>
+                              <Text style={{ color: isDark ? '#86efac' : '#16a34a', fontWeight: '600' }}>{totalCostPrice.toFixed(2)} сомонӣ</Text>
+                            </View>
+                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                              <Text style={{ color: isDark ? '#4ade80' : '#15803d', fontWeight: '600' }}>Цена продажи:</Text>
+                              <Text style={{ color: isDark ? '#4ade80' : '#15803d', fontWeight: 'bold' }}>{totalSalePrice.toFixed(2)} сомонӣ</Text>
+                            </View>
+                            <View style={{
+                              flexDirection: 'row',
+                              justifyContent: 'space-between',
+                              marginTop: 8,
+                              paddingTop: 10,
+                              borderTopWidth: 1,
+                              borderTopColor: isDark ? 'rgba(134, 239, 172, 0.3)' : 'rgba(22, 163, 74, 0.3)',
+                            }}>
+                              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                <Ionicons name="cash" size={18} color={isDark ? '#4ade80' : '#15803d'} style={{ marginRight: 6 }} />
+                                <Text style={{ color: isDark ? '#4ade80' : '#15803d', fontWeight: 'bold', fontSize: 16 }}>Прибыль:</Text>
+                              </View>
+                              <Text style={{ color: isDark ? '#4ade80' : '#15803d', fontWeight: 'bold', fontSize: 18 }}>
+                                {(totalSalePrice - totalCostPrice).toFixed(2)} сомонӣ
+                              </Text>
+                            </View>
+                          </View>
                         );
                       })()}
                     </View>

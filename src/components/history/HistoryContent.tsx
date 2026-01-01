@@ -28,31 +28,31 @@ const HistoryContent: React.FC = () => {
   const [offset, setOffset] = useState(0);
   const [selectedGroup, setSelectedGroup] = useState<GroupedTransaction | null>(null);
   const [detailsVisible, setDetailsVisible] = useState(false);
-  
+
   const { getTransactionsPage, clearTransactions } = useDatabase();
 
   const groupRelatedTransactions = (txs: Transaction[]): GroupedTransaction[] => {
     const result: GroupedTransaction[] = [];
     const processedIds = new Set<number>();
-    
+
     for (let i = 0; i < txs.length; i++) {
       if (processedIds.has(txs[i].id)) continue;
-      
+
       const currentTx = txs[i];
-      
+
       if (currentTx.action === 'sale' || currentTx.action === 'update' || currentTx.action === 'wholesale') {
         const relatedTransactions: Transaction[] = [currentTx];
-        
+
         for (let j = i + 1; j < txs.length; j++) {
           if (processedIds.has(txs[j].id)) continue;
-          
-          if (txs[j].itemId === currentTx.itemId && 
-              Math.abs(txs[j].timestamp - currentTx.timestamp) < 5) {
+
+          if (txs[j].itemId === currentTx.itemId &&
+            Math.abs(txs[j].timestamp - currentTx.timestamp) < 5) {
             relatedTransactions.push(txs[j]);
             processedIds.add(txs[j].id);
           }
         }
-        
+
         if (relatedTransactions.length > 1) {
           result.push({
             id: `group-${currentTx.id}`,
@@ -65,7 +65,7 @@ const HistoryContent: React.FC = () => {
           continue;
         }
       }
-      
+
       result.push({
         id: `single-${currentTx.id}`,
         type: 'single',
@@ -75,16 +75,16 @@ const HistoryContent: React.FC = () => {
       });
       processedIds.add(currentTx.id);
     }
-    
+
     return result.sort((a, b) => b.timestamp - a.timestamp);
   };
 
   const loadTransactions = useCallback(async (isLoadMore = false, isRefresh = false) => {
     if (isLoadMore && loadingMore) return;
     if (isRefresh && refreshing) return;
-    
+
     console.log('HistoryContent: Loading transactions, isLoadMore:', isLoadMore, 'isRefresh:', isRefresh, 'offset:', offset);
-    
+
     if (!isLoadMore && !isRefresh) {
       setInitialLoading(true);
       setOffset(0); // Сбрасываем offset для нового поиска
@@ -94,19 +94,19 @@ const HistoryContent: React.FC = () => {
       setRefreshing(true);
       setOffset(0); // Сбрасываем offset для обновления
     }
-    
+
     try {
       const currentOffset = isLoadMore ? offset : 0;
       const { transactions: newTransactions, hasMore: more } = await getTransactionsPage(ITEM_LIMIT, currentOffset);
-      
+
       console.log('HistoryContent: Received', newTransactions.length, 'transactions, hasMore:', more);
-      
+
       const allTransactions = (isLoadMore && !isRefresh) ? [...transactions, ...newTransactions] : newTransactions;
       setTransactions(allTransactions);
-      
+
       const grouped = groupRelatedTransactions(allTransactions);
       setGroupedTransactions(grouped);
-      
+
       if (!isLoadMore || isRefresh) {
         setOffset(newTransactions.length);
       } else {
@@ -148,29 +148,53 @@ const HistoryContent: React.FC = () => {
   };
 
   const renderTransactionItem = ({ item }: { item: GroupedTransaction }) => {
+    // Parse details to check for special types
+    const parsedDetails = parseDetailsType(item.transactions[0].details);
+
     // Для группированных транзакций определяем главный тип
     let mainAction = item.transactions[0].action;
     let actionText = getActionText(mainAction);
-    
-    if (item.type === 'grouped') {
-      const wholesaleTx = item.transactions.find(tx => tx.action === 'wholesale');
-      const saleTx = item.transactions.find(tx => tx.action === 'sale');
-      
-      if (wholesaleTx) {
-        mainAction = 'wholesale';
-        actionText = 'Продажа оптом';
-      } else if (saleTx) {
-        mainAction = 'sale';
-        actionText = 'Продажа';
+    let icon: keyof typeof MaterialIcons.glyphMap;
+    let color: string;
+    let borderStyle = {};
+
+    // Check for admin_approved types first
+    if (parsedDetails.detailsType === 'admin_approved_sale_deletion') {
+      icon = 'restore';
+      color = '#22c55e';
+      actionText = 'Возврат продажи';
+      borderStyle = { borderLeftWidth: 4, borderLeftColor: '#22c55e' };
+    } else if (parsedDetails.detailsType === 'admin_approved_delete') {
+      icon = 'delete-forever';
+      color = '#ef4444';
+      actionText = 'Удаление (одобрено)';
+    } else if (parsedDetails.detailsType === 'admin_approved_update') {
+      icon = 'check-circle';
+      color = '#3b82f6';
+      actionText = 'Обновление (одобрено)';
+    } else {
+      if (item.type === 'grouped') {
+        const wholesaleTx = item.transactions.find(tx => tx.action === 'wholesale');
+        const saleTx = item.transactions.find(tx => tx.action === 'sale');
+
+        if (wholesaleTx) {
+          mainAction = 'wholesale';
+          actionText = 'Продажа оптом';
+        } else if (saleTx) {
+          mainAction = 'sale';
+          actionText = 'Продажа';
+        }
       }
+      const iconData = getActionIconAndColor(mainAction);
+      icon = iconData.icon;
+      color = iconData.color;
     }
-    
-    const { icon, color } = getActionIconAndColor(mainAction);
+
     const formattedTime = new Date(item.transactions[0].timestamp * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 
     return (
       <TouchableOpacity onPress={() => handleTransactionPress(item)} activeOpacity={0.7}>
-        <View style={[styles.transactionItem, item.type === 'grouped' && styles.groupedTransactionItem]}>
+        <View style={[styles.transactionItem, item.type === 'grouped' && styles.groupedTransactionItem, borderStyle]}>
           <View style={[styles.iconContainer, { backgroundColor: `${color}20` }]}>
             <MaterialIcons name={icon} size={24} color={color} />
           </View>
@@ -178,9 +202,9 @@ const HistoryContent: React.FC = () => {
             <Text style={styles.actionText}>{actionText}</Text>
             <Text style={styles.itemName} numberOfLines={1}>{item.transactions[0].itemName}</Text>
             <Text style={styles.details} numberOfLines={1}>
-              {item.transactions.length > 1 
+              {item.transactions.length > 1
                 ? (mainAction === 'wholesale' ? 'Оптовая продажа и обновление' : 'Продажа и обновление') + ` - ${item.transactions.length} действия`
-                : parseDetailsType(item.transactions[0].details)
+                : parsedDetails.text
               }
             </Text>
             <Text style={styles.time}>{formattedTime}</Text>
@@ -291,22 +315,32 @@ const getActionText = (action: Transaction['action']): string => {
   }
 };
 
-const parseDetailsType = (details: string | null | undefined): string => {
-  if (!details) return 'Детали';
+const parseDetailsType = (details: string | null | undefined): { text: string; detailsType?: string } => {
+  if (!details) return { text: 'Детали' };
   try {
     const parsed = JSON.parse(details);
-    if (parsed.type === 'sale' || parsed.type === 'update') {
-      return `Продажа - Размер ${parsed.size || parsed.sale?.size || 'N/A'}`;
+    if (parsed.type === 'admin_approved_sale_deletion') {
+      const saleInfo = parsed.deletedTransaction?.details?.sale;
+      return {
+        text: `Возврат - Размер ${saleInfo?.size || 'N/A'}, ${parsed.restoredQuantity || 1} шт.`,
+        detailsType: 'admin_approved_sale_deletion'
+      };
+    } else if (parsed.type === 'admin_approved_delete') {
+      return { text: 'Удаление товара (одобрено)', detailsType: 'admin_approved_delete' };
+    } else if (parsed.type === 'admin_approved_update') {
+      return { text: 'Обновление (одобрено)', detailsType: 'admin_approved_update' };
+    } else if (parsed.type === 'sale' || parsed.type === 'update') {
+      return { text: `Продажа - Размер ${parsed.size || parsed.sale?.size || 'N/A'}` };
     } else if (parsed.type === 'wholesale') {
-      return `Оптовая продажа - ${parsed.wholesale?.totalBoxes || 0} коробок`;
+      return { text: `Оптовая продажа - ${parsed.wholesale?.totalBoxes || 0} коробок` };
     } else if (parsed.type === 'create') {
-      return `Создание - ${parsed.initialSizes?.length || 0} размеров`;
+      return { text: `Создание - ${parsed.initialSizes?.length || 0} размеров` };
     } else if (parsed.type === 'delete') {
-      return `Удаление - ${parsed.finalSizes?.length || 0} размеров`;
+      return { text: `Удаление - ${parsed.finalSizes?.length || 0} размеров` };
     }
-    return parsed.type ? `${parsed.type}` : 'Детали';
+    return { text: parsed.type ? `${parsed.type}` : 'Детали' };
   } catch {
-    return details.substring(0, 30) + '...';
+    return { text: details.substring(0, 30) + '...' };
   }
 };
 

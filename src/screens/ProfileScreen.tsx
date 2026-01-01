@@ -11,45 +11,28 @@ import {
   Modal,
   TextInput,
   RefreshControl,
-  Switch,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { getThemeColors } from '../../constants/theme';
-import { useDatabase, ImportResult } from '../../hooks/useDatabase';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import {
-  streamingExportDatabase,
-  StreamingExportProgress,
-} from '../../database/streamingImportExport';
 import AssistantService, { Assistant } from '../services/AssistantService';
 import SubscriptionService, { Subscription } from '../services/SubscriptionService';
 import { useSyncRefresh } from '../components/sync/SyncStatusBar';
-import LogService from '../services/LogService';
-
-type ProfileStackParamList = {
-  ProfileMain: undefined;
-  Subscription: undefined;
-};
+import { ProfileStackParamList } from '../types/navigation';
 
 export default function ProfileScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<ProfileStackParamList>>();
   const { user, signOut, isAdmin } = useAuth();
   const { isDark, toggleTheme } = useTheme();
   const colors = getThemeColors(isDark);
-  const [showSettings, setShowSettings] = useState(false);
+  const insets = useSafeAreaInsets();
   const [showAddAssistant, setShowAddAssistant] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-
-  // Database operations
-  const [isExporting, setIsExporting] = useState(false);
-  const [isImporting, setIsImporting] = useState(false);
-  const [exportProgress, setExportProgress] = useState<StreamingExportProgress | null>(null);
-  const [showStreamingExport, setShowStreamingExport] = useState(false);
 
   // Assistants
   const [assistants, setAssistants] = useState<Assistant[]>([]);
@@ -64,14 +47,6 @@ export default function ProfileScreen() {
   const [assistantLogin, setAssistantLogin] = useState('');
   const [assistantPassword, setAssistantPassword] = useState('');
   const [assistantPhone, setAssistantPhone] = useState('');
-
-  const {
-    clearDatabase,
-    exportDatabase,
-    shareExportedZip,
-    pickAndImportZip,
-    clearTransactions,
-  } = useDatabase();
 
   // Анимации
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -202,139 +177,6 @@ export default function ProfileScreen() {
     }
   };
 
-  const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
-
-  // Database operations (from old SettingsScreen)
-  const handleExport = async () => {
-    Alert.alert(
-      'Тип экспорта',
-      'Выберите способ экспорта:',
-      [
-        { text: 'Обычный (ZIP)', onPress: handleStandardExport },
-        { text: 'Большие объемы (Папка)', onPress: handleStreamingExport },
-        { text: 'Отмена', style: 'cancel' }
-      ]
-    );
-  };
-
-  const handleStandardExport = async () => {
-    try {
-      setIsExporting(true);
-      await sleep(200);
-      const zipPath = await exportDatabase();
-      await shareExportedZip(zipPath);
-      Alert.alert('Успех', 'Экспорт выполнен');
-    } catch (e) {
-      console.error('Export error:', e);
-      Alert.alert('Ошибка', 'Не удалось экспортировать базу данных: ' + String((e as any)?.message || e));
-    } finally {
-      setIsExporting(false);
-    }
-  };
-
-  const handleStreamingExport = async () => {
-    try {
-      setIsExporting(true);
-      setShowStreamingExport(true);
-      setExportProgress({ stage: 'preparing', current: 0, total: 100, message: 'Подготовка...' });
-
-      const folderPath = await streamingExportDatabase((progress) => {
-        setExportProgress(progress);
-      });
-
-      Alert.alert(
-        'Экспорт завершен!',
-        `Данные сохранены в папку:\n${folderPath}\n\nДля больших файлов рекомендуем заархивировать папку через файловый менеджер.`,
-        [{ text: 'ОК', onPress: () => setShowStreamingExport(false) }]
-      );
-    } catch (e) {
-      console.error('Streaming export error:', e);
-      Alert.alert('Ошибка экспорта', String((e as any)?.message || e));
-      setShowStreamingExport(false);
-    } finally {
-      setIsExporting(false);
-      setExportProgress(null);
-    }
-  };
-
-  const handleImport = async () => {
-    try {
-      await sleep(250);
-      setIsImporting(true);
-      const res: ImportResult = await pickAndImportZip();
-
-      if (res.imported) {
-        let message = 'Импорт завершён успешно!';
-        if (res.itemsWithoutPrice && res.itemsWithoutPrice > 0) {
-          message += `\n\n⚠️ Внимание: ${res.itemsWithoutPrice} товар(ов) импортированы без цены.`;
-        }
-        Alert.alert('Успех', message);
-      }
-    } catch (e) {
-      console.error('Import error:', e);
-      Alert.alert('Ошибка', 'Не удалось импортировать файл');
-    } finally {
-      setIsImporting(false);
-    }
-  };
-
-  const handleClearDatabase = async () => {
-    Alert.alert(
-      'Очистка базы данных',
-      'Вы уверены, что хотите удалить все записи? Это действие нельзя отменить.',
-      [
-        { text: 'Отмена', style: 'cancel' },
-        {
-          text: 'Удалить',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await clearDatabase();
-              Alert.alert('Успех', 'База данных очищена');
-            } catch (error) {
-              Alert.alert('Ошибка', 'Не удалось очистить базу данных');
-            }
-          },
-        },
-      ]
-    );
-  };
-
-  const handleClearHistory = async () => {
-    Alert.alert(
-      'Очистить историю?',
-      'Все записи об изменениях будут удалены. Это действие нельзя отменить.',
-      [
-        { text: 'Отмена', style: 'cancel' },
-        {
-          text: 'Очистить',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await clearTransactions();
-              Alert.alert('Успех', 'История очищена');
-            } catch (error) {
-              Alert.alert('Ошибка', 'Не удалось очистить историю');
-            }
-          }
-        }
-      ]
-    );
-  };
-
-  const handleShareLogs = async () => {
-    try {
-      const logsCount = LogService.getLogsCount();
-      if (logsCount === 0) {
-        Alert.alert('Нет логов', 'Логи пока не были записаны');
-        return;
-      }
-      await LogService.shareLogsFile();
-    } catch (error: any) {
-      Alert.alert('Ошибка', error.message || 'Не удалось экспортировать логи');
-    }
-  };
-
   const handleSignOut = () => {
     Alert.alert(
       'Выход',
@@ -411,34 +253,23 @@ export default function ProfileScreen() {
     }
   };
 
-  const SettingItem: React.FC<{
-    icon: keyof typeof MaterialIcons.glyphMap;
-    title: string;
-    description: string;
-    onPress: () => void;
-    color?: string;
-    destructive?: boolean;
-  }> = ({ icon, title, description, onPress, color = colors.primary.blue, destructive = false }) => (
-    <TouchableOpacity
-      style={[styles.settingItem, { backgroundColor: colors.background.card, borderColor: colors.border.light }, destructive && styles.destructiveItem]}
-      onPress={onPress}
-      activeOpacity={0.7}
-    >
-      <View style={[styles.settingIconContainer, { backgroundColor: `${color}20` }]}>
-        <MaterialIcons name={icon} size={24} color={color} />
-      </View>
-      <View style={styles.settingContent}>
-        <Text style={[styles.settingTitle, { color: colors.text.normal }, destructive && styles.destructiveText]}>
-          {title}
-        </Text>
-        <Text style={[styles.settingDescription, { color: colors.text.muted }]}>{description}</Text>
-      </View>
-      <MaterialIcons name="chevron-right" size={24} color={colors.text.muted} />
-    </TouchableOpacity>
-  );
-
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background.screen }]} edges={['top']}>
+      {/* Floating refresh button in top-right corner */}
+      <TouchableOpacity
+        onPress={onRefresh}
+        activeOpacity={0.7}
+        style={[styles.floatingRefreshButton, {
+          backgroundColor: isDark ? 'rgba(212, 175, 55, 0.15)' : 'rgba(59, 130, 246, 0.1)',
+          top: insets.top + 12,
+        }]}
+      >
+        <MaterialIcons
+          name="refresh"
+          size={22}
+          color={isDark ? colors.primary.gold : colors.primary.blue}
+        />
+      </TouchableOpacity>
       <ScrollView
         style={{ flex: 1 }}
         refreshControl={
@@ -493,7 +324,7 @@ export default function ProfileScreen() {
             {isAdmin() && (
               <TouchableOpacity
                 style={[styles.quickAction, { backgroundColor: colors.background.card }]}
-                onPress={() => navigation.navigate('PendingActions' as any)}
+                onPress={() => navigation.navigate('PendingActions')}
               >
                 <MaterialIcons name="assignment" size={24} color="#f59e0b" />
                 <Text style={[styles.quickActionText, { color: colors.text.normal }]}>Заявки</Text>
@@ -501,10 +332,23 @@ export default function ProfileScreen() {
             )}
             <TouchableOpacity
               style={[styles.quickAction, { backgroundColor: colors.background.card }]}
-              onPress={() => setShowSettings(true)}
+              onPress={() => navigation.navigate('Settings')}
             >
               <MaterialIcons name="settings" size={24} color={isDark ? colors.primary.gold : colors.primary.purple} />
               <Text style={[styles.quickActionText, { color: colors.text.normal }]}>Настройки</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.quickAction, { backgroundColor: colors.background.card }]}
+              onPress={toggleTheme}
+            >
+              <MaterialIcons
+                name={isDark ? 'light-mode' : 'dark-mode'}
+                size={24}
+                color={isDark ? '#fbbf24' : '#6366f1'}
+              />
+              <Text style={[styles.quickActionText, { color: colors.text.normal }]}>
+                {isDark ? 'Светлая' : 'Тёмная'}
+              </Text>
             </TouchableOpacity>
             {isAdmin() && assistants.length === 0 && (
               <TouchableOpacity
@@ -648,7 +492,7 @@ export default function ProfileScreen() {
             ) : (
               <TouchableOpacity
                 style={styles.subscriptionCard}
-                onPress={() => navigation.navigate('Subscription' as any)}
+                onPress={() => navigation.navigate('Subscription')}
               >
                 <LinearGradient
                   colors={isDark
@@ -772,112 +616,6 @@ export default function ProfileScreen() {
           </ScrollView>
         </View>
       </Modal>
-
-      {/* Modal для настроек */}
-      <Modal
-        visible={showSettings}
-        animationType="slide"
-        presentationStyle="pageSheet"
-        onRequestClose={() => setShowSettings(false)}
-      >
-        <View style={[styles.modalContainer, { backgroundColor: colors.background.screen }]}>
-          <View style={[styles.modalHeader, { backgroundColor: colors.background.card, borderBottomColor: colors.border.normal }]}>
-            <Text style={[styles.modalTitle, { color: colors.text.normal }]}>Настройки</Text>
-            <TouchableOpacity onPress={() => setShowSettings(false)}>
-              <MaterialIcons name="close" size={28} color={colors.text.normal} />
-            </TouchableOpacity>
-          </View>
-
-          <ScrollView style={[styles.modalContent, { backgroundColor: colors.background.screen }]}>
-            <Text style={[styles.modalSectionTitle, { color: colors.text.normal }]}>Внешний вид</Text>
-
-            <View style={[styles.settingItem, { backgroundColor: colors.background.card, borderColor: colors.border.light }]}>
-              <View style={[styles.settingIconContainer, { backgroundColor: isDark ? 'rgba(212, 175, 55, 0.2)' : `${colors.primary.purple}20` }]}>
-                <MaterialIcons name={isDark ? "dark-mode" : "light-mode"} size={24} color={isDark ? colors.primary.gold : colors.primary.purple} />
-              </View>
-              <View style={styles.settingContent}>
-                <Text style={[styles.settingTitle, { color: colors.text.normal }]}>
-                  Темная тема
-                </Text>
-                <Text style={[styles.settingDescription, { color: colors.text.muted }]}>
-                  {isDark ? 'Темное оформление включено' : 'Светлое оформление'}
-                </Text>
-              </View>
-              <Switch
-                value={isDark}
-                onValueChange={toggleTheme}
-                trackColor={{ false: '#d1d5db', true: colors.primary.gold }}
-                thumbColor={isDark ? colors.primary.lightGold : '#f3f4f6'}
-                ios_backgroundColor="#d1d5db"
-              />
-            </View>
-
-            <Text style={[styles.modalSectionTitle, { color: colors.text.normal }]}>Данные</Text>
-
-            <SettingItem
-              icon="file-download"
-              title="Экспорт данных"
-              description="Создать ZIP архив с товарами"
-              onPress={handleExport}
-              color="#3b82f6"
-            />
-
-            <SettingItem
-              icon="file-upload"
-              title="Импорт данных"
-              description="Загрузить данные из ZIP файла"
-              onPress={handleImport}
-              color="#8b5cf6"
-            />
-
-            <SettingItem
-              icon="bug-report"
-              title="Скачать логи"
-              description="Экспорт логов для отладки"
-              onPress={handleShareLogs}
-              color="#10b981"
-            />
-
-            <Text style={[styles.modalSectionTitle, { color: colors.text.normal }]}>Очистка</Text>
-
-            <SettingItem
-              icon="delete-sweep"
-              title="Очистить историю"
-              description="Удалить все транзакции"
-              onPress={handleClearHistory}
-              color="#f59e0b"
-            />
-
-            <SettingItem
-              icon="delete-forever"
-              title="Очистить базу данных"
-              description="Удалить все товары и данные"
-              onPress={handleClearDatabase}
-              color="#ef4444"
-              destructive
-            />
-          </ScrollView>
-        </View>
-
-        {/* Loading overlays */}
-        <Modal visible={isExporting && !showStreamingExport} transparent animationType="fade">
-          <View style={styles.loadingOverlay}>
-            <View style={[styles.loadingContent, { backgroundColor: colors.background.card }]}>
-              <ActivityIndicator size="large" color={isDark ? colors.primary.gold : "#10b981"} />
-              <Text style={[styles.loadingText, { color: colors.text.normal }]}>Экспорт...</Text>
-            </View>
-          </View>
-        </Modal>
-
-        <Modal visible={isImporting} transparent animationType="fade">
-          <View style={styles.loadingOverlay}>
-            <View style={[styles.loadingContent, { backgroundColor: colors.background.card }]}>
-              <ActivityIndicator size="large" color={isDark ? colors.primary.gold : "#10b981"} />
-              <Text style={[styles.loadingText, { color: colors.text.normal }]}>Импорт...</Text>
-            </View>
-          </View>
-        </Modal>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -885,15 +623,27 @@ export default function ProfileScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+  },
+  errorText: {
+    fontSize: 16,
+    color: '#ef4444',
+    textAlign: 'center',
+    marginTop: 20,
   },
   headerGradient: {
-    paddingTop: 60,
+    paddingTop: 20,
     paddingBottom: 40,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
     paddingHorizontal: 20,
   },
   profileCard: {
     alignItems: 'center',
+    padding: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
   },
   avatarContainer: {
     width: 100,
@@ -904,15 +654,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 16,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.1,
     shadowRadius: 8,
-    elevation: 8,
+    elevation: 4,
   },
   avatarText: {
     fontSize: 40,
     fontWeight: 'bold',
-    color: '#10b981',
+    color: '#3b82f6',
   },
   name: {
     fontSize: 24,
@@ -923,88 +676,81 @@ const styles = StyleSheet.create({
   roleBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     borderRadius: 20,
-    gap: 6,
   },
   roleText: {
     color: '#fff',
-    fontSize: 14,
+    marginLeft: 6,
     fontWeight: '600',
-    textTransform: 'uppercase',
+    fontSize: 14,
   },
   content: {
+    flex: 1,
+    marginTop: -20,
+    borderTopLeftRadius: 30,
+    borderTopRightRadius: 30,
     padding: 20,
-    paddingTop: 10,
   },
   quickActions: {
     flexDirection: 'row',
-    gap: 12,
-    marginBottom: 20,
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    marginBottom: 24,
   },
   quickAction: {
-    flex: 1,
-    backgroundColor: '#fff',
+    width: '48%',
+    padding: 16,
     borderRadius: 16,
-    padding: 14,
     alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.05,
     shadowRadius: 4,
-    elevation: 3,
+    elevation: 2,
   },
   quickActionText: {
     marginTop: 8,
-    fontSize: 11,
+    fontSize: 14,
     fontWeight: '600',
-    color: '#333',
   },
-  subscriptionCard: {
-    marginBottom: 20,
-    borderRadius: 16,
-    overflow: 'hidden',
-    shadowColor: '#10b981',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  subscriptionGradient: {
-    padding: 20,
-  },
-  subscriptionContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-  },
-  subscriptionTextContainer: {
-    flex: 1,
-  },
-  subscriptionTitle: {
+  sectionTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#fff',
-    marginBottom: 4,
+    marginBottom: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
-  subscriptionSubtitle: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.9)',
+  infoSection: {
+    borderRadius: 20,
+    padding: 20,
+    marginBottom: 24,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
   },
   assistantItem: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
   },
   assistantIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: '#f0f0ff',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
@@ -1015,180 +761,32 @@ const styles = StyleSheet.create({
   assistantLogin: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#333',
-    marginBottom: 2,
   },
   assistantPhone: {
     fontSize: 14,
-    color: '#666',
+    marginTop: 2,
   },
-  formGroup: {
-    marginBottom: 20,
-  },
-  formLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 8,
-  },
-  inputWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f5f5f5',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-    paddingHorizontal: 12,
-  },
-  inputIconLeft: {
-    marginRight: 8,
-  },
-  formInput: {
-    flex: 1,
-    paddingVertical: 14,
-    fontSize: 16,
-    color: '#333',
-  },
-  addButton: {
-    backgroundColor: '#10b981',
-    paddingVertical: 16,
-    borderRadius: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 10,
-    gap: 8,
-  },
-  addButtonDisabled: {
-    backgroundColor: '#93c5ae',
-  },
-  addButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  infoSection: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
+  subscriptionCard: {
+    borderRadius: 20,
+    overflow: 'hidden',
+    marginBottom: 24,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
     shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowRadius: 8,
+    elevation: 4,
   },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 16,
-  },
-  infoItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
-  },
-  infoTextContainer: {
-    flex: 1,
-    marginLeft: 12,
-  },
-  infoLabel: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 2,
-  },
-  infoValue: {
-    fontSize: 16,
-    color: '#333',
-    fontWeight: '500',
-  },
-  appInfo: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 24,
-    alignItems: 'center',
-    marginTop: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  appName: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#333',
-    marginTop: 12,
-    marginBottom: 4,
-  },
-  appVersion: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 8,
-  },
-  appDescription: {
-    fontSize: 14,
-    color: '#666',
-    textAlign: 'center',
-  },
-  errorText: {
-    fontSize: 16,
-    color: '#666',
-    textAlign: 'center',
+  subscriptionGradient: {
     padding: 20,
   },
-  modalContainer: {
-    flex: 1,
-    backgroundColor: '#f5f5f5',
-  },
-  modalHeader: {
+  subscriptionContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e5e7eb',
   },
-  modalTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#333',
-  },
-  modalContent: {
-    flex: 1,
-    padding: 20,
-  },
-  modalSectionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#374151',
-    marginTop: 16,
-    marginBottom: 12,
-    marginLeft: 4,
-  },
-  settingItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
-  },
-  destructiveItem: {
-    borderWidth: 1,
-    borderColor: '#fee2e2',
-  },
-  settingIconContainer: {
+  subscriptionIconContainer: {
     width: 48,
     height: 48,
     borderRadius: 24,
@@ -1196,119 +794,187 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginRight: 16,
   },
-  settingContent: {
+  subscriptionTextContainer: {
     flex: 1,
   },
-  settingTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#111827',
+  subscriptionTitle: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
     marginBottom: 4,
   },
-  destructiveText: {
-    color: '#ef4444',
-  },
-  settingDescription: {
-    fontSize: 14,
-    color: '#6b7280',
-  },
-  loadingOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingContent: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 32,
-    alignItems: 'center',
-  },
-  loadingText: {
-    marginTop: 16,
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
+  subscriptionSubtitle: {
+    color: 'rgba(255, 255, 255, 0.9)',
+    fontSize: 13,
   },
   subscriptionInfoCard: {
+    marginBottom: 24,
     borderRadius: 20,
-    marginBottom: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
-    elevation: 8,
     overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
   },
   subscriptionGradientCard: {
-    padding: 24,
-    borderRadius: 20,
+    padding: 20,
   },
   subscriptionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 20,
-    gap: 14,
+    marginBottom: 16,
   },
   premiumIconContainer: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     justifyContent: 'center',
     alignItems: 'center',
+    marginRight: 12,
   },
   subscriptionHeaderTitle: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: 'bold',
-    color: '#333',
-    flex: 1,
   },
   statusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 14,
-    borderRadius: 14,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
     marginBottom: 20,
-    gap: 10,
   },
   statusText: {
-    fontSize: 15,
-    fontWeight: '700',
+    marginLeft: 6,
+    fontWeight: '600',
+    fontSize: 14,
   },
   subscriptionDetails: {
-    gap: 14,
+    gap: 12,
   },
   detailRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 10,
-    gap: 14,
   },
   detailIconContainer: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
+    marginRight: 12,
   },
   detailTextContainer: {
     flex: 1,
   },
   detailLabel: {
-    fontSize: 13,
-    color: '#666',
-    marginBottom: 4,
+    fontSize: 12,
   },
   detailValue: {
     fontSize: 16,
-    fontWeight: '700',
-    color: '#333',
+    fontWeight: '600',
   },
-  subscriptionIconContainer: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    justifyContent: 'center',
+  appInfo: {
     alignItems: 'center',
+    padding: 24,
+    borderRadius: 20,
+    marginBottom: 24,
+  },
+  appName: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginTop: 12,
+  },
+  appVersion: {
+    fontSize: 14,
+    marginTop: 4,
+  },
+  appDescription: {
+    textAlign: 'center',
+    fontSize: 14,
+    marginTop: 8,
+    lineHeight: 20,
+  },
+  modalContainer: {
+    flex: 1,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 20,
+    borderBottomWidth: 1,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+  },
+  modalContent: {
+    flex: 1,
+    padding: 20,
+  },
+  formGroup: {
+    marginBottom: 20,
+  },
+  formLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  inputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+  },
+  inputIconLeft: {
+    marginRight: 10,
+  },
+  formInput: {
+    flex: 1,
+    height: 50,
+    fontSize: 16,
+  },
+  addButton: {
+    backgroundColor: '#3b82f6',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+    borderRadius: 12,
+    marginTop: 10,
+  },
+  addButtonDisabled: {
+    opacity: 0.7,
+  },
+  addButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+    marginLeft: 8,
+  },
+  floatingRefreshButton: {
+    position: 'absolute',
+    right: 20,
+    zIndex: 100,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 4,
   },
 });

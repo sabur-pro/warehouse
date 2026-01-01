@@ -3,6 +3,82 @@ import NetInfo from '@react-native-community/netinfo';
 import SyncService, { DataQualityReport, SyncProgress } from '../services/SyncService';
 import AuthService from '../services/AuthService';
 
+// ============================================
+// GLOBAL SYNC STATE MANAGER (Singleton)
+// ============================================
+// Все компоненты используют один общий state
+// чтобы SyncStatusBar показывал статус при любом триггере sync
+
+type SyncStateListener = () => void;
+
+interface GlobalSyncState {
+  isSyncing: boolean;
+  syncProgress: SyncProgress | null;
+  lastSyncTime: Date | null;
+  syncError: string | null;
+  pendingChangesCount: number;
+}
+
+class SyncStateManager {
+  private static instance: SyncStateManager;
+  private listeners: Set<SyncStateListener> = new Set();
+  private state: GlobalSyncState = {
+    isSyncing: false,
+    syncProgress: null,
+    lastSyncTime: null,
+    syncError: null,
+    pendingChangesCount: 0,
+  };
+
+  static getInstance(): SyncStateManager {
+    if (!SyncStateManager.instance) {
+      SyncStateManager.instance = new SyncStateManager();
+    }
+    return SyncStateManager.instance;
+  }
+
+  getState(): GlobalSyncState {
+    return this.state;
+  }
+
+  setIsSyncing(value: boolean) {
+    this.state.isSyncing = value;
+    this.notifyListeners();
+  }
+
+  setSyncProgress(progress: SyncProgress | null) {
+    this.state.syncProgress = progress;
+    this.notifyListeners();
+  }
+
+  setLastSyncTime(time: Date | null) {
+    this.state.lastSyncTime = time;
+    this.notifyListeners();
+  }
+
+  setSyncError(error: string | null) {
+    this.state.syncError = error;
+    this.notifyListeners();
+  }
+
+  setPendingChangesCount(count: number) {
+    this.state.pendingChangesCount = count;
+    this.notifyListeners();
+  }
+
+  subscribe(listener: SyncStateListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private notifyListeners() {
+    this.listeners.forEach(listener => listener());
+  }
+}
+
+// Экспортируем singleton для использования
+export const syncStateManager = SyncStateManager.getInstance();
+
 interface UseAutoSyncOptions {
   enabled?: boolean;
   syncInterval?: number; // в миллисекундах, по умолчанию 5 минут
@@ -11,22 +87,30 @@ interface UseAutoSyncOptions {
 export const useAutoSync = (options: UseAutoSyncOptions = {}) => {
   const { enabled = true, syncInterval = 5 * 60 * 1000 } = options;
 
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
-  const [syncError, setSyncError] = useState<string | null>(null);
-  const [pendingChangesCount, setPendingChangesCount] = useState(0);
+  // Используем глобальный state для синхронизации
+  const globalState = syncStateManager.getState();
+  const [, forceUpdate] = useState(0);
+
+  // Подписываемся на изменения глобального state
+  useEffect(() => {
+    const unsubscribe = syncStateManager.subscribe(() => {
+      forceUpdate(n => n + 1);
+    });
+    return unsubscribe;
+  }, []);
+
+  // Локальные состояния для data quality (не нужны глобально)
   const [dataQualityReport, setDataQualityReport] = useState<DataQualityReport | null>(null);
   const [showDataQualityAlert, setShowDataQualityAlert] = useState(false);
-  const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
 
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const isAuthenticatedRef = useRef(false);
   const userRoleRef = useRef<string | null>(null);
-  const isFirstSyncRef = useRef(true); // Флаг первой синхронизации
+  const isFirstSyncRef = useRef(true);
 
-  // Callback для обновления прогресса синхронизации
+  // Callback для обновления прогресса синхронизации (глобальный)
   const handleSyncProgress = useCallback((progress: SyncProgress) => {
-    setSyncProgress(progress);
+    syncStateManager.setSyncProgress(progress);
   }, []);
 
   /**
@@ -34,14 +118,15 @@ export const useAutoSync = (options: UseAutoSyncOptions = {}) => {
    * @returns true если синхронизация прошла успешно, false если ошибка
    */
   const performSync = async (): Promise<boolean> => {
-    if (!enabled || isSyncing || !isAuthenticatedRef.current) {
+    // Проверяем глобальный isSyncing
+    if (!enabled || syncStateManager.getState().isSyncing || !isAuthenticatedRef.current) {
       return false;
     }
 
     try {
-      setIsSyncing(true);
-      setSyncError(null);
-      setSyncProgress(null); // Сбросить прогресс
+      syncStateManager.setIsSyncing(true);
+      syncStateManager.setSyncError(null);
+      syncStateManager.setSyncProgress(null);
 
       // Установить callback для прогресса
       SyncService.setSyncProgressCallback(handleSyncProgress);
@@ -49,26 +134,23 @@ export const useAutoSync = (options: UseAutoSyncOptions = {}) => {
       const role = userRoleRef.current;
 
       if (role === 'ASSISTANT') {
-        // Ассистент: сначала push, потом pull
         await SyncService.assistantPush();
         await SyncService.assistantPull();
       } else if (role === 'ADMIN') {
-        // Админ: только pull (не создает данные)
         await SyncService.adminPull();
       }
 
-      setLastSyncTime(new Date());
+      syncStateManager.setLastSyncTime(new Date());
 
       // Обновить количество несинхронизированных записей
       const count = await SyncService.getPendingChangesCount();
-      setPendingChangesCount(count);
+      syncStateManager.setPendingChangesCount(count);
 
       // Проверить качество данных после первой успешной синхронизации
       if (isFirstSyncRef.current) {
         isFirstSyncRef.current = false;
         const report = await SyncService.analyzeDataQuality();
         setDataQualityReport(report);
-        // Показать алерт только если есть проблемы
         if (report.issues.length > 0) {
           setShowDataQualityAlert(true);
           console.log('⚠️ Data quality issues detected:', report.issues);
@@ -76,17 +158,16 @@ export const useAutoSync = (options: UseAutoSyncOptions = {}) => {
       }
 
       console.log('✅ Auto-sync completed successfully');
-      return true; // Успешно
+      return true;
     } catch (error: any) {
       console.error('❌ Auto-sync failed:', error);
-      setSyncError(error.message || 'Sync failed');
-      return false; // Ошибка
+      syncStateManager.setSyncError(error.message || 'Sync failed');
+      return false;
     } finally {
-      setIsSyncing(false);
-      // Очистить callback после завершения
+      syncStateManager.setIsSyncing(false);
       SyncService.setSyncProgressCallback(null);
       // Очистить прогресс через 2 секунды
-      setTimeout(() => setSyncProgress(null), 2000);
+      setTimeout(() => syncStateManager.setSyncProgress(null), 2000);
     }
   };
 
@@ -168,17 +249,15 @@ export const useAutoSync = (options: UseAutoSyncOptions = {}) => {
   }, [enabled, syncInterval]);
 
   return {
-    isSyncing,
-    lastSyncTime,
-    syncError,
-    pendingChangesCount,
-    performSync, // Функция для ручной синхронизации
-    // Новые поля для качества данных
+    isSyncing: syncStateManager.getState().isSyncing,
+    lastSyncTime: syncStateManager.getState().lastSyncTime,
+    syncError: syncStateManager.getState().syncError,
+    pendingChangesCount: syncStateManager.getState().pendingChangesCount,
+    performSync,
     dataQualityReport,
     showDataQualityAlert,
     dismissDataQualityAlert,
     recheckDataQuality,
-    // Прогресс синхронизации (для batch sync)
-    syncProgress,
+    syncProgress: syncStateManager.getState().syncProgress,
   };
 };

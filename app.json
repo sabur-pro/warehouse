@@ -19,7 +19,7 @@
         }
       ]
     ],
-    "orientation": "portrait",
+    "orientation": "default",
     "notification": {
       "icon": "./assets/icon.png",
       "color": "#ffffff"

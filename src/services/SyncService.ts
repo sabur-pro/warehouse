@@ -1,6 +1,7 @@
 import AuthService from './AuthService';
 import ImageService from './ImageService';
-import { getDatabaseInstance, runWithRetry, getAllWithRetry, getFirstWithRetry, clearDatabase, markLegacyDataForSync } from '../../database/database';
+import * as FileSystem from 'expo-file-system';
+import { getDatabaseInstance, runWithRetry, getAllWithRetry, getFirstWithRetry, clearDatabase, markLegacyDataForSync, execWithRetry } from '../../database/database';
 
 interface SyncItem {
   localId?: number;
@@ -20,6 +21,7 @@ interface SyncItem {
   qrCodeType: string;
   qrCodes?: string;
   createdAt?: number;
+  uuid?: string;
 }
 
 interface SyncTransaction {
@@ -29,6 +31,7 @@ interface SyncTransaction {
   itemName: string;
   timestamp: number;
   details?: string;
+  uuid?: string;
 }
 
 /**
@@ -47,7 +50,7 @@ class SyncService {
   // ============================================
 
   // Размер batch для синхронизации
-  private readonly BATCH_SIZE = 50;
+  private readonly BATCH_SIZE = 10;
   // Количество попыток для каждого batch
   private readonly BATCH_RETRY_COUNT = 3;
   // Задержка между попытками (ms)
@@ -139,6 +142,56 @@ class SyncService {
   }
 
   /**
+   * Диагностика изображений для загрузки
+   * Проверяет какие изображения существуют, а какие повреждены/отсутствуют
+   */
+  async diagnosePendingImages(): Promise<{
+    total: number;
+    ready: number;
+    missing: number;
+    missingItems: { id: number; name: string; imageUri: string }[];
+  }> {
+    const db = await getDatabaseInstance();
+
+    const itemsWithImages = await getAllWithRetry<any>(
+      db,
+      'SELECT id, name, imageUri FROM items WHERE needsSync=1 AND imageNeedsUpload=1 AND imageUri IS NOT NULL'
+    );
+
+    let ready = 0;
+    let missing = 0;
+    const missingItems: { id: number; name: string; imageUri: string }[] = [];
+
+    for (const item of itemsWithImages) {
+      const fileInfo = await FileSystem.getInfoAsync(item.imageUri);
+      if (fileInfo.exists) {
+        ready++;
+      } else {
+        missing++;
+        missingItems.push({
+          id: item.id,
+          name: item.name,
+          imageUri: item.imageUri,
+        });
+      }
+    }
+
+    const result = {
+      total: itemsWithImages.length,
+      ready,
+      missing,
+      missingItems,
+    };
+
+    console.log(`📊 Image diagnostics: ${ready} ready, ${missing} missing out of ${itemsWithImages.length} total`);
+    if (missingItems.length > 0) {
+      console.log(`❌ Missing images for items:`, missingItems.map(i => `${i.id}: ${i.name}`).join(', '));
+    }
+
+    return result;
+  }
+
+  /**
    * Push изменений от ассистента на сервер (с защитой от параллельного выполнения)
    */
   async assistantPush(): Promise<void> {
@@ -197,27 +250,65 @@ class SyncService {
         });
       }
 
-      const failedImageUploads: { itemId: number; error: string }[] = [];
+      let successfulImageUploads = 0;
+      let failedImageUploads = 0;
 
       for (let i = 0; i < itemsWithImages.length; i++) {
         const item = itemsWithImages[i];
         if (item.imageUri) {
-          try {
-            const imageUrl = await ImageService.uploadImage(item.imageUri, accessToken);
-            await runWithRetry(
-              db,
-              'UPDATE items SET serverImageUrl=?, imageNeedsUpload=0 WHERE id=?',
-              [imageUrl, item.id]
-            );
-            console.log(`✅ Uploaded image for item ${item.id}`);
-          } catch (error: any) {
-            const errorMessage = error.response?.data?.message || error.message || 'Unknown error';
-            console.error(`❌ Failed to upload image for item ${item.id}:`, {
-              message: error.message,
-              status: error.response?.status,
-              data: error.response?.data,
-            });
-            failedImageUploads.push({ itemId: item.id, error: errorMessage });
+          // Проверить существование файла ПЕРЕД попыткой загрузки
+          const fileInfo = await FileSystem.getInfoAsync(item.imageUri);
+          if (!fileInfo.exists) {
+            console.warn(`⚠️ Image file not found for item ${item.id} (${item.name}), skipping upload`);
+            // Файл не существует - пропускаем, НО НЕ очищаем imageUri (возможно файл появится позже)
+            failedImageUploads++;
+            // Обновить прогресс и перейти к следующему item
+            if (this.onSyncProgress) {
+              this.onSyncProgress({
+                phase: 'uploading_images',
+                current: i + 1,
+                total: itemsWithImages.length,
+                message: `Загрузка изображений... ${i + 1}/${itemsWithImages.length} (пропущено: ${failedImageUploads})`,
+              });
+            }
+            continue;
+          }
+
+          let uploadSuccess = false;
+
+          // Retry логика для каждого изображения (3 попытки)
+          for (let attempt = 1; attempt <= this.BATCH_RETRY_COUNT; attempt++) {
+            try {
+              const imageUrl = await ImageService.uploadImage(item.imageUri, accessToken);
+              await runWithRetry(
+                db,
+                'UPDATE items SET serverImageUrl=?, imageNeedsUpload=0 WHERE id=?',
+                [imageUrl, item.id]
+              );
+              console.log(`✅ Uploaded image for item ${item.id} (attempt ${attempt})`);
+              uploadSuccess = true;
+              successfulImageUploads++;
+              break; // Успех - выходим из retry цикла
+            } catch (error: any) {
+              const errorMessage = error.response?.data?.message || error.message || 'Unknown error';
+              console.warn(`⚠️ Image upload attempt ${attempt}/${this.BATCH_RETRY_COUNT} failed for item ${item.id}:`, errorMessage);
+
+              if (attempt < this.BATCH_RETRY_COUNT) {
+                // Ждём перед следующей попыткой (exponential backoff)
+                const delay = this.BATCH_RETRY_DELAY * attempt;
+                console.log(`   Retrying in ${delay}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+              } else {
+                // Все попытки исчерпаны - логируем ошибку, но НЕ прерываем sync
+                console.error(`❌ Failed to upload image for item ${item.id} after ${this.BATCH_RETRY_COUNT} attempts:`, {
+                  message: error.message,
+                  status: error.response?.status,
+                  data: error.response?.data,
+                });
+                failedImageUploads++;
+                // imageNeedsUpload остаётся = 1, будет отправлено при следующем sync
+              }
+            }
           }
         }
 
@@ -227,17 +318,17 @@ class SyncService {
             phase: 'uploading_images',
             current: i + 1,
             total: itemsWithImages.length,
-            message: `Загрузка изображений... ${i + 1}/${itemsWithImages.length}`,
+            message: `Загрузка изображений... ${i + 1}/${itemsWithImages.length}${failedImageUploads > 0 ? ` (ошибок: ${failedImageUploads})` : ''}`,
           });
         }
       }
 
-      // Если есть ошибки загрузки изображений - прервать синхронизацию
-      if (failedImageUploads.length > 0) {
-        const errorDetails = failedImageUploads
-          .map(f => `Item ${f.itemId}: ${f.error}`)
-          .join('; ');
-        throw new Error(`Не удалось загрузить ${failedImageUploads.length} изображение(й): ${errorDetails}`);
+      // Логируем результат загрузки изображений (но НЕ прерываем sync)
+      if (failedImageUploads > 0) {
+        console.warn(`⚠️ ${failedImageUploads} image(s) failed to upload, they will be retried on next sync`);
+      }
+      if (successfulImageUploads > 0) {
+        console.log(`✅ Successfully uploaded ${successfulImageUploads} image(s)`);
       }
 
       // 2. Получить items и transactions для синхронизации
@@ -297,6 +388,7 @@ class SyncService {
             createdAt: item.createdAt,
             version: item.version,
             isDeleted: item.isDeleted === 1,
+            uuid: item.uuid,
           })),
           transactions: [], // Items только в этом batch
         };
@@ -355,6 +447,7 @@ class SyncService {
             timestamp: tx.timestamp,
             details: tx.details,
             isDeleted: tx.isDeleted === 1,
+            uuid: tx.uuid,
           })),
         };
 
@@ -435,7 +528,7 @@ class SyncService {
   }
 
   /**
-   * Pull изменений с сервера для ассистента - внутренний метод
+   * Pull изменений с сервера для ассистента - внутренний метод с пагинацией
    */
   private async _assistantPullInternal(): Promise<void> {
     const accessToken = await AuthService.getAccessToken();
@@ -448,84 +541,206 @@ class SyncService {
     const api = AuthService.getApiInstance();
 
     try {
-      console.log('🔄 Starting assistant pull sync...');
+      console.log('🔄 Starting assistant pull sync (batch mode)...');
 
       const lastSyncAt = await this.getLastSyncTimestamp();
+      const PULL_BATCH_SIZE = 10;
 
-      const response = await api.get('/sync/assistant/pull', {
-        params: { lastSyncAt: lastSyncAt ? new Date(lastSyncAt).toISOString() : undefined },
+      // Первый запрос для получения метаданных и определения isFullSync
+      const initialResponse = await api.get('/sync/assistant/pull', {
+        params: {
+          lastSyncAt: lastSyncAt ? new Date(lastSyncAt).toISOString() : undefined,
+          type: 'items',
+          limit: 1,
+          cursor: 0,
+        },
         headers: { Authorization: `Bearer ${accessToken}` },
       });
 
-      const { items = [], transactions = [], approvedActions = [], isFullSync = false } = response.data;
+      const { isFullSync = false, totalItemsCount = 0, totalTransactionsCount = 0 } = initialResponse.data;
 
-      console.log(`📥 Received ${items.length} items, ${transactions.length} transactions, ${approvedActions.length} approved actions (fullSync: ${isFullSync})`);
+      console.log(`📊 Full sync: ${isFullSync}, Total items: ${totalItemsCount}, Total transactions: ${totalTransactionsCount}`);
 
       // Если полная синхронизация - очистить локальные данные
       if (isFullSync) {
         console.log('🗑️ Full sync - clearing local data...');
-        await runWithRetry(db, 'DELETE FROM items WHERE serverId IS NOT NULL');
-        await runWithRetry(db, 'DELETE FROM transactions WHERE serverId IS NOT NULL');
+        if (this.onSyncProgress) {
+          this.onSyncProgress({
+            phase: 'syncing_items',
+            current: 0,
+            total: totalItemsCount + totalTransactionsCount,
+            message: 'Подготовка к синхронизации...',
+          });
+        }
+        try {
+          await execWithRetry(db, 'BEGIN TRANSACTION;');
+          await runWithRetry(db, 'DELETE FROM items WHERE serverId IS NOT NULL');
+          await runWithRetry(db, 'DELETE FROM transactions WHERE serverId IS NOT NULL');
+          await execWithRetry(db, 'COMMIT;');
+        } catch (clearError: any) {
+          console.error('❌ Error clearing local data, rolling back:', clearError.message);
+          try {
+            await execWithRetry(db, 'ROLLBACK;');
+          } catch (rbErr) {
+            console.warn('Rollback failed (ignored):', rbErr);
+          }
+          throw clearError;
+        }
       }
 
-      // Применить items и скачать изображения
-      for (const item of items) {
-        // Если item удалён на сервере - удалить локально
-        if (item.isDeleted) {
-          console.log(`🗑️ Item ${item.id} is deleted on server, removing locally`);
-          await runWithRetry(db, 'DELETE FROM items WHERE serverId=?', [item.id]);
-          continue;
+      let processedItems = 0;
+      let processedTransactions = 0;
+      const totalCount = totalItemsCount + totalTransactionsCount;
+
+      // === ЗАГРУЗКА ITEMS ПАРТИЯМИ ===
+      let itemsCursor = 0;
+      let itemsHasMore = true;
+
+      while (itemsHasMore) {
+        if (this.onSyncProgress) {
+          this.onSyncProgress({
+            phase: 'syncing_items',
+            current: processedItems,
+            total: totalCount,
+            message: `Загрузка товаров... ${processedItems}/${totalItemsCount}`,
+          });
         }
 
-        let localImageUri = null;
+        const response = await api.get('/sync/assistant/pull', {
+          params: {
+            lastSyncAt: lastSyncAt ? new Date(lastSyncAt).toISOString() : undefined,
+            type: 'items',
+            limit: PULL_BATCH_SIZE,
+            cursor: itemsCursor,
+          },
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
 
-        if (item.imageUrl) {
+        const { items = [], itemsNextCursor, hasMore } = response.data;
+
+        console.log(`📥 Received ${items.length} items (cursor: ${itemsCursor}, hasMore: ${hasMore})`);
+
+        // Применить items и скачать изображения
+        let failedItems = 0;
+        for (const item of items) {
           try {
-            localImageUri = await ImageService.downloadImage(item.imageUrl, accessToken);
-            console.log(`✅ Downloaded image for item ${item.id}`);
-          } catch (error: any) {
-            console.error(`❌ Failed to download image for item ${item.id}:`, {
-              message: error.message,
-              status: error.response?.status,
-              data: error.response?.data,
-            });
+            if (item.isDeleted) {
+              console.log(`🗑️ Item ${item.id} is deleted on server, removing locally`);
+              await runWithRetry(db, 'DELETE FROM items WHERE serverId=?', [item.id]);
+            } else {
+              let localImageUri = null;
+
+              if (item.imageUrl) {
+                try {
+                  localImageUri = await ImageService.downloadImage(item.imageUrl, accessToken);
+                } catch (error: any) {
+                  console.error(`❌ Failed to download image for item ${item.id}:`, error.message);
+                }
+              }
+
+              await this.upsertItem({
+                ...item,
+                imageUri: localImageUri,
+                serverImageUrl: item.imageUrl,
+              });
+            }
+            processedItems++;
+          } catch (upsertError: any) {
+            failedItems++;
+            console.error(`❌ Failed to upsert item ${item.id} (${item.name}):`, upsertError.message);
+            // Продолжаем с остальными items вместо остановки всего sync
           }
         }
 
-        await this.upsertItem({
-          ...item,
-          imageUri: localImageUri,
-          serverImageUrl: item.imageUrl,
-        });
-      }
-
-      // Применить transactions
-      for (const tx of transactions) {
-        // Если transaction удалён на сервере - удалить локально
-        if (tx.isDeleted) {
-          console.log(`🗑️ Transaction ${tx.id} is deleted on server, removing locally`);
-          await runWithRetry(db, 'DELETE FROM transactions WHERE serverId=?', [tx.id]);
-          continue;
+        if (failedItems > 0) {
+          console.warn(`⚠️ ${failedItems} items failed to upsert in this batch`);
         }
 
-        await this.upsertTransaction(tx);
+        itemsCursor = itemsNextCursor || 0;
+        itemsHasMore = hasMore && items.length > 0;
       }
 
-      // Обработать одобренные действия
-      for (const action of approvedActions) {
-        await this.handleApprovedAction(action);
+      console.log(`✅ Items sync completed: ${processedItems} items`);
+
+      // === ЗАГРУЗКА TRANSACTIONS ПАРТИЯМИ ===
+      let transactionsCursor = 0;
+      let transactionsHasMore = true;
+
+      while (transactionsHasMore) {
+        if (this.onSyncProgress) {
+          this.onSyncProgress({
+            phase: 'syncing_transactions',
+            current: processedItems + processedTransactions,
+            total: totalCount,
+            message: `Загрузка истории... ${processedTransactions}/${totalTransactionsCount}`,
+          });
+        }
+
+        const response = await api.get('/sync/assistant/pull', {
+          params: {
+            lastSyncAt: lastSyncAt ? new Date(lastSyncAt).toISOString() : undefined,
+            type: 'transactions',
+            limit: PULL_BATCH_SIZE,
+            cursor: transactionsCursor,
+          },
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+
+        const { transactions = [], transactionsNextCursor, hasMore, approvedActions = [] } = response.data;
+
+        console.log(`📥 Received ${transactions.length} transactions (cursor: ${transactionsCursor}, hasMore: ${hasMore})`);
+
+        // Применить transactions
+        for (const tx of transactions) {
+          if (tx.isDeleted) {
+            console.log(`🗑️ Transaction ${tx.id} is deleted on server, removing locally`);
+            await runWithRetry(db, 'DELETE FROM transactions WHERE serverId=?', [tx.id]);
+          } else {
+            await this.upsertTransaction(tx);
+          }
+          processedTransactions++;
+        }
+
+        // Обработать одобренные действия (только в первом запросе transactions)
+        if (transactionsCursor === 0 && approvedActions.length > 0) {
+          for (const action of approvedActions) {
+            await this.handleApprovedAction(action);
+          }
+        }
+
+        transactionsCursor = transactionsNextCursor || 0;
+        transactionsHasMore = hasMore && transactions.length > 0;
       }
+
+      console.log(`✅ Transactions sync completed: ${processedTransactions} transactions`);
 
       // Обновить lastSyncAt
       await this.updateLastSyncTimestamp();
 
-      console.log('✅ Assistant pull completed successfully');
+      if (this.onSyncProgress) {
+        this.onSyncProgress({
+          phase: 'complete',
+          current: totalCount,
+          total: totalCount,
+          message: `Синхронизировано: ${processedItems} товаров, ${processedTransactions} записей`,
+        });
+      }
+
+      console.log('✅ Assistant pull completed successfully (batch mode)');
     } catch (error: any) {
       console.error('❌ Assistant pull failed:', {
         message: error.message,
         status: error.response?.status,
         data: error.response?.data,
       });
+      if (this.onSyncProgress) {
+        this.onSyncProgress({
+          phase: 'error',
+          current: 0,
+          total: 0,
+          message: error.message || 'Ошибка синхронизации',
+        });
+      }
       throw error;
     }
   }
@@ -602,7 +817,7 @@ class SyncService {
   }
 
   /**
-   * Pull изменений с сервера для админа - внутренний метод
+   * Pull изменений с сервера для админа - внутренний метод с пагинацией
    */
   private async _adminPullInternal(): Promise<void> {
     const accessToken = await AuthService.getAccessToken();
@@ -615,79 +830,188 @@ class SyncService {
     const api = AuthService.getApiInstance();
 
     try {
-      console.log('🔄 Starting admin pull sync...');
+      console.log('🔄 Starting admin pull sync (batch mode)...');
 
       const lastSyncAt = await this.getLastSyncTimestamp();
+      const PULL_BATCH_SIZE = 10;
 
-      const response = await api.get('/sync/admin/pull', {
-        params: { lastSyncAt: lastSyncAt ? new Date(lastSyncAt).toISOString() : undefined },
+      // Первый запрос для получения метаданных и определения isFullSync
+      const initialResponse = await api.get('/sync/admin/pull', {
+        params: {
+          lastSyncAt: lastSyncAt ? new Date(lastSyncAt).toISOString() : undefined,
+          type: 'items',
+          limit: 1,
+          cursor: 0,
+        },
         headers: { Authorization: `Bearer ${accessToken}` },
       });
 
-      const { items = [], transactions = [], isFullSync = false } = response.data;
+      const { isFullSync = false, totalItemsCount = 0, totalTransactionsCount = 0 } = initialResponse.data;
 
-      console.log(`📥 Received ${items.length} items and ${transactions.length} transactions (fullSync: ${isFullSync})`);
+      console.log(`📊 Full sync: ${isFullSync}, Total items: ${totalItemsCount}, Total transactions: ${totalTransactionsCount}`);
 
       // Если полная синхронизация - очистить локальные данные
       if (isFullSync) {
         console.log('🗑️ Full sync - clearing local data...');
-        await runWithRetry(db, 'DELETE FROM items WHERE serverId IS NOT NULL');
-        await runWithRetry(db, 'DELETE FROM transactions WHERE serverId IS NOT NULL');
+        if (this.onSyncProgress) {
+          this.onSyncProgress({
+            phase: 'syncing_items',
+            current: 0,
+            total: totalItemsCount + totalTransactionsCount,
+            message: 'Подготовка к синхронизации...',
+          });
+        }
+        try {
+          await execWithRetry(db, 'BEGIN TRANSACTION;');
+          await runWithRetry(db, 'DELETE FROM items WHERE serverId IS NOT NULL');
+          await runWithRetry(db, 'DELETE FROM transactions WHERE serverId IS NOT NULL');
+          await execWithRetry(db, 'COMMIT;');
+        } catch (clearError: any) {
+          console.error('❌ Error clearing local data, rolling back:', clearError.message);
+          try {
+            await execWithRetry(db, 'ROLLBACK;');
+          } catch (rbErr) {
+            console.warn('Rollback failed (ignored):', rbErr);
+          }
+          throw clearError;
+        }
       }
 
-      // Применить items и скачать изображения
-      for (const item of items) {
-        // Если item удалён на сервере - удалить локально
-        if (item.isDeleted) {
-          console.log(`🗑️ Item ${item.id} is deleted on server, removing locally`);
-          await runWithRetry(db, 'DELETE FROM items WHERE serverId=?', [item.id]);
-          continue;
+      let processedItems = 0;
+      let processedTransactions = 0;
+      const totalCount = totalItemsCount + totalTransactionsCount;
+
+      // === ЗАГРУЗКА ITEMS ПАРТИЯМИ ===
+      let itemsCursor = 0;
+      let itemsHasMore = true;
+
+      while (itemsHasMore) {
+        if (this.onSyncProgress) {
+          this.onSyncProgress({
+            phase: 'syncing_items',
+            current: processedItems,
+            total: totalCount,
+            message: `Загрузка товаров... ${processedItems}/${totalItemsCount}`,
+          });
         }
 
-        let localImageUri = null;
+        const response = await api.get('/sync/admin/pull', {
+          params: {
+            lastSyncAt: lastSyncAt ? new Date(lastSyncAt).toISOString() : undefined,
+            type: 'items',
+            limit: PULL_BATCH_SIZE,
+            cursor: itemsCursor,
+          },
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
 
-        if (item.imageUrl) {
-          try {
-            localImageUri = await ImageService.downloadImage(item.imageUrl, accessToken);
-            console.log(`✅ Downloaded image for item ${item.id}`);
-          } catch (error: any) {
-            console.error(`❌ Failed to download image for item ${item.id}:`, {
-              message: error.message,
-              status: error.response?.status,
-              data: error.response?.data,
+        const { items = [], itemsNextCursor, hasMore } = response.data;
+
+        console.log(`📥 Received ${items.length} items (cursor: ${itemsCursor}, hasMore: ${hasMore})`);
+
+        // Применить items и скачать изображения
+        for (const item of items) {
+          if (item.isDeleted) {
+            console.log(`🗑️ Item ${item.id} is deleted on server, removing locally`);
+            await runWithRetry(db, 'DELETE FROM items WHERE serverId=?', [item.id]);
+          } else {
+            let localImageUri = null;
+
+            if (item.imageUrl) {
+              try {
+                localImageUri = await ImageService.downloadImage(item.imageUrl, accessToken);
+              } catch (error: any) {
+                console.error(`❌ Failed to download image for item ${item.id}:`, error.message);
+              }
+            }
+
+            await this.upsertItem({
+              ...item,
+              imageUri: localImageUri,
+              serverImageUrl: item.imageUrl,
             });
           }
+          processedItems++;
         }
 
-        await this.upsertItem({
-          ...item,
-          imageUri: localImageUri,
-          serverImageUrl: item.imageUrl,
+        itemsCursor = itemsNextCursor || 0;
+        itemsHasMore = hasMore && items.length > 0;
+      }
+
+      console.log(`✅ Items sync completed: ${processedItems} items`);
+
+      // === ЗАГРУЗКА TRANSACTIONS ПАРТИЯМИ ===
+      let transactionsCursor = 0;
+      let transactionsHasMore = true;
+
+      while (transactionsHasMore) {
+        if (this.onSyncProgress) {
+          this.onSyncProgress({
+            phase: 'syncing_transactions',
+            current: processedItems + processedTransactions,
+            total: totalCount,
+            message: `Загрузка истории... ${processedTransactions}/${totalTransactionsCount}`,
+          });
+        }
+
+        const response = await api.get('/sync/admin/pull', {
+          params: {
+            lastSyncAt: lastSyncAt ? new Date(lastSyncAt).toISOString() : undefined,
+            type: 'transactions',
+            limit: PULL_BATCH_SIZE,
+            cursor: transactionsCursor,
+          },
+          headers: { Authorization: `Bearer ${accessToken}` },
         });
-      }
 
-      // Применить transactions
-      for (const tx of transactions) {
-        // Если transaction удалён на сервере - удалить локально
-        if (tx.isDeleted) {
-          console.log(`🗑️ Transaction ${tx.id} is deleted on server, removing locally`);
-          await runWithRetry(db, 'DELETE FROM transactions WHERE serverId=?', [tx.id]);
-          continue;
+        const { transactions = [], transactionsNextCursor, hasMore } = response.data;
+
+        console.log(`📥 Received ${transactions.length} transactions (cursor: ${transactionsCursor}, hasMore: ${hasMore})`);
+
+        // Применить transactions
+        for (const tx of transactions) {
+          if (tx.isDeleted) {
+            console.log(`🗑️ Transaction ${tx.id} is deleted on server, removing locally`);
+            await runWithRetry(db, 'DELETE FROM transactions WHERE serverId=?', [tx.id]);
+          } else {
+            await this.upsertTransaction(tx);
+          }
+          processedTransactions++;
         }
 
-        await this.upsertTransaction(tx);
+        transactionsCursor = transactionsNextCursor || 0;
+        transactionsHasMore = hasMore && transactions.length > 0;
       }
+
+      console.log(`✅ Transactions sync completed: ${processedTransactions} transactions`);
 
       // Обновить lastSyncAt
       await this.updateLastSyncTimestamp();
 
-      console.log('✅ Admin pull completed successfully');
+      if (this.onSyncProgress) {
+        this.onSyncProgress({
+          phase: 'complete',
+          current: totalCount,
+          total: totalCount,
+          message: `Синхронизировано: ${processedItems} товаров, ${processedTransactions} записей`,
+        });
+      }
+
+      console.log('✅ Admin pull completed successfully (batch mode)');
     } catch (error: any) {
       console.error('❌ Admin pull failed:', {
         message: error.message,
         status: error.response?.status,
         data: error.response?.data,
       });
+      if (this.onSyncProgress) {
+        this.onSyncProgress({
+          phase: 'error',
+          current: 0,
+          total: 0,
+          message: error.message || 'Ошибка синхронизации',
+        });
+      }
       throw error;
     }
   }
@@ -969,11 +1293,12 @@ class SyncService {
     // Получить все активные товары
     const allItems = await getAllWithRetry<any>(
       db,
-      'SELECT id, name, boxSizeQuantities, qrCodeType, qrCodes, itemType FROM items WHERE isDeleted=0'
+      'SELECT id, name, boxSizeQuantities, qrCodeType, qrCodes, itemType, imageUri, imageNeedsUpload FROM items WHERE isDeleted=0'
     );
 
     let itemsWithoutRecommendedPrice = 0;
     let itemsWithoutQrCode = 0;
+    let itemsWithMissingImages = 0;
     const issues: string[] = [];
 
     for (const item of allItems) {
@@ -1003,6 +1328,18 @@ class SyncService {
       if (!item.qrCodeType || item.qrCodeType === 'none') {
         itemsWithoutQrCode++;
       }
+
+      // Проверка изображений - только для тех, которые нужно загрузить
+      if (item.imageNeedsUpload === 1 && item.imageUri) {
+        try {
+          const fileInfo = await FileSystem.getInfoAsync(item.imageUri);
+          if (!fileInfo.exists) {
+            itemsWithMissingImages++;
+          }
+        } catch {
+          itemsWithMissingImages++;
+        }
+      }
     }
 
     // Формируем сообщения о проблемах
@@ -1012,11 +1349,15 @@ class SyncService {
     if (itemsWithoutQrCode > 0) {
       issues.push(`${itemsWithoutQrCode} товар(ов) без QR-кода`);
     }
+    if (itemsWithMissingImages > 0) {
+      issues.push(`${itemsWithMissingImages} товар(ов) с отсутствующими изображениями`);
+    }
 
     return {
       totalItems: allItems.length,
       itemsWithoutRecommendedPrice,
       itemsWithoutQrCode,
+      itemsWithMissingImages,
       issues,
     };
   }
@@ -1026,6 +1367,7 @@ export interface DataQualityReport {
   totalItems: number;
   itemsWithoutRecommendedPrice: number;
   itemsWithoutQrCode: number;
+  itemsWithMissingImages: number;
   issues: string[];
 }
 

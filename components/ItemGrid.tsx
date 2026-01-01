@@ -15,7 +15,7 @@ export const ItemGrid = ({ item, onPress, searchTerm }: ItemGridProps) => {
   const { isDark } = useTheme();
   const colors = getThemeColors(isDark);
   const { sizeText: providedSizeText } = item as any;
-  
+
   // Анимация появления
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(0.9)).current;
@@ -48,28 +48,28 @@ export const ItemGrid = ({ item, onPress, searchTerm }: ItemGridProps) => {
 
     const allSizes = boxSizeQuantities.flatMap(box =>
       box.filter(sizeQty => (sizeQty && typeof sizeQty.quantity === 'number') ? sizeQty.quantity > 0 : false)
-         .map(sizeQty => sizeQty.size)
+        .map(sizeQty => sizeQty.size)
     );
-    
+
     // Умная сортировка: числа сортируем как числа, строки как строки
     const uniqueSizes = [...new Set(allSizes)].sort((a, b) => {
       const aIsNumber = typeof a === 'number';
       const bIsNumber = typeof b === 'number';
-      
+
       // Если оба числа - сравниваем как числа
       if (aIsNumber && bIsNumber) return a - b;
-      
+
       // Если один число, другой строка - числа идут первыми
       if (aIsNumber && !bIsNumber) return -1;
       if (!aIsNumber && bIsNumber) return 1;
-      
+
       // Если оба строки - сравниваем лексикографически
       return String(a).localeCompare(String(b));
     });
-    
+
     const sizeText = uniqueSizes.join(', ') || 'Нет размеров';
     return sizeText;
-     
+
   }, [item.boxSizeQuantities, providedSizeText]);
 
   const highlightColor = isDark ? colors.primary.gold : '#22c55e';
@@ -101,24 +101,25 @@ export const ItemGrid = ({ item, onPress, searchTerm }: ItemGridProps) => {
 
   // Проверяем нужна ли красная рамка (товары без цены)
   const needsPricing = item.totalValue === -1 || item.totalValue < 0;
-  
+
   // Проверяем неполные данные (из старых версий)
-  const isIncomplete = !item.code || !item.warehouse || !item.sizeType || 
-                       item.boxSizeQuantities === '[]' || !item.boxSizeQuantities;
-  
+  const isIncomplete = !item.code || !item.warehouse || !item.sizeType ||
+    item.boxSizeQuantities === '[]' || !item.boxSizeQuantities;
+
   // Определяем цвет рамки: красный для товаров без цены (приоритет), желтый для неполных данных
-  const borderColor = needsPricing ? '#ef4444' : 
-                      isIncomplete ? '#eab308' : colors.border.normal;
-  
+  const borderColor = needsPricing ? '#ef4444' :
+    isIncomplete ? '#eab308' : colors.border.normal;
+
   const accentColor1 = isDark ? colors.primary.gold : '#3b82f6';
   const accentColor2 = isDark ? '#4ade80' : '#22c55e';
-  
+
   return (
     <Animated.View
       style={{
         opacity: fadeAnim,
         transform: [{ scale: scaleAnim }],
-        width: '31%',
+        flex: 1,
+        maxWidth: '50%',
         margin: 4,
       }}
     >
@@ -169,15 +170,15 @@ export const ItemGrid = ({ item, onPress, searchTerm }: ItemGridProps) => {
 
         {/* Название - максимум 2 строки, высота 32px */}
         <View style={{ height: 32, marginBottom: 4 }}>
-          <Text 
-            style={{ fontWeight: '700', fontSize: 12, lineHeight: 16, color: colors.text.normal }} 
+          <Text
+            style={{ fontWeight: '700', fontSize: 12, lineHeight: 16, color: colors.text.normal }}
             numberOfLines={2}
             ellipsizeMode="tail"
           >
             <HighlightedText text={item.name} highlight={searchTerm} />
           </Text>
         </View>
-        
+
         {/* Код - 1 строка, высота 16px */}
         <View style={{ flexDirection: 'row', alignItems: 'center', height: 16, marginBottom: 2 }}>
           <Ionicons name="barcode-outline" size={11} color={colors.text.muted} style={{ marginRight: 3 }} />
@@ -186,7 +187,7 @@ export const ItemGrid = ({ item, onPress, searchTerm }: ItemGridProps) => {
             <HighlightedText text={item.code} highlight={searchTerm} />
           </Text>
         </View>
-        
+
         {/* Склад - 1 строка, высота 16px */}
         <View style={{ flexDirection: 'row', alignItems: 'center', height: 16, marginBottom: 2 }}>
           <Ionicons name="business-outline" size={11} color={colors.text.muted} style={{ marginRight: 3 }} />
@@ -194,12 +195,12 @@ export const ItemGrid = ({ item, onPress, searchTerm }: ItemGridProps) => {
             {item.warehouse}
           </Text>
         </View>
-        
+
         {/* Размеры - максимум 2 строки, высота 28px */}
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', height: 28, marginBottom: 4 }}>
           <Ionicons name="resize-outline" size={11} color={colors.text.muted} style={{ marginRight: 3, marginTop: 1 }} />
-          <Text 
-            style={{ fontSize: 9, color: colors.text.muted, flex: 1, lineHeight: 14 }} 
+          <Text
+            style={{ fontSize: 9, color: colors.text.muted, flex: 1, lineHeight: 14 }}
             numberOfLines={2}
             ellipsizeMode="tail"
           >
@@ -208,9 +209,9 @@ export const ItemGrid = ({ item, onPress, searchTerm }: ItemGridProps) => {
         </View>
 
         {/* Количество коробок и товаров - фиксированная высота 28px */}
-        <View style={{ 
-          flexDirection: 'row', 
-          justifyContent: 'space-between', 
+        <View style={{
+          flexDirection: 'row',
+          justifyContent: 'space-between',
           alignItems: 'center',
           height: 28,
           paddingTop: 4,
@@ -227,14 +228,14 @@ export const ItemGrid = ({ item, onPress, searchTerm }: ItemGridProps) => {
             <Text style={{ fontSize: 10, color: accentColor2, fontWeight: '600' }}>{item.totalQuantity}</Text>
           </View>
         </View>
-        
+
         {/* Предупреждения - фиксированная высота 22px (всегда резервируем место) */}
         <View style={{ height: 22, justifyContent: 'center' }}>
           {needsPricing && (
-            <View style={{ 
-              paddingVertical: 2, 
-              paddingHorizontal: 6, 
-              backgroundColor: '#fee2e2', 
+            <View style={{
+              paddingVertical: 2,
+              paddingHorizontal: 6,
+              backgroundColor: '#fee2e2',
               borderRadius: 6,
               flexDirection: 'row',
               alignItems: 'center',
@@ -246,12 +247,12 @@ export const ItemGrid = ({ item, onPress, searchTerm }: ItemGridProps) => {
               </Text>
             </View>
           )}
-          
+
           {!needsPricing && isIncomplete && (
-            <View style={{ 
-              paddingVertical: 2, 
-              paddingHorizontal: 6, 
-              backgroundColor: '#fef3c7', 
+            <View style={{
+              paddingVertical: 2,
+              paddingHorizontal: 6,
+              backgroundColor: '#fef3c7',
               borderRadius: 6,
               flexDirection: 'row',
               alignItems: 'center',
