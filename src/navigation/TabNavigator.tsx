@@ -3,7 +3,7 @@ import React, { useMemo } from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { MaterialIcons } from '@expo/vector-icons';
-import { View, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, TouchableOpacity, StyleSheet, Text } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { getThemeColors } from '../../constants/theme';
 import { useTheme } from '../contexts/ThemeContext';
@@ -17,7 +17,10 @@ import ProfileScreen from '../screens/ProfileScreen';
 import SubscriptionScreen from '../screens/SubscriptionScreen';
 import PendingActionsScreen from '../screens/PendingActionsScreen';
 import SettingsScreen from '../screens/SettingsScreen';
+import ClientsScreen from '../screens/ClientsScreen';
+import CartScreen from '../screens/CartScreen';
 import { useAuth } from '../contexts/AuthContext';
+import { useCart } from '../contexts/CartContext';
 
 const Tab = createBottomTabNavigator<RootTabParamList>();
 const ProfileStack = createNativeStackNavigator<ProfileStackParamList>();
@@ -40,6 +43,13 @@ function ProfileNavigator() {
       }}
     >
       <ProfileStack.Screen name="ProfileMain" component={ProfileScreen} />
+      <ProfileStack.Screen
+        name="Clients"
+        component={ClientsScreen}
+        options={{
+          headerShown: false,
+        }}
+      />
       <ProfileStack.Screen
         name="Subscription"
         component={SubscriptionScreen}
@@ -83,6 +93,7 @@ interface CustomTabBarProps {
 const CustomTabBar: React.FC<CustomTabBarProps> = ({ state, descriptors, navigation }) => {
   const { isDark } = useTheme();
   const colors = getThemeColors(isDark);
+  const { getCartTotal } = useCart();
 
   // Простой способ - SyncStatusBar сам вызовет triggerRefreshAll через контекст
   return (
@@ -116,6 +127,8 @@ const CustomTabBar: React.FC<CustomTabBarProps> = ({ state, descriptors, navigat
                 return 'history';
               case 'Statistics':
                 return 'analytics';
+              case 'Cart':
+                return 'shopping-cart';
               case 'Profile':
                 return 'person';
               default:
@@ -150,6 +163,29 @@ const CustomTabBar: React.FC<CustomTabBarProps> = ({ state, descriptors, navigat
                   size={24}
                   color={isFocused ? focusedColor : unfocusedColor}
                 />
+                {/* Badge для корзины */}
+                {route.name === 'Cart' && getCartTotal().totalItems > 0 && (
+                  <View style={{
+                    position: 'absolute',
+                    top: -4,
+                    right: -8,
+                    backgroundColor: '#ef4444',
+                    borderRadius: 10,
+                    minWidth: 18,
+                    height: 18,
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    paddingHorizontal: 4,
+                  }}>
+                    <Text style={{
+                      color: '#fff',
+                      fontSize: 10,
+                      fontWeight: 'bold'
+                    }}>
+                      {getCartTotal().totalItems > 99 ? '99+' : getCartTotal().totalItems}
+                    </Text>
+                  </View>
+                )}
               </View>
             </TouchableOpacity>
           );
@@ -184,6 +220,16 @@ const TabNavigator: React.FC = () => {
           tabBarLabel: 'Склад',
         }}
       />
+      {/* Корзина - только для ассистентов */}
+      {isAssistant() && (
+        <Tab.Screen
+          name="Cart"
+          component={CartScreen}
+          options={{
+            tabBarLabel: 'Корзина',
+          }}
+        />
+      )}
       {/* Скрываем статистику для ассистентов */}
       {!isAssistant() && (
         <Tab.Screen

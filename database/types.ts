@@ -54,3 +54,18 @@ export interface SizeQuantity {
   price: number;
   recommendedSellingPrice?: number; // рекомендуемая стоимость продажи за пару/единицу
 }
+
+export interface Client {
+  id: number;
+  serverId?: number | null;
+  uuid?: string;
+  name: string;
+  phone?: string | null;
+  address?: string | null;
+  notes?: string | null;
+  birthday?: string | null;
+  isDeleted?: number;
+  needsSync?: number;
+  createdAt?: number;
+  updatedAt?: number;
+}

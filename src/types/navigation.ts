@@ -4,6 +4,7 @@ export type RootTabParamList = {
   Warehouse: undefined;
   History: undefined;
   Statistics: undefined;
+  Cart: undefined;
   Profile: undefined;
 };
 
@@ -12,6 +13,7 @@ export type ProfileStackParamList = {
   Subscription: undefined;
   PendingActions: undefined;
   Settings: undefined;
+  Clients: undefined;
 };
 
 export type AuthStackParamList = {

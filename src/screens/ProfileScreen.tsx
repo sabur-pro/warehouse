@@ -198,6 +198,15 @@ export default function ProfileScreen() {
     );
   };
 
+
+  // Проверка на seed аккаунт (тестовые аккаунты из seed.ts)
+  const isSeedAccount = () => {
+    if (!user) return false;
+    // Seed admin: admin@warehouse.tj
+    // Seed assistant: assistant1
+    return user.gmail === 'admin@warehouse.tj' || user.login === 'assistant1';
+  };
+
   if (!user) {
     return (
       <View style={styles.container}>
@@ -330,6 +339,15 @@ export default function ProfileScreen() {
                 <Text style={[styles.quickActionText, { color: colors.text.normal }]}>Заявки</Text>
               </TouchableOpacity>
             )}
+            {isAdmin() && (
+              <TouchableOpacity
+                style={[styles.quickAction, { backgroundColor: colors.background.card }]}
+                onPress={() => navigation.navigate('Clients')}
+              >
+                <MaterialIcons name="people" size={24} color={isDark ? colors.primary.gold : colors.primary.blue} />
+                <Text style={[styles.quickActionText, { color: colors.text.normal }]}>Клиенты</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
               style={[styles.quickAction, { backgroundColor: colors.background.card }]}
               onPress={() => navigation.navigate('Settings')}
@@ -393,8 +411,8 @@ export default function ProfileScreen() {
             </View>
           )}
 
-          {/* Подписка - только для администраторов */}
-          {isAdmin() && (
+          {/* Подписка - только для администраторов и НЕ для seed аккаунтов */}
+          {isAdmin() && !isSeedAccount() && (
             loadingSubscription ? (
               <View style={[styles.subscriptionCard, { backgroundColor: colors.background.card }]}>
                 <ActivityIndicator color={isDark ? colors.primary.gold : colors.primary.purple} />

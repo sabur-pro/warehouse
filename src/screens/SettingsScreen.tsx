@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   Modal,
   Platform,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -24,6 +25,7 @@ import {
 import { generateLocalTestData } from '../../database/database';
 import * as DocumentPicker from 'expo-document-picker';
 import { useTheme } from '../contexts/ThemeContext';
+import { useAuth } from '../contexts/AuthContext';
 import { getThemeColors } from '../../constants/theme';
 import { useNavigation } from '@react-navigation/native';
 import LogService from '../services/LogService';
@@ -32,6 +34,7 @@ import SyncService from '../services/SyncService';
 const SettingsScreen: React.FC = () => {
   const navigation = useNavigation();
   const { isDark } = useTheme();
+  const { isAdmin } = useAuth();
   const colors = getThemeColors(isDark);
 
   const [isExporting, setIsExporting] = useState(false);
@@ -405,6 +408,28 @@ const SettingsScreen: React.FC = () => {
     }
   };
 
+  const handleDeleteAccount = async () => {
+    Alert.alert(
+      '⚠️ Удаление аккаунта',
+      'Вы уверены, что хотите удалить свой аккаунт?\n\nВсе ваши данные будут удалены:\n• Товары\n• История транзакций\n• Ассистенты\n• Подписки\n\nЭто действие нельзя отменить!',
+      [
+        { text: 'Отмена', style: 'cancel' },
+        {
+          text: 'Удалить аккаунт',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await SyncService.deleteAccount();
+              Alert.alert('Аккаунт удалён', 'Ваш аккаунт и все данные были удалены.');
+            } catch (error: any) {
+              Alert.alert('Ошибка', error.message || 'Не удалось удалить аккаунт');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const SettingItem: React.FC<{
     icon: keyof typeof MaterialIcons.glyphMap;
     title: string;
@@ -525,10 +550,44 @@ const SettingsScreen: React.FC = () => {
           color={isDark ? '#f59e0b' : '#d97706'}
         />
 
+        <SectionHeader title="Правовая информация" />
+
+        <SettingItem
+          icon="privacy-tip"
+          title="Политика конфиденциальности"
+          description="Как мы обрабатываем ваши данные"
+          onPress={() => Linking.openURL('https://policy-warehouse.intelligent.tj')}
+          color={isDark ? '#818cf8' : '#6366f1'}
+        />
+
+        <SettingItem
+          icon="support"
+          title="Поддержка"
+          description="Свяжитесь с нами для решения вопросов"
+          onPress={() => Linking.openURL('https://support-warehouse.intelligent.tj')}
+          color={isDark ? '#34d399' : '#10b981'}
+        />
+
+        {/* Удаление аккаунта - только для администраторов */}
+        {isAdmin() && (
+          <>
+            <SectionHeader title="Аккаунт" />
+
+            <SettingItem
+              icon="person-remove"
+              title="Удалить аккаунт"
+              description="Удалить аккаунт и все данные безвозвратно"
+              onPress={handleDeleteAccount}
+              color="#dc2626"
+              destructive
+            />
+          </>
+        )}
+
         <SectionHeader title="О приложении" />
 
         <View style={[styles.appInfo, { backgroundColor: colors.background.card }]}>
-          <Text style={[styles.appName, { color: colors.text.normal }]}>Склад</Text>
+          <Text style={[styles.appName, { color: colors.text.normal }]}>Умный склад</Text>
           <Text style={[styles.appVersion, { color: colors.text.muted }]}>Версия 1.0.3</Text>
           <Text style={[styles.appDescription, { color: colors.text.muted }]}>
             Система управления складскими запасами с современным интерфейсом и аналитикой созданно командой NOROV

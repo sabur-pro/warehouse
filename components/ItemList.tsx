@@ -481,7 +481,11 @@ export const ItemList = forwardRef<any, ItemListProps>(({ onRefresh }, ref) => {
         <FlatList
           data={items}
           renderItem={({ item }) => (
-            <ItemGrid item={item} onPress={() => handleItemPress(item)} searchTerm={debouncedSearch} />
+            <ItemGrid
+              item={item}
+              onPress={() => handleItemPress(item)}
+              searchTerm={debouncedSearch}
+            />
           )}
           keyExtractor={(item, index) => `${item.id}_${item.serverId || 'local'}_${index}`}
           numColumns={numColumns}

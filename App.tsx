@@ -5,6 +5,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { DatabaseProvider } from './hooks/useDatabase';
 import { AuthProvider } from './src/contexts/AuthContext';
 import { ThemeProvider, useTheme } from './src/contexts/ThemeContext';
+import { CartProvider } from './src/contexts/CartContext';
 import { SyncRefreshProvider } from './src/components/sync/SyncStatusBar';
 import RootNavigator from './src/navigation/RootNavigator';
 import LogService from './src/services/LogService';
@@ -33,7 +34,9 @@ export default function App() {
       <AuthProvider>
         <DatabaseProvider>
           <SyncRefreshProvider>
-            <AppContent />
+            <CartProvider>
+              <AppContent />
+            </CartProvider>
           </SyncRefreshProvider>
         </DatabaseProvider>
       </AuthProvider>

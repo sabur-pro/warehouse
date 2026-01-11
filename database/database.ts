@@ -1,7 +1,7 @@
 // database/database.ts
 import * as SQLite from 'expo-sqlite';
 import * as FileSystem from 'expo-file-system';
-import { Item, Transaction, ItemType } from './types';
+import { Item, Transaction, ItemType, Client } from './types';
 
 const databaseName = 'warehouse.db';
 let databaseInstance: SQLite.SQLiteDatabase | null = null;
@@ -700,6 +700,50 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
         `);
       }
 
+      // Создать таблицу clients
+      const clientsTableInfo = await getFirstWithRetry<{ name: string }>(
+        databaseInstance!,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='clients';"
+      );
+
+      if (!clientsTableInfo) {
+        console.log('Creating clients table');
+        await execWithRetry(databaseInstance!, `
+          CREATE TABLE clients (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            serverId INTEGER,
+            uuid TEXT UNIQUE,
+            name TEXT NOT NULL,
+            phone TEXT,
+            address TEXT,
+            notes TEXT,
+            isDeleted INTEGER DEFAULT 0,
+            needsSync INTEGER DEFAULT 1,
+            createdAt INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+            updatedAt INTEGER DEFAULT (strftime('%s', 'now') * 1000)
+          );
+        `);
+      } else {
+        // Migration: check if birthday column exists
+        const birthdayInfo = await getFirstWithRetry<{ count: number }>(
+          databaseInstance!,
+          "SELECT count(*) as count FROM pragma_table_info('clients') WHERE name='birthday';"
+        );
+
+        if (birthdayInfo && birthdayInfo.count === 0) {
+          console.log('Migrating clients table: adding birthday column');
+          await execWithRetry(databaseInstance!, "ALTER TABLE clients ADD COLUMN birthday TEXT;");
+        }
+      }
+
+      try {
+        await execWithRetry(databaseInstance!, `CREATE INDEX IF NOT EXISTS idx_clients_name ON clients(name);`);
+        await execWithRetry(databaseInstance!, `CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_uuid ON clients(uuid);`);
+      } catch (idxErr) {
+        console.warn('Failed to create clients indices (ignored):', idxErr);
+      }
+
+
       console.log('Sync system migration completed');
       console.log('Database initialized successfully');
       return databaseInstance!;
@@ -714,6 +758,8 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
 
   return initPromise;
 };
+
+
 
 export const getDatabaseInstance = async (): Promise<SQLite.SQLiteDatabase> => {
   if (!databaseInstance) {
@@ -1952,6 +1998,157 @@ export const generateLocalTestData = async (
     } catch (e) {
       console.error('generateLocalTestData failed:', e);
       throw e;
+    }
+  });
+};
+
+// ========================================
+// CLIENT CRUD FUNCTIONS
+// ========================================
+
+export const getAllClients = async (): Promise<Client[]> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const rows = await getAllWithRetry<any>(db, 'SELECT * FROM clients WHERE isDeleted = 0 ORDER BY name ASC');
+    return rows as Client[];
+  });
+};
+
+export const getClientById = async (id: number): Promise<Client | null> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const row = await getFirstWithRetry<any>(db, 'SELECT * FROM clients WHERE id = ?', [id]);
+    return row as Client | null;
+  });
+};
+
+export const addClient = async (client: Omit<Client, 'id' | 'createdAt' | 'updatedAt'>): Promise<number> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const now = Date.now();
+    const uuid = generateUUID();
+
+    const result = await runWithRetry(db, `
+      INSERT INTO clients (name, phone, address, notes, birthday, uuid, needsSync, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+    `, [
+      client.name,
+      client.phone || null,
+      client.address || null,
+      client.notes || null,
+      client.birthday || null,
+      uuid,
+      now,
+      now
+    ]);
+
+    return result.lastInsertRowId || 0;
+  });
+};
+
+export const updateClient = async (id: number, client: Partial<Client>): Promise<void> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const now = Date.now();
+
+    const updates: string[] = [];
+    const params: any[] = [];
+
+    if (client.name !== undefined) { updates.push('name = ?'); params.push(client.name); }
+    if (client.phone !== undefined) { updates.push('phone = ?'); params.push(client.phone); }
+    if (client.address !== undefined) { updates.push('address = ?'); params.push(client.address); }
+    if (client.notes !== undefined) { updates.push('notes = ?'); params.push(client.notes); }
+    if (client.birthday !== undefined) { updates.push('birthday = ?'); params.push(client.birthday); }
+
+
+    updates.push('needsSync = 1');
+    updates.push('updatedAt = ?');
+    params.push(now);
+    params.push(id);
+
+    await runWithRetry(db, `UPDATE clients SET ${updates.join(', ')} WHERE id = ?`, params);
+  });
+};
+
+export const deleteClient = async (id: number): Promise<void> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    await runWithRetry(db, 'UPDATE clients SET isDeleted = 1, needsSync = 1, updatedAt = ? WHERE id = ?', [Date.now(), id]);
+  });
+};
+
+export const getClientsNeedingSync = async (): Promise<Client[]> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const rows = await getAllWithRetry<any>(db, 'SELECT * FROM clients WHERE needsSync = 1');
+    return rows as Client[];
+  });
+};
+
+export const markClientSynced = async (localId: number, serverId: number): Promise<void> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    await runWithRetry(db, 'UPDATE clients SET serverId = ?, needsSync = 0 WHERE id = ?', [serverId, localId]);
+  });
+};
+
+export const searchClients = async (searchTerm: string): Promise<Client[]> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const term = `%${searchTerm}%`;
+    const rows = await getAllWithRetry<any>(
+      db,
+      'SELECT * FROM clients WHERE isDeleted = 0 AND (name LIKE ? OR phone LIKE ?) ORDER BY name ASC LIMIT 20',
+      [term, term]
+    );
+    return rows as Client[];
+  });
+};
+
+export const upsertClientFromServer = async (client: any): Promise<void> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+
+    // Проверяем есть ли уже такой client
+    const existing = await getFirstWithRetry<any>(
+      db,
+      'SELECT id FROM clients WHERE serverId = ? OR uuid = ?',
+      [client.id, client.uuid]
+    );
+
+    if (existing) {
+      await runWithRetry(db, `
+        UPDATE clients SET 
+          serverId = ?, name = ?, phone = ?, address = ?, notes = ?, birthday = ?,
+          isDeleted = ?, needsSync = 0, updatedAt = ?
+        WHERE id = ?
+      `, [
+        client.id,
+        client.name,
+        client.phone || null,
+        client.address || null,
+        client.notes || null,
+        client.birthday || null,
+        client.isDeleted ? 1 : 0,
+        Date.now(),
+        existing.id
+      ]);
+    } else {
+      await runWithRetry(db, `
+        INSERT INTO clients (serverId, uuid, name, phone, address, notes, birthday, isDeleted, needsSync, createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+      `, [
+        client.id,
+        client.uuid || null,
+        client.name,
+        client.phone || null,
+        client.address || null,
+        client.notes || null,
+        client.birthday || null,
+        client.isDeleted ? 1 : 0,
+        Date.now(),
+        Date.now()
+      ]);
     }
   });
 };
