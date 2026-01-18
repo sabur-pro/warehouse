@@ -375,6 +375,55 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
     );
   };
 
+  // Helper function to check if quantity changes are only additions (no decreases)
+  // Returns true if all size quantities are either the same or increased (never decreased)
+  const isOnlyAddingQuantity = (oldBoxes: SizeQuantity[][], newBoxes: SizeQuantity[][]): boolean => {
+    // Parse old quantities from currentItem
+    let oldParsed: SizeQuantity[][] = [];
+    try {
+      oldParsed = JSON.parse(currentItem.boxSizeQuantities || '[]');
+    } catch {
+      oldParsed = [];
+    }
+
+    // Check each box and size
+    for (let boxIndex = 0; boxIndex < Math.max(oldParsed.length, newBoxes.length); boxIndex++) {
+      const oldBox = oldParsed[boxIndex] || [];
+      const newBox = newBoxes[boxIndex] || [];
+
+      // Create a map of old quantities by size
+      const oldQuantityMap = new Map<string, number>();
+      for (const sq of oldBox) {
+        oldQuantityMap.set(String(sq.size), sq.quantity || 0);
+      }
+
+      // Check each size in new box
+      for (const newSq of newBox) {
+        const sizeKey = String(newSq.size);
+        const oldQty = oldQuantityMap.get(sizeKey) || 0;
+        const newQty = newSq.quantity || 0;
+
+        // If any quantity decreased, return false
+        if (newQty < oldQty) {
+          console.log(`📉 Quantity decreased for size ${sizeKey}: ${oldQty} -> ${newQty}`);
+          return false;
+        }
+      }
+
+      // Also check if any sizes were removed from new box that existed in old box
+      for (const oldSq of oldBox) {
+        const sizeKey = String(oldSq.size);
+        const existsInNew = newBox.some(sq => String(sq.size) === sizeKey);
+        if (!existsInNew && (oldSq.quantity || 0) > 0) {
+          console.log(`📉 Size ${sizeKey} with quantity ${oldSq.quantity} was removed`);
+          return false;
+        }
+      }
+    }
+
+    return true;
+  };
+
   const handleSaveEdit = async () => {
     setIsLoading(true);
     try {
@@ -424,7 +473,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
       const newTotalValue = newBoxSizeQuantities.reduce((total, box) => total + box.reduce((sum, sq) => sum + sq.quantity * sq.price, 0), 0);
       const newBoxJson = JSON.stringify(newBoxSizeQuantities);
 
-      // Для ассистентов - отправляем заявку на изменение
+      // Для ассистентов - проверяем тип изменений
       if (isAssistant()) {
         // Проверяем подключение к интернету
         const netState = await NetInfo.fetch();
@@ -442,6 +491,81 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
         // Проверяем, изменилось ли изображение
         const imageChanged = editedImageUri !== currentItem.imageUri;
         let newImageUrl: string | null = currentItem.serverImageUrl || null;
+
+        // Проверяем, изменились ли только количества (добавление товара)
+        const onlyAddingQuantities = isOnlyAddingQuantity([], newBoxSizeQuantities);
+
+        // Проверяем, изменились ли другие поля (кроме количеств)
+        const otherFieldsChanged =
+          editedName !== currentItem.name ||
+          editedCode !== currentItem.code ||
+          editedWarehouse !== currentItem.warehouse ||
+          editedNumberOfBoxes !== currentItem.numberOfBoxes ||
+          editedRow !== (currentItem.row || '') ||
+          editedPosition !== (currentItem.position || '') ||
+          editedSide !== (currentItem.side || '') ||
+          imageChanged;
+
+        console.log(`📊 Assistant edit analysis: onlyAddingQuantities=${onlyAddingQuantities}, otherFieldsChanged=${otherFieldsChanged}`);
+
+        // Если только добавляем количества и ничего другого не меняем - обновляем напрямую без одобрения
+        if (onlyAddingQuantities && !otherFieldsChanged) {
+          console.log('✅ Only adding quantities - updating directly without approval');
+
+          // Если изображение не изменилось, используем существующий URL
+          if (imageChanged && editedImageUri) {
+            try {
+              const accessToken = await AuthService.getAccessToken();
+              if (!accessToken) {
+                Alert.alert('Ошибка', 'Не удалось получить токен авторизации');
+                return;
+              }
+              newImageUrl = await ImageService.uploadImage(editedImageUri, accessToken);
+              console.log('📸 Image uploaded:', newImageUrl);
+            } catch (error) {
+              console.error('❌ Failed to upload image:', error);
+              Alert.alert('Ошибка', 'Не удалось загрузить изображение на сервер');
+              return;
+            }
+          }
+
+          // Обновляем товар напрямую (как админ)
+          await updateItem(updatedBasic as Item);
+          await updateItemQuantity(currentItem.id, newBoxJson, newTotalQuantity, newTotalValue);
+
+          let finalItem: Item = {
+            ...updatedBasic,
+            boxSizeQuantities: newBoxJson,
+            totalQuantity: newTotalQuantity,
+            totalValue: newTotalValue,
+          } as Item;
+
+          // Перегенерируем QR-коды если они есть
+          if (currentItem.qrCodeType && currentItem.qrCodeType !== 'none') {
+            console.log('🔄 Regenerating QR codes after edit...');
+            const qrCodes = createQRCodesForItem(
+              currentItem.id,
+              updatedBasic.name,
+              updatedBasic.code,
+              currentItem.qrCodeType,
+              updatedBasic.numberOfBoxes || 1,
+              newBoxJson
+            );
+            const qrCodesString = JSON.stringify(qrCodes);
+            await updateItemQRCodes(currentItem.id, currentItem.qrCodeType, qrCodesString);
+            finalItem.qrCodes = qrCodesString;
+          }
+
+          setCurrentItem(finalItem);
+          setBoxSizeQuantities(newBoxSizeQuantities);
+          onItemUpdated(finalItem);
+          setIsEditing(false);
+          Alert.alert('Успех', 'Товар успешно обновлен (добавление количества не требует подтверждения)');
+          return;
+        }
+
+        // Иначе - отправляем заявку на изменение администратору
+        console.log('📝 Other changes detected - sending approval request');
 
         // Если изображение изменилось, загружаем его на сервер
         if (imageChanged && editedImageUri) {

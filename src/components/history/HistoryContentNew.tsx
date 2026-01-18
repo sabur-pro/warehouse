@@ -94,10 +94,6 @@ const HistoryContentNew = forwardRef<HistoryContentNewRef>((_, ref) => {
   };
 
   const groupRelatedTransactions = (txs: Transaction[]): GroupedTransaction[] => {
-    // Создаем карту всех транзакций для быстрого поиска
-    const txMap = new Map<number, Transaction>();
-    txs.forEach(tx => txMap.set(tx.id, tx));
-
     const result: GroupedTransaction[] = [];
     const processedIds = new Set<number>();
 
@@ -105,24 +101,57 @@ const HistoryContentNew = forwardRef<HistoryContentNewRef>((_, ref) => {
       if (processedIds.has(txs[i].id)) continue;
 
       const currentTx = txs[i];
+
+      // Парсим details для получения saleId
+      let currentSaleId: string | null = null;
+      try {
+        const details = JSON.parse(currentTx.details || '{}');
+        currentSaleId = details.saleId || null;
+      } catch (e) {
+        // ignore
+      }
+
       const relatedTransactions: Transaction[] = [currentTx];
       processedIds.add(currentTx.id);
 
-      // Ищем ВСЕ связанные транзакции с тем же itemId и близким временем
-      for (let j = 0; j < txs.length; j++) {
-        if (i === j || processedIds.has(txs[j].id)) continue;
+      // Если есть saleId — ищем ВСЕ транзакции с таким же saleId
+      if (currentSaleId && (currentTx.action === 'sale' || currentTx.action === 'update')) {
+        console.log(`🔗 Grouping by saleId=${currentSaleId}, starting with TX ${currentTx.id}`);
 
-        const otherTx = txs[j];
+        for (let j = 0; j < txs.length; j++) {
+          if (i === j || processedIds.has(txs[j].id)) continue;
 
-        // Проверяем: тот же товар + время в пределах 5 секунд
-        if (otherTx.itemId === currentTx.itemId &&
-          Math.abs(otherTx.timestamp - currentTx.timestamp) < 5) {
-          relatedTransactions.push(otherTx);
-          processedIds.add(otherTx.id);
+          let otherSaleId: string | null = null;
+          try {
+            const otherDetails = JSON.parse(txs[j].details || '{}');
+            otherSaleId = otherDetails.saleId || null;
+          } catch (e) {
+            // ignore
+          }
+
+          if (otherSaleId === currentSaleId) {
+            console.log(`   ✅ Found matching TX ${txs[j].id} (${txs[j].itemName})`);
+            relatedTransactions.push(txs[j]);
+            processedIds.add(txs[j].id);
+          }
+        }
+        console.log(`🔗 Total grouped: ${relatedTransactions.length} transactions`);
+      }
+      // Fallback: группировка по itemId + время (для старых транзакций без saleId)
+      else if (currentTx.action === 'sale' || currentTx.action === 'update' || currentTx.action === 'wholesale') {
+        for (let j = 0; j < txs.length; j++) {
+          if (i === j || processedIds.has(txs[j].id)) continue;
+
+          const otherTx = txs[j];
+          if (otherTx.itemId === currentTx.itemId &&
+            Math.abs(otherTx.timestamp - currentTx.timestamp) < 5) {
+            relatedTransactions.push(otherTx);
+            processedIds.add(otherTx.id);
+          }
         }
       }
 
-      // Сортируем связанные транзакции по приоритету (sale/wholesale сначала)
+      // Сортируем: sale/wholesale первыми
       relatedTransactions.sort((a, b) => {
         const priority = { wholesale: 0, sale: 1, update: 2, create: 3, delete: 4 };
         const aPriority = priority[a.action] ?? 5;
@@ -131,12 +160,18 @@ const HistoryContentNew = forwardRef<HistoryContentNewRef>((_, ref) => {
       });
 
       if (relatedTransactions.length > 1) {
+        // Собираем уникальные имена товаров
+        const uniqueItemNames = Array.from(new Set(relatedTransactions.map(t => t.itemName).filter(Boolean)));
+        const displayName = uniqueItemNames.length > 1
+          ? `${uniqueItemNames[0]} и еще ${uniqueItemNames.length - 1}`
+          : currentTx.itemName;
+
         result.push({
           id: `group-${relatedTransactions.map(t => t.id).join('-')}`,
           type: 'grouped',
           transactions: relatedTransactions,
           timestamp: currentTx.timestamp,
-          itemName: currentTx.itemName
+          itemName: displayName
         });
       } else {
         result.push({

@@ -23,10 +23,10 @@ import { useTheme } from '../contexts/ThemeContext';
 import { getThemeColors } from '../../constants/theme';
 import { QRScanner } from '../../components/QRScanner';
 import ItemDetailsModal from '../../components/ItemDetailsModal';
-import { getItemById, getItemsPage } from '../../database/database';
+import { getItemById, getItemsPage, processSaleTransaction, PaymentInfo } from '../../database/database';
 import { Item, SizeQuantity } from '../../database/types';
 import { Toast } from '../components/Toast';
-import CheckoutScreen from './CheckoutScreen';
+import CheckoutScreen, { SaleData } from './CheckoutScreen';
 
 // Компонент карточки товара со свайпом
 interface SwipeableCartItemProps {
@@ -604,11 +604,43 @@ const CartScreen: React.FC = () => {
             <CheckoutScreen
                 visible={checkoutVisible}
                 onClose={() => setCheckoutVisible(false)}
-                onConfirm={(clientId) => {
-                    setCheckoutVisible(false);
-                    // TODO: Создать транзакцию продажи с clientId
-                    clearCart();
-                    showToast('Продажа оформлена!', 'success');
+                onConfirm={async (saleData: SaleData) => {
+                    try {
+                        // Генерируем уникальный ID для группировки товаров одной продажи
+                        const saleId = `sale_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+                        // Формируем PaymentInfo для каждой транзакции
+                        const paymentInfo: PaymentInfo = {
+                            method: saleData.paymentMethod,
+                            bank: saleData.bank,
+                            cashAmount: saleData.cashAmount,
+                            cardAmount: saleData.cardAmount,
+                        };
+
+                        // Обрабатываем продажу для каждого товара в корзине
+                        for (const cartItem of cartItems) {
+                            await processSaleTransaction(
+                                cartItem.item.id,
+                                cartItem.boxIndex,
+                                cartItem.sizeIndex,
+                                cartItem.size,
+                                cartItem.quantity,
+                                cartItem.price, // costPrice
+                                cartItem.recommendedPrice || cartItem.price, // salePrice
+                                paymentInfo,
+                                saleData.clientId,
+                                saleData.discount,
+                                saleId // Общий ID продажи для группировки
+                            );
+                        }
+
+                        setCheckoutVisible(false);
+                        clearCart();
+                        showToast('Продажа оформлена!', 'success');
+                    } catch (error) {
+                        console.error('Error processing sale:', error);
+                        showToast('Ошибка при оформлении продажи', 'error');
+                    }
                 }}
             />
 

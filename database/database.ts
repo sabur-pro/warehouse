@@ -1277,6 +1277,139 @@ export const deleteItem = async (id: number): Promise<void> => {
   });
 };
 
+/**
+ * Обработка транзакции продажи
+ * Уменьшает количество товара и создаёт запись о продаже
+ */
+export interface PaymentInfo {
+  method: 'cash' | 'card' | 'mixed';
+  bank?: 'alif' | 'dc';
+  cashAmount?: number;
+  cardAmount?: number;
+}
+
+export const processSaleTransaction = async (
+  itemId: number,
+  boxIndex: number,
+  sizeIndex: number,
+  size: number | string,
+  quantity: number,
+  costPrice: number,
+  salePrice: number,
+  paymentInfo: PaymentInfo,
+  clientId?: number | null,
+  discount?: { mode: 'amount' | 'percent'; value: number },
+  saleId?: string // ID для группировки товаров одной продажи
+): Promise<void> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const item = await getFirstWithRetry<Item>(db, 'SELECT * FROM items WHERE id = ?', [itemId]);
+
+    if (!item) {
+      throw new Error(`Item with id ${itemId} not found`);
+    }
+
+    let txnActive = false;
+    try {
+      await execWithRetry(db, 'BEGIN TRANSACTION;');
+      txnActive = true;
+
+      // Парсим текущие boxSizeQuantities
+      let boxSizeQuantities: any[][] = JSON.parse(item.boxSizeQuantities || '[]');
+
+      // Проверяем что коробка и размер существуют
+      if (boxIndex < 0 || boxIndex >= boxSizeQuantities.length) {
+        throw new Error(`Invalid boxIndex: ${boxIndex}`);
+      }
+
+      const box = boxSizeQuantities[boxIndex];
+      if (sizeIndex < 0 || sizeIndex >= box.length) {
+        throw new Error(`Invalid sizeIndex: ${sizeIndex}`);
+      }
+
+      const sizeEntry = box[sizeIndex];
+      const previousQuantity = sizeEntry.quantity || 0;
+
+      if (previousQuantity < quantity) {
+        throw new Error(`Insufficient quantity: have ${previousQuantity}, requested ${quantity}`);
+      }
+
+      // Уменьшаем количество
+      sizeEntry.quantity = previousQuantity - quantity;
+
+      // Пересчитываем общие значения
+      let newTotalQuantity = 0;
+      let newTotalValue = 0;
+      boxSizeQuantities.forEach(b => {
+        b.forEach(sq => {
+          if (sq && sq.quantity > 0) {
+            newTotalQuantity += sq.quantity;
+            newTotalValue += sq.quantity * (sq.price || 0);
+          }
+        });
+      });
+
+      const profit = (salePrice - costPrice) * quantity;
+
+      // Формируем детали транзакции
+      const saleDetails = {
+        type: 'sale' as const,
+        sale: {
+          size,
+          quantity,
+          costPrice,
+          salePrice,
+          previousQuantity,
+          profit,
+          boxIndex,
+          sizeIndex,
+        },
+        paymentInfo,
+        clientId: clientId || null,
+        discount: discount || null,
+        totalProfit: profit,
+        saleId: saleId || null, // Для группировки множественных продаж
+        itemName: item.name, // Для отображения в деталях
+      };
+
+      // Обновляем товар
+      await runWithRetry(db,
+        'UPDATE items SET boxSizeQuantities = ?, totalQuantity = ?, totalValue = ?, needsSync = 1 WHERE id = ?',
+        [JSON.stringify(boxSizeQuantities), newTotalQuantity, newTotalValue, itemId]
+      );
+
+      // Создаём транзакцию продажи
+      await runWithRetry(db, `
+        INSERT INTO transactions (action, itemId, itemName, itemImageUri, timestamp, details, needsSync, uuid)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+      `, [
+        'sale',
+        itemId,
+        item.name,
+        item.imageUri || null,
+        Math.floor(Date.now() / 1000),
+        JSON.stringify(saleDetails),
+        generateUUID(),
+      ]);
+
+      await execWithRetry(db, 'COMMIT;');
+      txnActive = false;
+      console.log(`Sale processed: ${item.name}, size ${size}, qty ${quantity}, profit ${profit}`);
+    } catch (error) {
+      console.error('Error processing sale:', error);
+      if (txnActive) {
+        try {
+          await execWithRetry(db, 'ROLLBACK;');
+        } catch (rbErr) {
+          console.warn('Rollback failed (ignored):', rbErr);
+        }
+      }
+      databaseInstance = null;
+      throw error;
+    }
+  });
+};
+
 export const addTransaction = async (transaction: Omit<Transaction, 'id'>): Promise<void> => {
   return withLock(async () => {
     const db = await getDatabaseInstance();
@@ -1297,6 +1430,32 @@ export const addTransaction = async (transaction: Omit<Transaction, 'id'>): Prom
     } catch (error) {
       console.error('Error adding transaction:', error);
       throw error;
+    }
+  });
+};
+
+/**
+ * Получение всех транзакций по saleId
+ * Используется для отображения групповых продаж
+ */
+export const getTransactionsBySaleId = async (saleId: string): Promise<Transaction[]> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    try {
+      // Ищем все транзакции содержащие этот saleId в details
+      const transactions = await getAllWithRetry<Transaction>(db, `
+        SELECT * FROM transactions 
+        WHERE action = 'sale' 
+        AND isDeleted = 0
+        AND (details LIKE ? OR details LIKE ?)
+        ORDER BY timestamp DESC
+      `, [`%"saleId":"${saleId}"%`, `%"saleId": "${saleId}"%`]);
+
+      console.log(`getTransactionsBySaleId: found ${transactions.length} transactions for saleId=${saleId}`);
+      return transactions;
+    } catch (error) {
+      console.error('Error getting transactions by saleId:', error);
+      return [];
     }
   });
 };
@@ -1564,7 +1723,8 @@ interface SaleInfo {
   salePrice: number;
   previousQuantity: number;
   profit: number;
-  boxIndex?: number; // Добавляем опциональное поле для индекса коробки
+  boxIndex?: number;
+  sizeIndex?: number; // Индекс размера в коробке  
 }
 
 interface CreateInfo {
@@ -1654,14 +1814,34 @@ export const deleteTransaction = async (transactionId: number): Promise<{ succes
 
       const { action, itemId, timestamp, details: transactionDetails } = transaction;
 
-      // Find related transactions
-      const related = await getAllWithRetry<Transaction>(db, `
-        SELECT * FROM transactions 
-        WHERE itemId = ? 
-        AND action IN ('sale', 'update', 'wholesale') 
-        AND isDeleted = 0
-        AND ABS(timestamp - ?) < 5
-      `, [itemId, timestamp]);
+      // Сначала парсим детали для получения saleId
+      const txDetails = parseDetails(transactionDetails);
+      const saleId = (txDetails as any)?.saleId;
+
+      // Находим все связанные транзакции
+      let related: Transaction[] = [];
+
+      if (saleId) {
+        // Ищем все транзакции с таким же saleId (поддерживаем оба формата JSON)
+        related = await getAllWithRetry<Transaction>(db, `
+          SELECT * FROM transactions 
+          WHERE action = 'sale' 
+          AND isDeleted = 0
+          AND (details LIKE ? OR details LIKE ?)
+        `, [`%"saleId":"${saleId}"%`, `%"saleId": "${saleId}"%`]);
+        console.log(`deleteTransaction: Found ${related.length} transactions with saleId=${saleId}`);
+      }
+
+      // Если нет saleId или не нашли - используем старую логику
+      if (related.length === 0) {
+        related = await getAllWithRetry<Transaction>(db, `
+          SELECT * FROM transactions 
+          WHERE itemId = ? 
+          AND action IN ('sale', 'update', 'wholesale') 
+          AND isDeleted = 0
+          AND ABS(timestamp - ?) < 5
+        `, [itemId, timestamp]);
+      }
 
       // Find the sale transaction among related (including wholesale)
       let saleTx: Transaction | undefined = undefined;
@@ -1735,83 +1915,112 @@ export const deleteTransaction = async (transactionId: number): Promise<{ succes
           }
         }
       } else {
-        // Восстановление обычной продажи
-        const saleInfo = parsedDetails.sale || {
-          size: parsedDetails.size,
-          quantity: parsedDetails.quantity,
-          costPrice: parsedDetails.costPrice,
-          salePrice: parsedDetails.salePrice,
-          previousQuantity: parsedDetails.previousQuantity,
-          profit: parsedDetails.profit,
-          boxIndex: parsedDetails.boxIndex
-        };
-        const { size, quantity, costPrice, boxIndex } = saleInfo;
+        // Восстановление обычных продаж - обрабатываем ВСЕ транзакции
+        // Собираем все изменения по товарам
+        const itemUpdates: Map<number, { boxSizeQuantities: any[][] }> = new Map();
 
-        // Возвращаем товар в оригинальную коробку если известен boxIndex
-        let found = false;
-        if (typeof boxIndex === 'number' && boxIndex >= 0 && boxIndex < boxSizeQuantities.length) {
-          // Попытка вернуть в оригинальную коробку
-          const originalBox = boxSizeQuantities[boxIndex];
-          for (let j = 0; j < originalBox.length; j++) {
-            const sq = originalBox[j];
-            if (sq.size === size) {
-              sq.quantity = (sq.quantity || 0) + quantity;
+        for (const tx of related) {
+          if (tx.action !== 'sale') continue;
+
+          const txParsed = parseDetails(tx.details);
+          if (!txParsed || !txParsed.sale) continue;
+
+          const targetItemId = tx.itemId;
+          if (targetItemId === undefined) {
+            console.warn('Transaction has no itemId, skipping');
+            continue;
+          }
+          const { sale } = txParsed;
+          const { size, quantity, costPrice, boxIndex, sizeIndex } = sale as any;
+
+          // Получаем или загружаем boxSizeQuantities для товара
+          if (!itemUpdates.has(targetItemId)) {
+            const targetItem = await getFirstWithRetry<Item>(db, 'SELECT * FROM items WHERE id = ?', [targetItemId]);
+            if (!targetItem) {
+              console.warn(`Item ${targetItemId} not found, skipping`);
+              continue;
+            }
+            const bsq = JSON.parse(targetItem.boxSizeQuantities || '[]');
+            itemUpdates.set(targetItemId, { boxSizeQuantities: bsq });
+          }
+
+          const itemData = itemUpdates.get(targetItemId)!;
+          const bsq = itemData.boxSizeQuantities;
+
+          let found = false;
+
+          // Попытка 1: boxIndex + sizeIndex
+          if (typeof boxIndex === 'number' && typeof sizeIndex === 'number' &&
+            boxIndex >= 0 && boxIndex < bsq.length) {
+            const box = bsq[boxIndex];
+            if (sizeIndex >= 0 && sizeIndex < box.length) {
+              box[sizeIndex].quantity = (box[sizeIndex].quantity || 0) + quantity;
               found = true;
-              break;
+              console.log(`Restored: item=${targetItemId}, box=${boxIndex}, sizeIdx=${sizeIndex}, qty=${quantity}`);
             }
           }
-          // Если размер не найден в оригинальной коробке, добавляем его туда
-          if (!found) {
-            originalBox.push({ size, quantity, price: costPrice });
-            found = true;
-          }
-        }
 
-        // Если boxIndex не указан или не валидный, ищем по всем коробкам (начиная с первой)
-        if (!found) {
-          for (let i = 0; i < boxSizeQuantities.length; i++) {
-            const box = boxSizeQuantities[i];
+          // Попытка 2: boxIndex + поиск по size
+          if (!found && typeof boxIndex === 'number' && boxIndex >= 0 && boxIndex < bsq.length) {
+            const box = bsq[boxIndex];
             for (let j = 0; j < box.length; j++) {
-              const sq = box[j];
-              if (sq.size === size) {
-                sq.quantity = (sq.quantity || 0) + quantity;
+              if (box[j].size === size) {
+                box[j].quantity = (box[j].quantity || 0) + quantity;
                 found = true;
                 break;
               }
             }
-            if (found) break;
+            if (!found) {
+              box.push({ size, quantity, price: costPrice });
+              found = true;
+            }
           }
 
+          // Попытка 3: поиск по всем коробкам
           if (!found) {
-            if (boxSizeQuantities.length === 0) {
-              boxSizeQuantities.push([]);
+            for (let i = 0; i < bsq.length; i++) {
+              const box = bsq[i];
+              for (let j = 0; j < box.length; j++) {
+                if (box[j].size === size) {
+                  box[j].quantity = (box[j].quantity || 0) + quantity;
+                  found = true;
+                  break;
+                }
+              }
+              if (found) break;
             }
-            // Если не найден, добавляем в первую коробку (не в последнюю)
-            const firstBox = boxSizeQuantities[0];
-            firstBox.push({ size, quantity, price: costPrice });
+            if (!found && bsq.length > 0) {
+              bsq[0].push({ size, quantity, price: costPrice });
+            }
           }
         }
+
+        // Сохраняем все изменённые товары
+        for (const [targetItemId, { boxSizeQuantities: bsq }] of itemUpdates) {
+          let newTotalQuantity = 0;
+          let newTotalValue = 0;
+          bsq.forEach(box => {
+            box.forEach(sq => {
+              if (sq.quantity > 0) {
+                newTotalQuantity += sq.quantity;
+                newTotalValue += sq.quantity * (sq.price || 0);
+              }
+            });
+          });
+
+          await runWithRetry(db,
+            'UPDATE items SET boxSizeQuantities = ?, totalQuantity = ?, totalValue = ?, needsSync = 1 WHERE id = ?',
+            [JSON.stringify(bsq), newTotalQuantity, newTotalValue, targetItemId]
+          );
+          console.log(`Updated item ${targetItemId}: totalQty=${newTotalQuantity}`);
+        }
       }
-
-      let newTotalQuantity = 0;
-      let newTotalValue = 0;
-      boxSizeQuantities.forEach(box => {
-        box.forEach(sq => {
-          if (sq.quantity > 0) {
-            newTotalQuantity += sq.quantity;
-            newTotalValue += sq.quantity * (sq.price || 0);
-          }
-        });
-      });
-
-      const newBoxStr = JSON.stringify(boxSizeQuantities);
-
-      await runWithRetry(db, 'UPDATE items SET boxSizeQuantities = ?, totalQuantity = ?, totalValue = ?, needsSync = 1 WHERE id = ?', [newBoxStr, newTotalQuantity, newTotalValue, itemId]);
 
       // Soft delete all related transactions
       for (let tx of related) {
         await runWithRetry(db, 'UPDATE transactions SET isDeleted = 1, needsSync = 1 WHERE id = ?', [tx.id]);
       }
+      console.log(`Deleted ${related.length} transactions`);
 
       await execWithRetry(db, 'COMMIT;');
       txnActive = false;

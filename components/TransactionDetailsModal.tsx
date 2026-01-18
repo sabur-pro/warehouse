@@ -15,7 +15,7 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import { Transaction, Item } from '../database/types';
 import { useDatabase } from '../hooks/useDatabase';
-import { getItemById } from '../database/database';
+import { getItemById, getTransactionsBySaleId } from '../database/database';
 import { GroupedTransaction } from './TransactionsList';
 import { useAuth } from '../src/contexts/AuthContext';
 import { useTheme } from '../src/contexts/ThemeContext';
@@ -109,6 +109,18 @@ interface TransactionDetails {
   previousQuantity?: number;
   profit?: number;
   boxIndex?: number;
+  // Новые поля для группировки продаж
+  saleId?: string;
+  itemName?: string;
+  paymentInfo?: {
+    method: 'cash' | 'card' | 'mixed';
+    bank?: 'alif' | 'dc';
+    cashAmount?: number;
+    cardAmount?: number;
+  };
+  clientId?: number | null;
+  discount?: { mode: 'amount' | 'percent'; value: number } | null;
+  totalProfit?: number;
 }
 
 const parseDetails = (details: string | null | undefined): TransactionDetails | null => {
@@ -138,8 +150,133 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
   // State для хранения данных товара (картинка)
   const [itemData, setItemData] = useState<Item | null>(null);
 
+  // State для хранения связанных транзакций по saleId
+  const [relatedTransactions, setRelatedTransactions] = useState<Transaction[]>([]);
+
+  // State для хранения загруженных изображений для групповых транзакций
+  // Ключ: itemName, значение: imageUri
+  const [loadedItemImages, setLoadedItemImages] = useState<Map<string, string | null>>(new Map());
+
   // Получаем картинку - сначала из транзакции, потом из БД если нужно
   const transactionImageUri = mainTransaction.itemImageUri;
+
+  // Получаем saleId из деталей транзакции
+  let mainDetails: any = null;
+  let saleId: string | undefined;
+  try {
+    mainDetails = mainTransaction.details ? JSON.parse(mainTransaction.details) : null;
+    saleId = mainDetails?.saleId;
+    console.log(`📋 TransactionDetailsModal: mainTx.id=${mainTransaction.id}, type=${mainDetails?.type}, saleId=${saleId || 'none'}`);
+  } catch (e) {
+    console.log(`❌ TransactionDetailsModal: Failed to parse mainTransaction.details`);
+  }
+
+  // Загрузка связанных транзакций по saleId
+  useEffect(() => {
+    if (!visible) {
+      setRelatedTransactions([]);
+      return;
+    }
+
+    console.log(`🔄 TransactionDetailsModal useEffect: visible=${visible}, saleId=${saleId}, type=${mainDetails?.type}`);
+
+    if (saleId && mainDetails?.type === 'sale') {
+      console.log(`🔍 Loading related transactions for saleId=${saleId}...`);
+      getTransactionsBySaleId(saleId)
+        .then(txs => {
+          console.log(`📦 Loaded ${txs.length} related transactions for saleId=${saleId}`);
+          txs.forEach(tx => console.log(`   - TX ${tx.id}: ${tx.itemName}`));
+          setRelatedTransactions(txs);
+        })
+        .catch(err => console.error('Failed to load related transactions:', err));
+    } else {
+      console.log(`⚠️ Not loading related: saleId=${saleId}, type=${mainDetails?.type}`);
+    }
+  }, [visible, saleId]);
+
+  // Загрузка изображений товаров для групповых транзакций (когда itemImageUri отсутствует)
+  useEffect(() => {
+    if (!visible) {
+      setLoadedItemImages(new Map());
+      return;
+    }
+
+    const txList = relatedTransactions.length > 0 ? relatedTransactions : transactions;
+
+    // Собираем все уникальные названия товаров для загрузки картинок
+    let uniqueItemNames: string[] = [];
+
+    // 1. Из обычных транзакций без изображений
+    if (txList.length > 1) {
+      const txsWithoutImages = txList.filter(tx => !tx.itemImageUri);
+      if (txsWithoutImages.length > 0) {
+        uniqueItemNames.push(...txsWithoutImages.map(tx => tx.itemName));
+      }
+    }
+
+    // 2. Из allDeletedTransactions в возвратных транзакциях (admin_approved_sale_deletion)
+    // Используем mainDetails который парсится вне useEffect
+    if (mainDetails?.type === 'admin_approved_sale_deletion') {
+      const allDeletedTransactions = mainDetails.allDeletedTransactions || [];
+      if (allDeletedTransactions.length > 0) {
+        uniqueItemNames.push(...allDeletedTransactions.map((tx: any) => tx.itemName));
+      }
+    }
+
+    // Убираем дубликаты
+    uniqueItemNames = [...new Set(uniqueItemNames.filter(Boolean))];
+
+    if (uniqueItemNames.length === 0) return;
+
+    // Проверяем, все ли изображения уже загружены - если да, выходим
+    const allAlreadyLoaded = uniqueItemNames.every(name => loadedItemImages.has(name));
+    if (allAlreadyLoaded) {
+      console.log(`🖼️ All ${uniqueItemNames.length} images already loaded, skipping...`);
+      return;
+    }
+
+    console.log(`🖼️ Loading images for ${uniqueItemNames.length} unique items...`);
+
+    const loadImages = async () => {
+      const newImages = new Map<string, string | null>();
+
+      for (const itemName of uniqueItemNames) {
+        // Пропускаем если уже загружено
+        if (loadedItemImages.has(itemName)) continue;
+
+        // Пытаемся найти itemId из транзакций
+        const tx = txList.find(t => t.itemName === itemName);
+        const deletedTx = mainDetails?.allDeletedTransactions?.find((t: any) => t.itemName === itemName);
+        const itemId = tx?.itemId || deletedTx?.itemId || 0;
+
+        try {
+          const item = await getItemById(itemId, itemName);
+          if (item?.imageUri) {
+            console.log(`  ✅ Loaded image for "${itemName}": ${item.imageUri}`);
+            newImages.set(itemName, item.imageUri);
+          } else {
+            console.log(`  ⚠️ No image found for "${itemName}"`);
+            newImages.set(itemName, null);
+          }
+        } catch (err) {
+          console.error(`  ❌ Failed to load image for "${itemName}":`, err);
+          newImages.set(itemName, null);
+        }
+      }
+
+      // Только обновляем если есть новые изображения
+      if (newImages.size > 0) {
+        setLoadedItemImages(prev => {
+          const updated = new Map(prev);
+          newImages.forEach((val, key) => updated.set(key, val));
+          return updated;
+        });
+      }
+    };
+
+    loadImages();
+    // Используем mainTransaction.id как стабильную зависимость вместо mainDetails
+  }, [visible, relatedTransactions.length, transactions.length, mainTransaction.id]);
 
   // Загрузка данных товара при открытии модалки (только если нет картинки в транзакции)
   useEffect(() => {
@@ -180,10 +317,18 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
 
   const handleDelete = () => {
     const isAssistantUser = isAssistant();
-    const title = isAssistantUser ? 'Запросить удаление?' : 'Удалить транзакцию?';
+    const txList = relatedTransactions.length > 0 ? relatedTransactions : transactions;
+    const isMultiItem = txList.length > 1;
+
+    const title = isAssistantUser
+      ? (isMultiItem ? `Запросить удаление (${txList.length} поз.)?` : 'Запросить удаление?')
+      : (isMultiItem ? `Удалить продажу (${txList.length} поз.)?` : 'Удалить транзакцию?');
+
     const message = isAssistantUser
       ? 'Будет отправлен запрос на удаление транзакции администратору для одобрения.'
-      : 'Это действие отменит продажу и вернёт товар на склад. Это нельзя отменить.';
+      : (isMultiItem
+        ? `Это действие отменит продажу всех ${txList.length} товаров и вернёт их на склад. Это нельзя отменить.`
+        : 'Это действие отменит продажу и вернёт товар на склад. Это нельзя отменить.');
     const buttonText = isAssistantUser ? 'Отправить запрос' : 'Удалить';
 
     Alert.alert(
@@ -267,65 +412,179 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
     );
   };
 
-  const renderSaleDetails = (details: TransactionDetails) => (
-    <View>
-      <Text style={[styles.sectionTitle, { color: colors.text.normal }]}>Детали продажи:</Text>
-      {details.sale ? (
-        <View>
-          <View style={styles.row}>
-            <Text style={[styles.label, { color: colors.text.muted }]}>Размер:</Text>
-            <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.size}</Text>
+  const renderSaleDetails = (details: TransactionDetails, imageUri?: string | null, itemNameForImage?: string) => {
+    // Хелпер для названия способа оплаты
+    const getPaymentMethodName = (method?: 'cash' | 'card' | 'mixed') => {
+      switch (method) {
+        case 'cash': return 'Наличные';
+        case 'card': return 'Карта';
+        case 'mixed': return 'Смешанная';
+        default: return 'Не указан';
+      }
+    };
+
+    // Хелпер для названия банка
+    const getBankName = (bank?: 'alif' | 'dc') => {
+      switch (bank) {
+        case 'alif': return 'АлифБанк';
+        case 'dc': return 'ДушанбеСити';
+        default: return null;
+      }
+    };
+
+    return (
+      <View>
+        {/* Изображение и название товара в каждой детали продажи */}
+        {(imageUri || itemNameForImage) && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+            {imageUri ? (
+              <Image
+                source={{ uri: imageUri }}
+                style={{
+                  width: 60,
+                  height: 60,
+                  borderRadius: 10,
+                  backgroundColor: colors.background.card,
+                  marginRight: 12,
+                }}
+                resizeMode="cover"
+              />
+            ) : (
+              <View style={{
+                width: 60,
+                height: 60,
+                borderRadius: 10,
+                backgroundColor: colors.background.card,
+                justifyContent: 'center',
+                alignItems: 'center',
+                marginRight: 12,
+              }}>
+                <MaterialIcons name="image" size={28} color={colors.text.muted} />
+              </View>
+            )}
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: colors.text.normal, fontSize: 16, fontWeight: '600' }} numberOfLines={2}>
+                {itemNameForImage || details.itemName || 'Товар'}
+              </Text>
+            </View>
           </View>
-          <View style={styles.row}>
-            <Text style={[styles.label, { color: colors.text.muted }]}>Было товаров:</Text>
-            <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.previousQuantity} шт.</Text>
-          </View>
-          <View style={styles.row}>
-            <Text style={[styles.label, { color: colors.text.muted }]}>Осталось товаров:</Text>
-            <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.previousQuantity - details.sale.quantity} шт.</Text>
-          </View>
-          {isAssistant() ? (
-            <>
+        )}
+        <Text style={[styles.sectionTitle, { color: colors.text.normal }]}>Детали продажи:</Text>
+        {details.sale ? (
+          <View>
+            {/* Название товара если есть */}
+            {details.itemName && (
               <View style={styles.row}>
-                <Text style={[styles.label, { color: colors.text.muted }]}>Рекомендуемая цена:</Text>
-                <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.recommendedSellingPrice?.toFixed(2) || '0.00'} сомонӣ</Text>
+                <Text style={[styles.label, { color: colors.text.muted }]}>Товар:</Text>
+                <Text style={[styles.value, { color: colors.text.normal, fontWeight: '600' }]}>{details.itemName}</Text>
               </View>
+            )}
+            <View style={styles.row}>
+              <Text style={[styles.label, { color: colors.text.muted }]}>Размер:</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.size}</Text>
+            </View>
+            <View style={styles.row}>
+              <Text style={[styles.label, { color: colors.text.muted }]}>Количество:</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.quantity} шт.</Text>
+            </View>
+            <View style={styles.row}>
+              <Text style={[styles.label, { color: colors.text.muted }]}>Было товаров:</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.previousQuantity} шт.</Text>
+            </View>
+            <View style={styles.row}>
+              <Text style={[styles.label, { color: colors.text.muted }]}>Осталось товаров:</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.previousQuantity - details.sale.quantity} шт.</Text>
+            </View>
+
+            {/* Способ оплаты */}
+            {details.paymentInfo && (
+              <>
+                <View style={[styles.divider, { borderBottomColor: colors.border.normal }]} />
+                <Text style={[styles.subsectionTitle, { color: colors.text.normal }]}>Способ оплаты:</Text>
+                <View style={styles.row}>
+                  <Text style={[styles.label, { color: colors.text.muted }]}>Тип:</Text>
+                  <Text style={[styles.value, { color: colors.text.normal }]}>{getPaymentMethodName(details.paymentInfo.method)}</Text>
+                </View>
+                {getBankName(details.paymentInfo.bank) && (
+                  <View style={styles.row}>
+                    <Text style={[styles.label, { color: colors.text.muted }]}>Банк:</Text>
+                    <Text style={[styles.value, { color: details.paymentInfo.bank === 'alif' ? '#00C853' : '#1976D2', fontWeight: '500' }]}>
+                      {getBankName(details.paymentInfo.bank)}
+                    </Text>
+                  </View>
+                )}
+                {details.paymentInfo.method === 'mixed' && (
+                  <>
+                    <View style={styles.row}>
+                      <Text style={[styles.label, { color: colors.text.muted }]}>Наличными:</Text>
+                      <Text style={[styles.value, { color: colors.text.normal }]}>{(details.paymentInfo.cashAmount || 0).toLocaleString()} сом</Text>
+                    </View>
+                    <View style={styles.row}>
+                      <Text style={[styles.label, { color: colors.text.muted }]}>Картой:</Text>
+                      <Text style={[styles.value, { color: colors.text.normal }]}>{(details.paymentInfo.cardAmount || 0).toLocaleString()} сом</Text>
+                    </View>
+                  </>
+                )}
+              </>
+            )}
+
+            {/* Скидка */}
+            {details.discount && (
               <View style={styles.row}>
-                <Text style={[styles.label, { color: colors.text.muted }]}>Цена продажи:</Text>
-                <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.salePrice.toFixed(2)} сомонӣ</Text>
-              </View>
-            </>
-          ) : (
-            <>
-              <View style={styles.row}>
-                <Text style={[styles.label, { color: colors.text.muted }]}>Себестоимость пары:</Text>
-                <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.costPrice.toFixed(2)} сомонӣ</Text>
-              </View>
-              <View style={styles.row}>
-                <Text style={[styles.label, { color: colors.text.muted }]}>Рекомендуемая цена:</Text>
-                <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.recommendedSellingPrice?.toFixed(2) || '0.00'} сомонӣ</Text>
-              </View>
-              <View style={styles.row}>
-                <Text style={[styles.label, { color: colors.text.muted }]}>Цена продажи:</Text>
-                <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.salePrice.toFixed(2)} сомонӣ</Text>
-              </View>
-              <View style={styles.row}>
-                <Text style={[styles.label, { color: colors.text.muted }]}>Прибыль:</Text>
-                <Text style={[
-                  styles.value,
-                  { color: details.sale.profit > 0 ? '#10b981' : '#ef4444' }
-                ]}>
-                  {details.sale.profit.toFixed(2)} сомонӣ
+                <Text style={[styles.label, { color: colors.text.muted }]}>Скидка:</Text>
+                <Text style={[styles.value, { color: '#F59E0B' }]}>
+                  {details.discount.mode === 'percent'
+                    ? `${details.discount.value}%`
+                    : `${details.discount.value} сом`}
                 </Text>
               </View>
-            </>
-          )}
-        </View>
-      ) : (
-        <Text style={[styles.noData, { color: colors.text.muted }]}>Нет деталей продажи</Text>
-      )}
-    </View>
-  );
+            )}
+
+            <View style={[styles.divider, { borderBottomColor: colors.border.normal }]} />
+
+            {isAssistant() ? (
+              <>
+                <View style={styles.row}>
+                  <Text style={[styles.label, { color: colors.text.muted }]}>Рекомендуемая цена:</Text>
+                  <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.recommendedSellingPrice?.toFixed(2) || '0.00'} сомонӣ</Text>
+                </View>
+                <View style={styles.row}>
+                  <Text style={[styles.label, { color: colors.text.muted }]}>Цена продажи:</Text>
+                  <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.salePrice.toFixed(2)} сомонӣ</Text>
+                </View>
+              </>
+            ) : (
+              <>
+                <View style={styles.row}>
+                  <Text style={[styles.label, { color: colors.text.muted }]}>Себестоимость пары:</Text>
+                  <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.costPrice.toFixed(2)} сомонӣ</Text>
+                </View>
+                <View style={styles.row}>
+                  <Text style={[styles.label, { color: colors.text.muted }]}>Рекомендуемая цена:</Text>
+                  <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.recommendedSellingPrice?.toFixed(2) || '0.00'} сомонӣ</Text>
+                </View>
+                <View style={styles.row}>
+                  <Text style={[styles.label, { color: colors.text.muted }]}>Цена продажи:</Text>
+                  <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.salePrice.toFixed(2)} сомонӣ</Text>
+                </View>
+                <View style={styles.row}>
+                  <Text style={[styles.label, { color: colors.text.muted }]}>Прибыль:</Text>
+                  <Text style={[
+                    styles.value,
+                    { color: details.sale.profit > 0 ? '#10b981' : '#ef4444' }
+                  ]}>
+                    {details.sale.profit.toFixed(2)} сомонӣ
+                  </Text>
+                </View>
+              </>
+            )}
+          </View>
+        ) : (
+          <Text style={[styles.noData, { color: colors.text.muted }]}>Нет деталей продажи</Text>
+        )}
+      </View>
+    );
+  };
 
   const renderWholesaleDetails = (details: TransactionDetails) => (
     <View>
@@ -691,38 +950,168 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
     const deletedTransaction = details.deletedTransaction || {};
     const transactionInfo = deletedTransaction.transaction || {};
     const saleDetails = deletedTransaction.details || {};
-    const restoredQuantity = details.restoredQuantity || 0;
+    const restoredQuantity = details.restoredQuantity || saleDetails.sale?.quantity || 0;
+    const totalTransactionsDeleted = details.totalTransactionsDeleted || 1;
+    const returnSaleId = details.saleId;
+
+    // Хелперы для отображения
+    const getPaymentMethodName = (method?: string) => {
+      switch (method) {
+        case 'cash': return 'Наличные';
+        case 'card': return 'Карта';
+        case 'mixed': return 'Смешанная';
+        default: return null;
+      }
+    };
+
+    const getBankName = (bank?: string) => {
+      switch (bank) {
+        case 'alif': return 'АлифБанк';
+        case 'dc': return 'ДушанбеСити';
+        default: return null;
+      }
+    };
+
+    // Рендер одной позиции возврата с картинкой
+    const renderReturnedItem = (
+      itemName: string,
+      saleInfo: any,
+      imageUri: string | null,
+      index?: number,
+      showPositionLabel?: boolean
+    ) => (
+      <View key={index ?? 0} style={{
+        marginBottom: 16,
+        borderLeftWidth: 2,
+        borderLeftColor: '#22c55e',
+        paddingLeft: 12
+      }}>
+        {showPositionLabel && index !== undefined && (
+          <Text style={{
+            color: colors.text.muted,
+            fontSize: 12,
+            marginBottom: 4,
+            fontWeight: '600'
+          }}>
+            Возврат {index + 1}
+          </Text>
+        )}
+        {/* Изображение и название товара */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+          {imageUri ? (
+            <Image
+              source={{ uri: imageUri }}
+              style={{
+                width: 60,
+                height: 60,
+                borderRadius: 10,
+                backgroundColor: colors.background.card,
+                marginRight: 12,
+              }}
+              resizeMode="cover"
+            />
+          ) : (
+            <View style={{
+              width: 60,
+              height: 60,
+              borderRadius: 10,
+              backgroundColor: colors.background.card,
+              justifyContent: 'center',
+              alignItems: 'center',
+              marginRight: 12,
+            }}>
+              <MaterialIcons name="image" size={28} color={colors.text.muted} />
+            </View>
+          )}
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: colors.text.normal, fontSize: 16, fontWeight: '600' }} numberOfLines={2}>
+              {itemName || 'Товар'}
+            </Text>
+          </View>
+        </View>
+        {/* Детали продажи */}
+        {saleInfo && (
+          <>
+            <View style={styles.row}>
+              <Text style={[styles.label, { color: colors.text.muted }]}>Размер:</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{saleInfo.size}</Text>
+            </View>
+            <View style={styles.row}>
+              <Text style={[styles.label, { color: colors.text.muted }]}>Количество:</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{saleInfo.quantity} шт.</Text>
+            </View>
+            <View style={styles.row}>
+              <Text style={[styles.label, { color: colors.text.muted }]}>Цена продажи:</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{saleInfo.salePrice} сом</Text>
+            </View>
+          </>
+        )}
+      </View>
+    );
+
+    // Используем allDeletedTransactions из деталей (сохранённые сервером)
+    const allDeletedTransactions = details.allDeletedTransactions || [];
+
+    // Проверяем есть ли данные о нескольких транзакциях
+    const hasMultipleItems = totalTransactionsDeleted > 1 && allDeletedTransactions.length > 1;
 
     return (
       <View>
-        <Text style={[styles.sectionTitle, { color: colors.text.normal }]}>Возврат продажи (одобрено):</Text>
+        <Text style={[styles.sectionTitle, { color: colors.text.normal }]}>
+          Возврат продажи ({totalTransactionsDeleted} {totalTransactionsDeleted === 1 ? 'товар' : totalTransactionsDeleted < 5 ? 'товара' : 'товаров'}):
+        </Text>
         <View>
-          {transactionInfo.itemName && (
-            <View style={styles.row}>
-              <Text style={[styles.label, { color: colors.text.muted }]}>Товар:</Text>
-              <Text style={[styles.value, { color: colors.text.normal }]}>{transactionInfo.itemName}</Text>
-            </View>
+          {hasMultipleItems ? (
+            // Показываем все удалённые транзакции из сохранённых данных
+            allDeletedTransactions.map((txData: any, index: number) => {
+              const txImageUri = loadedItemImages.get(txData.itemName) || null;
+              return renderReturnedItem(
+                txData.itemName,
+                txData.sale,
+                txImageUri,
+                index,
+                true
+              );
+            })
+          ) : (
+            // Fallback: показываем данные из deletedTransaction (один товар)
+            renderReturnedItem(
+              saleDetails.itemName || transactionInfo.itemName,
+              saleDetails.sale,
+              transactionImageUri || itemData?.imageUri || loadedItemImages.get(saleDetails.itemName || transactionInfo.itemName || '') || null,
+              0,
+              false
+            )
           )}
-          {saleDetails.sale && (
+
+          {/* Способ оплаты (общий для всей группы) */}
+          {saleDetails.paymentInfo && (
             <>
+              <View style={[styles.divider, { borderBottomColor: colors.border.normal }]} />
               <View style={styles.row}>
-                <Text style={[styles.label, { color: colors.text.muted }]}>Размер:</Text>
-                <Text style={[styles.value, { color: colors.text.normal }]}>{saleDetails.sale.size}</Text>
+                <Text style={[styles.label, { color: colors.text.muted }]}>Способ оплаты:</Text>
+                <Text style={[styles.value, { color: colors.text.normal }]}>
+                  {getPaymentMethodName(saleDetails.paymentInfo.method)}
+                </Text>
               </View>
-              <View style={styles.row}>
-                <Text style={[styles.label, { color: colors.text.muted }]}>Количество:</Text>
-                <Text style={[styles.value, { color: colors.text.normal }]}>{saleDetails.sale.quantity} шт.</Text>
-              </View>
-              <View style={styles.row}>
-                <Text style={[styles.label, { color: colors.text.muted }]}>Цена продажи:</Text>
-                <Text style={[styles.value, { color: colors.text.normal }]}>{saleDetails.sale.salePrice} ₽</Text>
-              </View>
+              {getBankName(saleDetails.paymentInfo.bank) && (
+                <View style={styles.row}>
+                  <Text style={[styles.label, { color: colors.text.muted }]}>Банк:</Text>
+                  <Text style={[styles.value, {
+                    color: saleDetails.paymentInfo.bank === 'alif' ? '#00C853' : '#1976D2',
+                    fontWeight: '500'
+                  }]}>
+                    {getBankName(saleDetails.paymentInfo.bank)}
+                  </Text>
+                </View>
+              )}
             </>
           )}
+
           {restoredQuantity > 0 && (
             <View style={styles.row}>
-              <Text style={[styles.label, { color: colors.text.muted }]}>Возвращено:</Text>
-              <Text style={[styles.value, { color: '#22c55e' }]}>{restoredQuantity} шт.</Text>
+              <Text style={[styles.label, { color: colors.text.muted }]}>Всего возвращено:</Text>
+              <Text style={[styles.value, { color: '#22c55e', fontWeight: '600' }]}>{restoredQuantity} шт.</Text>
             </View>
           )}
           <View style={[styles.infoBox, {
@@ -732,7 +1121,7 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
           }]}>
             <MaterialIcons name="restore" size={20} color="#22c55e" style={{ marginRight: 8 }} />
             <Text style={[styles.infoText, { color: isDark ? '#4ade80' : '#16a34a' }]}>
-              Продажа отменена, товар возвращён на склад.
+              Продажа отменена, товар{totalTransactionsDeleted > 1 ? 'ы' : ''} возвращён{totalTransactionsDeleted > 1 ? 'ы' : ''} на склад.
             </Text>
           </View>
         </View>
@@ -856,21 +1245,63 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
   };
 
   const renderContent = () => {
-    if (groupedTransaction.type === 'grouped') {
-      const saleTx = transactions.find((tx: Transaction) => tx.action === 'sale');
-      const wholesaleTx = transactions.find((tx: Transaction) => tx.action === 'wholesale');
-      const updateTx = transactions.find((tx: Transaction) => tx.action === 'update');
+    // Используем загруженные связанные транзакции если есть, иначе из пропса
+    const txList = relatedTransactions.length > 0 ? relatedTransactions : transactions;
 
-      const saleParsed = saleTx ? parseDetails(saleTx.details) : null;
-      const wholesaleParsed = wholesaleTx ? parseDetails(wholesaleTx.details) : null;
-      const updateParsed = updateTx ? parseDetails(updateTx.details) : null;
+    // Если это групповая транзакция или просто нашли связанные по saleId
+    if (groupedTransaction.type === 'grouped' || txList.length > 1) {
+      const saleTxs = txList.filter(tx => tx.action === 'sale');
+      const wholesaleTxs = txList.filter(tx => tx.action === 'wholesale');
+      const updateTxs = txList.filter(tx => tx.action === 'update');
 
       return (
-        <>
-          {saleParsed && renderSaleDetails(saleParsed)}
-          {wholesaleParsed && renderWholesaleDetails(wholesaleParsed)}
-          {updateParsed && !saleParsed && !wholesaleParsed && renderUpdateDetails(updateParsed)}
-        </>
+        <View>
+          {saleTxs.length > 0 && (
+            <View>
+              {saleTxs.length > 1 && (
+                <Text style={[styles.sectionTitle, { color: colors.text.normal, marginBottom: 8 }]}>
+                  Товары в продаже ({saleTxs.length}):
+                </Text>
+              )}
+              {saleTxs.map((tx, index) => {
+                const details = parseDetails(tx.details);
+                if (!details) return null;
+                return (
+                  <View key={tx.id} style={{
+                    marginBottom: 16,
+                    borderLeftWidth: 2,
+                    borderLeftColor: colors.border.normal,
+                    paddingLeft: 12
+                  }}>
+                    {saleTxs.length > 1 && (
+                      <Text style={{
+                        color: colors.text.muted,
+                        fontSize: 12,
+                        marginBottom: 4,
+                        fontWeight: '600'
+                      }}>
+                        Позиция {index + 1}
+                      </Text>
+                    )}
+                    {renderSaleDetails(details, tx.itemImageUri || loadedItemImages.get(tx.itemName) || null, tx.itemName)}
+                  </View>
+                );
+              })}
+            </View>
+          )}
+
+          {wholesaleTxs.length > 0 && wholesaleTxs.map(tx => {
+            const details = parseDetails(tx.details);
+            return details ? renderWholesaleDetails(details) : null;
+          })}
+
+          {updateTxs.length > 0 && saleTxs.length === 0 && wholesaleTxs.length === 0 &&
+            updateTxs.map(tx => {
+              const details = parseDetails(tx.details);
+              return details ? renderUpdateDetails(details) : null;
+            })
+          }
+        </View>
       );
     }
 
@@ -990,41 +1421,72 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
 
         {/* Content */}
         <ScrollView style={styles.modalContent} contentContainerStyle={styles.contentPadding}>
-          {/* Header with item info and image */}
-          <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: 16 }}>
-            {/* Left side - name, action, time */}
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.itemName, { color: colors.text.normal }]}>{mainTransaction.itemName}</Text>
-              <Text style={[styles.actionText, { color: colors.text.muted }]}>{getActionText()}</Text>
-              <Text style={[styles.timestamp, { color: colors.text.muted }]}>
-                {new Date(mainTransaction.timestamp * 1000).toLocaleString('ru-RU')}
-              </Text>
-            </View>
-            {/* Right side - item image */}
-            {(transactionImageUri || itemData?.imageUri) && (
-              <View style={{
-                marginLeft: 12,
-                borderRadius: 12,
-                overflow: 'hidden',
-                shadowColor: '#000',
-                shadowOffset: { width: 0, height: 2 },
-                shadowOpacity: 0.15,
-                shadowRadius: 4,
-                elevation: 3,
-              }}>
-                <Image
-                  source={{ uri: transactionImageUri || itemData?.imageUri || '' }}
-                  style={{
-                    width: 70,
-                    height: 70,
-                    borderRadius: 12,
-                    backgroundColor: colors.background.card,
-                  }}
-                  resizeMode="cover"
-                />
+          {/* Header with item info - images are now shown in each sale detail */}
+          {(() => {
+            // Для групповых транзакций - собираем все уникальные товары
+            const txList = relatedTransactions.length > 0 ? relatedTransactions : transactions;
+            const uniqueItems = txList.reduce((acc: { name: string; imageUri: string | null }[], tx) => {
+              if (!acc.find(item => item.name === tx.itemName)) {
+                acc.push({ name: tx.itemName, imageUri: tx.itemImageUri || null });
+              }
+              return acc;
+            }, []);
+
+            const isMultiItem = uniqueItems.length > 1;
+            const displayName = isMultiItem
+              ? `${uniqueItems[0].name} и еще ${uniqueItems.length - 1}`
+              : mainTransaction.itemName;
+
+            // Для одиночных транзакций показываем изображение в шапке
+            const showHeaderImage = !isMultiItem;
+            const singleImageUri = !isMultiItem ? (transactionImageUri || itemData?.imageUri) : null;
+
+            return (
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: 16 }}>
+                {/* Image for single item transactions */}
+                {showHeaderImage && (
+                  <View style={{ marginRight: 12 }}>
+                    {singleImageUri ? (
+                      <Image
+                        source={{ uri: singleImageUri }}
+                        style={{
+                          width: 70,
+                          height: 70,
+                          borderRadius: 12,
+                          backgroundColor: colors.background.card,
+                        }}
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <View style={{
+                        width: 70,
+                        height: 70,
+                        borderRadius: 12,
+                        backgroundColor: colors.background.card,
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                      }}>
+                        <MaterialIcons name="image" size={28} color={colors.text.muted} />
+                      </View>
+                    )}
+                  </View>
+                )}
+                {/* Name, action, time */}
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.itemName, { color: colors.text.normal }]}>{displayName}</Text>
+                  <Text style={[styles.actionText, { color: colors.text.muted }]}>{getActionText()}</Text>
+                  <Text style={[styles.timestamp, { color: colors.text.muted }]}>
+                    {new Date(mainTransaction.timestamp * 1000).toLocaleString('ru-RU')}
+                  </Text>
+                  {isMultiItem && (
+                    <Text style={{ color: colors.text.muted, fontSize: 12, marginTop: 4 }}>
+                      {uniqueItems.length} товаров в продаже
+                    </Text>
+                  )}
+                </View>
               </View>
-            )}
-          </View>
+            );
+          })()}
           {renderContent()}
         </ScrollView>
       </View>
@@ -1119,6 +1581,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
     textAlign: 'center',
     marginTop: 8,
+  },
+  divider: {
+    borderBottomWidth: 1,
+    marginVertical: 12,
   },
 });
 

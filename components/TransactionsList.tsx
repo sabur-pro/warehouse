@@ -194,10 +194,11 @@ const TransactionItem: React.FC<{
 };
 
 const GroupedTransactionItem: React.FC<{
-  transactions: Transaction[];
+  group: GroupedTransaction;
   onPress: (group: GroupedTransaction) => void;
   colors: ReturnType<typeof getThemeColors>;
-}> = ({ transactions, onPress, colors }) => {
+}> = ({ group, onPress, colors }) => {
+  const { transactions } = group;
   const mainTransaction = transactions[0];
 
   // Определяем тип группированной транзакции
@@ -217,13 +218,6 @@ const GroupedTransactionItem: React.FC<{
 
   const { icon, color } = getActionIconAndColor(mainAction);
   const formattedTime = new Date(mainTransaction.timestamp * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-  const group: GroupedTransaction = {
-    id: `group-${mainTransaction.id}`,
-    type: 'grouped',
-    transactions,
-    timestamp: mainTransaction.timestamp,
-    itemName: mainTransaction.itemName,
-  };
 
   return (
     <TouchableOpacity onPress={() => onPress(group)} activeOpacity={0.7}>
@@ -233,10 +227,10 @@ const GroupedTransactionItem: React.FC<{
         </View>
         <View style={styles.content}>
           <Text style={[styles.actionText, { color: colors.text.normal }]}>{actionText}</Text>
-          <Text style={[styles.itemName, { color: colors.text.muted }]} numberOfLines={1}>{mainTransaction.itemName}</Text>
+          <Text style={[styles.itemName, { color: colors.text.muted }]} numberOfLines={1}>{group.itemName}</Text>
           <Text style={[styles.details, { color: colors.text.muted }]} numberOfLines={1}>
             {transactions.length > 1
-              ? (mainAction === 'wholesale' ? 'Оптовая продажа и обновление' : 'Продажа и обновление') + ` - ${transactions.length} действия`
+              ? (mainAction === 'wholesale' ? `Оптовая продажа (${transactions.length} поз.)` : `Продажа товаров (${transactions.length} поз.)`)
               : parseDetailsType(mainTransaction.details).text
             }
           </Text>
@@ -282,32 +276,71 @@ const TransactionsList: React.FC<TransactionsListProps> = ({ onClose }) => {
 
       const currentTx = txs[i];
 
-      // Check if this is a sale/update/wholesale transaction that might have a related update
+      // Parse details to check for saleId
+      let currentSaleId: string | undefined;
+      try {
+        const details = JSON.parse(currentTx.details || '{}');
+        currentSaleId = details.saleId;
+        console.log(`🔍 TX ${currentTx.id}: action=${currentTx.action}, saleId=${currentSaleId || 'none'}, itemName=${currentTx.itemName}`);
+      } catch (e) {
+        console.log(`❌ TX ${currentTx.id}: Failed to parse details`);
+      }
+
+      // Check if this is a sale/update/wholesale transaction
       if (currentTx.action === 'sale' || currentTx.action === 'update' || currentTx.action === 'wholesale') {
-        // Try to find related transactions (same item, around the same time)
         const relatedTransactions: Transaction[] = [currentTx];
+        processedIds.add(currentTx.id); // Mark current as processed immediately
 
-        for (let j = i + 1; j < txs.length; j++) {
-          if (processedIds.has(txs[j].id)) continue;
+        // If we have a saleId, look for other transactions with the same saleId
+        if (currentSaleId) {
+          console.log(`🔗 Looking for transactions with saleId=${currentSaleId}`);
+          for (let j = i + 1; j < txs.length; j++) {
+            if (processedIds.has(txs[j].id)) continue;
 
-          // Check if transactions are related (same item and within 5 seconds)
-          if (txs[j].itemId === currentTx.itemId &&
-            Math.abs(txs[j].timestamp - currentTx.timestamp) < 5) {
-            relatedTransactions.push(txs[j]);
-            processedIds.add(txs[j].id);
+            let otherSaleId: string | undefined;
+            try {
+              const otherDetails = JSON.parse(txs[j].details || '{}');
+              otherSaleId = otherDetails.saleId;
+            } catch (e) {
+              // ignore
+            }
+
+            if (otherSaleId === currentSaleId) {
+              console.log(`   ✅ Found matching TX ${txs[j].id} with same saleId`);
+              relatedTransactions.push(txs[j]);
+              processedIds.add(txs[j].id);
+            }
+          }
+          console.log(`🔗 Total found for saleId=${currentSaleId}: ${relatedTransactions.length} transactions`);
+        }
+        // Fallback to old logic (same item, small time diff) if no saleId
+        else {
+          for (let j = i + 1; j < txs.length; j++) {
+            if (processedIds.has(txs[j].id)) continue;
+
+            if (txs[j].itemId === currentTx.itemId &&
+              Math.abs(txs[j].timestamp - currentTx.timestamp) < 5) {
+              relatedTransactions.push(txs[j]);
+              processedIds.add(txs[j].id);
+            }
           }
         }
 
         if (relatedTransactions.length > 1) {
-          // Group related transactions
+
+          // Determine item names summary
+          const uniqueItemNames = Array.from(new Set(relatedTransactions.map(t => t.itemName).filter(Boolean)));
+          const displayName = uniqueItemNames.length > 1
+            ? `${uniqueItemNames[0]} и еще ${uniqueItemNames.length - 1}`
+            : currentTx.itemName;
+
           result.push({
             id: `group-${currentTx.id}`,
             type: 'grouped',
             transactions: relatedTransactions,
             timestamp: currentTx.timestamp,
-            itemName: currentTx.itemName
+            itemName: displayName
           });
-          processedIds.add(currentTx.id);
           continue;
         }
       }
@@ -422,7 +455,7 @@ const TransactionsList: React.FC<TransactionsListProps> = ({ onClose }) => {
 
   const renderTransactionItem = ({ item }: { item: GroupedTransaction }) => {
     if (item.type === 'grouped') {
-      return <GroupedTransactionItem transactions={item.transactions} onPress={handleTransactionPress} colors={colors} />;
+      return <GroupedTransactionItem group={item} onPress={handleTransactionPress} colors={colors} />;
     } else {
       return <TransactionItem transaction={item.transactions[0]} onPress={handleTransactionPress} colors={colors} />;
     }

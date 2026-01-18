@@ -12,6 +12,7 @@ import {
     ScrollView,
     KeyboardAvoidingView,
     Platform,
+    Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -22,10 +23,22 @@ import { getAllClients, addClient, searchClients } from '../../database/database
 import { Client } from '../../database/types';
 import { Toast } from '../components/Toast';
 
+// Интерфейс данных продажи
+export interface SaleData {
+    clientId: number | null;
+    paymentMethod: 'cash' | 'card' | 'mixed';
+    bank?: 'alif' | 'dc';
+    cashAmount?: number;
+    cardAmount?: number;
+    discount?: { mode: 'amount' | 'percent'; value: number };
+    finalPrice: number;
+    subtotal: number;
+}
+
 interface CheckoutScreenProps {
     visible: boolean;
     onClose: () => void;
-    onConfirm: (clientId: number | null) => void;
+    onConfirm: (saleData: SaleData) => void;
 }
 
 const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onConfirm }) => {
@@ -58,6 +71,17 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
     const [toastVisible, setToastVisible] = useState(false);
     const [toastMessage, setToastMessage] = useState('');
     const [toastType, setToastType] = useState<'success' | 'error' | 'info'>('success');
+
+    // Скидка
+    const [showDiscount, setShowDiscount] = useState(false);
+    const [discountMode, setDiscountMode] = useState<'amount' | 'percent'>('amount'); // по умолчанию сумма
+    const [discountValue, setDiscountValue] = useState('');
+
+    // Оплата
+    const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'mixed' | null>(null);
+    const [selectedBank, setSelectedBank] = useState<'alif' | 'dc' | null>(null);
+    const [cashAmount, setCashAmount] = useState('');
+    const [cardAmount, setCardAmount] = useState('');
 
     const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
         setToastMessage(message);
@@ -97,6 +121,15 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
             setNewClientBirthday('');
             setSearchQuery('');
             setIsAddingClient(false);
+            // Сброс скидки
+            setShowDiscount(false);
+            setDiscountValue('');
+            setDiscountMode('amount');
+            // Сброс оплаты
+            setPaymentMethod(null);
+            setSelectedBank(null);
+            setCashAmount('');
+            setCardAmount('');
         }
     }, [visible]);
 
@@ -169,7 +202,46 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
 
     // Подтверждение заказа
     const handleConfirm = () => {
-        onConfirm(selectedClient?.id || null);
+        // Расчёт итоговой суммы
+        let finalPrice = cartTotals.totalRecommendedPrice;
+        const discountVal = parseFloat(discountValue) || 0;
+
+        if (showDiscount && discountVal > 0) {
+            if (discountMode === 'percent') {
+                finalPrice = cartTotals.totalRecommendedPrice - Math.round(cartTotals.totalRecommendedPrice * discountVal / 100);
+            } else {
+                finalPrice = cartTotals.totalRecommendedPrice - discountVal;
+            }
+        }
+        finalPrice = Math.max(0, finalPrice);
+
+        const saleData: SaleData = {
+            clientId: selectedClient?.id || null,
+            paymentMethod: paymentMethod!,
+            subtotal: cartTotals.totalRecommendedPrice,
+            finalPrice,
+        };
+
+        // Добавляем банк если это карточная или смешанная оплата
+        if ((paymentMethod === 'card' || paymentMethod === 'mixed') && selectedBank) {
+            saleData.bank = selectedBank;
+        }
+
+        // Добавляем суммы для смешанной оплаты
+        if (paymentMethod === 'mixed') {
+            saleData.cashAmount = parseFloat(cashAmount) || 0;
+            saleData.cardAmount = parseFloat(cardAmount) || 0;
+        }
+
+        // Добавляем скидку если есть
+        if (showDiscount && discountVal > 0) {
+            saleData.discount = {
+                mode: discountMode,
+                value: discountVal
+            };
+        }
+
+        onConfirm(saleData);
     };
 
     if (!visible) return null;
@@ -218,12 +290,171 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
                         <View style={[styles.divider, { backgroundColor: colors.border.normal }]} />
                         <View style={styles.summaryRow}>
                             <Text style={[styles.totalLabel, { color: colors.text.normal }]}>
+                                Подытог
+                            </Text>
+                            <Text style={[styles.summaryValue, { color: colors.text.normal }]}>
+                                {cartTotals.totalRecommendedPrice.toLocaleString()} сом
+                            </Text>
+                        </View>
+
+                        {/* Скидка в итого */}
+                        {showDiscount && discountValue && parseFloat(discountValue) > 0 && (
+                            <View style={styles.summaryRow}>
+                                <Text style={[styles.summaryLabel, { color: '#EF4444' }]}>
+                                    Скидка {discountMode === 'percent' ? `(${discountValue}%)` : ''}
+                                </Text>
+                                <Text style={[styles.summaryValue, { color: '#EF4444' }]}>
+                                    -{discountMode === 'percent'
+                                        ? Math.round(cartTotals.totalRecommendedPrice * parseFloat(discountValue) / 100).toLocaleString()
+                                        : parseFloat(discountValue).toLocaleString()} сом
+                                </Text>
+                            </View>
+                        )}
+
+                        <View style={[styles.divider, { backgroundColor: colors.border.normal }]} />
+                        <View style={styles.summaryRow}>
+                            <Text style={[styles.totalLabel, { color: colors.text.normal }]}>
                                 Итого
                             </Text>
                             <Text style={[styles.totalValue, { color: accentColor }]}>
-                                {cartTotals.totalPrice.toLocaleString()} сом
+                                {(() => {
+                                    let finalPrice = cartTotals.totalRecommendedPrice;
+                                    if (showDiscount && discountValue && parseFloat(discountValue) > 0) {
+                                        if (discountMode === 'percent') {
+                                            finalPrice = cartTotals.totalRecommendedPrice - Math.round(cartTotals.totalRecommendedPrice * parseFloat(discountValue) / 100);
+                                        } else {
+                                            finalPrice = cartTotals.totalRecommendedPrice - parseFloat(discountValue);
+                                        }
+                                    }
+                                    return Math.max(0, finalPrice).toLocaleString();
+                                })()} сом
                             </Text>
                         </View>
+                    </View>
+
+                    {/* Скидка */}
+                    <View style={[styles.section, { backgroundColor: colors.background.card }]}>
+                        <TouchableOpacity
+                            style={styles.discountHeader}
+                            onPress={() => setShowDiscount(!showDiscount)}
+                            activeOpacity={0.7}
+                        >
+                            <View style={styles.discountHeaderLeft}>
+                                <Ionicons
+                                    name="pricetag-outline"
+                                    size={20}
+                                    color={showDiscount && discountValue ? '#EF4444' : colors.text.muted}
+                                />
+                                <Text style={[styles.sectionTitle, { color: colors.text.normal, marginBottom: 0, marginLeft: 8 }]}>
+                                    Скидка
+                                </Text>
+                                {showDiscount && discountValue && parseFloat(discountValue) > 0 && (
+                                    <View style={[styles.discountBadge, { backgroundColor: '#EF4444' }]}>
+                                        <Text style={styles.discountBadgeText}>
+                                            {discountMode === 'percent'
+                                                ? `-${discountValue}%`
+                                                : `-${parseFloat(discountValue).toLocaleString()}`}
+                                        </Text>
+                                    </View>
+                                )}
+                            </View>
+                            <Ionicons
+                                name={showDiscount ? "chevron-up" : "chevron-down"}
+                                size={20}
+                                color={colors.text.muted}
+                            />
+                        </TouchableOpacity>
+
+                        {showDiscount && (
+                            <View style={styles.discountContent}>
+                                {/* Переключатель режима */}
+                                <View style={[styles.discountModeSelector, { backgroundColor: colors.background.screen }]}>
+                                    <TouchableOpacity
+                                        style={[
+                                            styles.discountModeButton,
+                                            discountMode === 'amount' && { backgroundColor: accentColor }
+                                        ]}
+                                        onPress={() => {
+                                            setDiscountMode('amount');
+                                            setDiscountValue('');
+                                        }}
+                                    >
+                                        <Text style={[
+                                            styles.discountModeText,
+                                            { color: discountMode === 'amount' ? 'white' : colors.text.muted }
+                                        ]}>
+                                            Сумма
+                                        </Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        style={[
+                                            styles.discountModeButton,
+                                            discountMode === 'percent' && { backgroundColor: accentColor }
+                                        ]}
+                                        onPress={() => {
+                                            setDiscountMode('percent');
+                                            setDiscountValue('');
+                                        }}
+                                    >
+                                        <Text style={[
+                                            styles.discountModeText,
+                                            { color: discountMode === 'percent' ? 'white' : colors.text.muted }
+                                        ]}>
+                                            Процент
+                                        </Text>
+                                    </TouchableOpacity>
+                                </View>
+
+                                {/* Поле ввода */}
+                                <View style={styles.discountInputContainer}>
+                                    <TextInput
+                                        style={[styles.discountInput, {
+                                            backgroundColor: colors.background.screen,
+                                            color: colors.text.normal,
+                                            borderColor: colors.border.normal,
+                                        }]}
+                                        placeholder={discountMode === 'percent' ? "Введите %" : "Введите сумму"}
+                                        placeholderTextColor={colors.text.muted}
+                                        value={discountValue}
+                                        onChangeText={(text) => {
+                                            // Только цифры и точка
+                                            const filtered = text.replace(/[^0-9.]/g, '');
+                                            // Ограничение процента до 100
+                                            if (discountMode === 'percent' && parseFloat(filtered) > 100) {
+                                                setDiscountValue('100');
+                                            } else {
+                                                setDiscountValue(filtered);
+                                            }
+                                        }}
+                                        keyboardType="numeric"
+                                    />
+                                    <Text style={[styles.discountSuffix, { color: colors.text.muted }]}>
+                                        {discountMode === 'percent' ? '%' : 'сом'}
+                                    </Text>
+                                </View>
+
+                                {/* Показ расчёта для процента */}
+                                {discountMode === 'percent' && discountValue && parseFloat(discountValue) > 0 && (
+                                    <View style={[styles.discountCalculation, { backgroundColor: '#EF444410' }]}>
+                                        <Text style={[styles.discountCalcText, { color: '#EF4444' }]}>
+                                            {discountValue}% от {cartTotals.totalRecommendedPrice.toLocaleString()} = {Math.round(cartTotals.totalRecommendedPrice * parseFloat(discountValue) / 100).toLocaleString()} сом
+                                        </Text>
+                                    </View>
+                                )}
+
+                                {/* Кнопка очистки */}
+                                {discountValue && (
+                                    <TouchableOpacity
+                                        style={styles.clearDiscountButton}
+                                        onPress={() => setDiscountValue('')}
+                                    >
+                                        <Text style={[styles.clearDiscountText, { color: colors.text.muted }]}>
+                                            Убрать скидку
+                                        </Text>
+                                    </TouchableOpacity>
+                                )}
+                            </View>
+                        )}
                     </View>
 
                     {/* Клиент */}
@@ -268,18 +499,314 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
                             Необязательно. Клиент будет привязан к продаже.
                         </Text>
                     </View>
+
+                    {/* Способ оплаты */}
+                    <View style={[styles.section, { backgroundColor: colors.background.card }]}>
+                        <Text style={[styles.sectionTitle, { color: colors.text.normal }]}>
+                            Способ оплаты *
+                        </Text>
+
+                        {/* Варианты оплаты */}
+                        <View style={styles.paymentOptions}>
+                            {/* Наличные */}
+                            <TouchableOpacity
+                                style={[
+                                    styles.paymentOption,
+                                    { borderColor: paymentMethod === 'cash' ? accentColor : colors.border.normal },
+                                    paymentMethod === 'cash' && { backgroundColor: accentColor + '15' }
+                                ]}
+                                onPress={() => {
+                                    setPaymentMethod('cash');
+                                    setCashAmount('');
+                                    setCardAmount('');
+                                }}
+                            >
+                                <Ionicons
+                                    name="cash-outline"
+                                    size={24}
+                                    color={paymentMethod === 'cash' ? accentColor : colors.text.muted}
+                                />
+                                <Text style={[
+                                    styles.paymentOptionText,
+                                    { color: paymentMethod === 'cash' ? accentColor : colors.text.normal }
+                                ]}>
+                                    Наличные
+                                </Text>
+                                {paymentMethod === 'cash' && (
+                                    <Ionicons name="checkmark-circle" size={20} color={accentColor} />
+                                )}
+                            </TouchableOpacity>
+
+                            {/* Карта */}
+                            <TouchableOpacity
+                                style={[
+                                    styles.paymentOption,
+                                    { borderColor: paymentMethod === 'card' ? accentColor : colors.border.normal },
+                                    paymentMethod === 'card' && { backgroundColor: accentColor + '15' }
+                                ]}
+                                onPress={() => {
+                                    setPaymentMethod('card');
+                                    setSelectedBank(null);
+                                    setCashAmount('');
+                                    setCardAmount('');
+                                }}
+                            >
+                                <Ionicons
+                                    name="card-outline"
+                                    size={24}
+                                    color={paymentMethod === 'card' ? accentColor : colors.text.muted}
+                                />
+                                <Text style={[
+                                    styles.paymentOptionText,
+                                    { color: paymentMethod === 'card' ? accentColor : colors.text.normal }
+                                ]}>
+                                    Карта
+                                </Text>
+                                {paymentMethod === 'card' && (
+                                    <Ionicons name="checkmark-circle" size={20} color={accentColor} />
+                                )}
+                            </TouchableOpacity>
+
+                            {/* Смешанная */}
+                            <TouchableOpacity
+                                style={[
+                                    styles.paymentOption,
+                                    { borderColor: paymentMethod === 'mixed' ? accentColor : colors.border.normal },
+                                    paymentMethod === 'mixed' && { backgroundColor: accentColor + '15' }
+                                ]}
+                                onPress={() => {
+                                    setPaymentMethod('mixed');
+                                    setSelectedBank(null);
+                                    setCashAmount('');
+                                    setCardAmount('');
+                                }}
+                            >
+                                <Ionicons
+                                    name="wallet-outline"
+                                    size={24}
+                                    color={paymentMethod === 'mixed' ? accentColor : colors.text.muted}
+                                />
+                                <Text style={[
+                                    styles.paymentOptionText,
+                                    { color: paymentMethod === 'mixed' ? accentColor : colors.text.normal }
+                                ]}>
+                                    Смешанная
+                                </Text>
+                                {paymentMethod === 'mixed' && (
+                                    <Ionicons name="checkmark-circle" size={20} color={accentColor} />
+                                )}
+                            </TouchableOpacity>
+                        </View>
+
+                        {/* Выбор банка при оплате картой или смешанной */}
+                        {(paymentMethod === 'card' || paymentMethod === 'mixed') && (
+                            <View style={styles.bankSelector}>
+                                <Text style={[styles.bankSelectorTitle, { color: colors.text.muted }]}>
+                                    Выберите банк
+                                </Text>
+                                <View style={styles.bankOptions}>
+                                    {/* АлифБанк */}
+                                    <TouchableOpacity
+                                        style={[
+                                            styles.bankOption,
+                                            {
+                                                borderColor: selectedBank === 'alif' ? '#00C853' : colors.border.normal,
+                                                backgroundColor: selectedBank === 'alif' ? '#00C85310' : 'transparent'
+                                            }
+                                        ]}
+                                        onPress={() => setSelectedBank('alif')}
+                                        activeOpacity={0.7}
+                                    >
+                                        <Image
+                                            source={require('../../assets/alif.png')}
+                                            style={styles.bankLogo}
+                                            resizeMode="contain"
+                                        />
+                                        <Text style={[styles.bankName, { color: colors.text.normal }]}>
+                                            АлифБанк
+                                        </Text>
+                                        {selectedBank === 'alif' && (
+                                            <Ionicons name="checkmark-circle" size={20} color="#00C853" />
+                                        )}
+                                    </TouchableOpacity>
+
+                                    {/* ДушанбеСити */}
+                                    <TouchableOpacity
+                                        style={[
+                                            styles.bankOption,
+                                            {
+                                                borderColor: selectedBank === 'dc' ? '#1976D2' : colors.border.normal,
+                                                backgroundColor: selectedBank === 'dc' ? '#1976D210' : 'transparent'
+                                            }
+                                        ]}
+                                        onPress={() => setSelectedBank('dc')}
+                                        activeOpacity={0.7}
+                                    >
+                                        <Image
+                                            source={require('../../assets/dc.png')}
+                                            style={styles.bankLogo}
+                                            resizeMode="contain"
+                                        />
+                                        <Text style={[styles.bankName, { color: colors.text.normal }]}>
+                                            ДушанбеСити
+                                        </Text>
+                                        {selectedBank === 'dc' && (
+                                            <Ionicons name="checkmark-circle" size={20} color="#1976D2" />
+                                        )}
+                                    </TouchableOpacity>
+                                </View>
+                            </View>
+                        )}
+
+                        {/* Поля для смешанной оплаты */}
+                        {paymentMethod === 'mixed' && (
+                            <View style={styles.mixedPaymentFields}>
+                                <View style={styles.mixedPaymentRow}>
+                                    <View style={styles.mixedPaymentLabel}>
+                                        <Ionicons name="cash-outline" size={18} color={colors.text.muted} />
+                                        <Text style={[styles.mixedPaymentLabelText, { color: colors.text.muted }]}>
+                                            Наличные
+                                        </Text>
+                                    </View>
+                                    <View style={styles.mixedPaymentInputWrapper}>
+                                        <TextInput
+                                            style={[styles.mixedPaymentInput, {
+                                                backgroundColor: colors.background.screen,
+                                                color: colors.text.normal,
+                                                borderColor: colors.border.normal,
+                                            }]}
+                                            placeholder="0"
+                                            placeholderTextColor={colors.text.muted}
+                                            value={cashAmount}
+                                            onChangeText={(text) => setCashAmount(text.replace(/[^0-9]/g, ''))}
+                                            keyboardType="numeric"
+                                        />
+                                        <Text style={[styles.mixedPaymentSuffix, { color: colors.text.muted }]}>сом</Text>
+                                    </View>
+                                </View>
+
+                                <View style={styles.mixedPaymentRow}>
+                                    <View style={styles.mixedPaymentLabel}>
+                                        <Ionicons name="card-outline" size={18} color={colors.text.muted} />
+                                        <Text style={[styles.mixedPaymentLabelText, { color: colors.text.muted }]}>
+                                            Карта
+                                        </Text>
+                                    </View>
+                                    <View style={styles.mixedPaymentInputWrapper}>
+                                        <TextInput
+                                            style={[styles.mixedPaymentInput, {
+                                                backgroundColor: colors.background.screen,
+                                                color: colors.text.normal,
+                                                borderColor: colors.border.normal,
+                                            }]}
+                                            placeholder="0"
+                                            placeholderTextColor={colors.text.muted}
+                                            value={cardAmount}
+                                            onChangeText={(text) => setCardAmount(text.replace(/[^0-9]/g, ''))}
+                                            keyboardType="numeric"
+                                        />
+                                        <Text style={[styles.mixedPaymentSuffix, { color: colors.text.muted }]}>сом</Text>
+                                    </View>
+                                </View>
+
+                                {/* Подсказка о сумме */}
+                                {(() => {
+                                    const cash = parseFloat(cashAmount) || 0;
+                                    const card = parseFloat(cardAmount) || 0;
+                                    const total = cash + card;
+                                    let finalPrice = cartTotals.totalRecommendedPrice;
+                                    if (showDiscount && discountValue && parseFloat(discountValue) > 0) {
+                                        if (discountMode === 'percent') {
+                                            finalPrice = cartTotals.totalRecommendedPrice - Math.round(cartTotals.totalRecommendedPrice * parseFloat(discountValue) / 100);
+                                        } else {
+                                            finalPrice = cartTotals.totalRecommendedPrice - parseFloat(discountValue);
+                                        }
+                                    }
+                                    const diff = finalPrice - total;
+
+                                    if (total > 0) {
+                                        return (
+                                            <View style={[styles.mixedPaymentHint, {
+                                                backgroundColor: diff === 0 ? '#10B98110' : diff > 0 ? '#F59E0B10' : '#EF444410'
+                                            }]}>
+                                                <Text style={[styles.mixedPaymentHintText, {
+                                                    color: diff === 0 ? '#10B981' : diff > 0 ? '#F59E0B' : '#EF4444'
+                                                }]}>
+                                                    {diff === 0
+                                                        ? `✓ Сумма совпадает: ${total.toLocaleString()} сом`
+                                                        : diff > 0
+                                                            ? `Не хватает: ${diff.toLocaleString()} сом`
+                                                            : `Переплата: ${Math.abs(diff).toLocaleString()} сом`}
+                                                </Text>
+                                            </View>
+                                        );
+                                    }
+                                    return null;
+                                })()}
+                            </View>
+                        )}
+                    </View>
                 </ScrollView>
 
                 {/* Кнопка подтверждения */}
                 <View style={[styles.footer, { borderTopColor: colors.border.normal }]}>
-                    <TouchableOpacity
-                        style={[styles.confirmButton, { backgroundColor: accentColor }]}
-                        onPress={handleConfirm}
-                        activeOpacity={0.8}
-                    >
-                        <Text style={styles.confirmButtonText}>Оформить продажу</Text>
-                        <Ionicons name="checkmark-circle" size={22} color="white" />
-                    </TouchableOpacity>
+                    {(() => {
+                        // Расчёт итоговой суммы
+                        let finalPrice = cartTotals.totalRecommendedPrice;
+                        if (showDiscount && discountValue && parseFloat(discountValue) > 0) {
+                            if (discountMode === 'percent') {
+                                finalPrice = cartTotals.totalRecommendedPrice - Math.round(cartTotals.totalRecommendedPrice * parseFloat(discountValue) / 100);
+                            } else {
+                                finalPrice = cartTotals.totalRecommendedPrice - parseFloat(discountValue);
+                            }
+                        }
+                        finalPrice = Math.max(0, finalPrice);
+
+                        // Проверка валидности оплаты
+                        let isPaymentValid = !!paymentMethod;
+                        let buttonText = 'Выберите способ оплаты';
+
+                        // Проверка выбора банка для карточной оплаты
+                        if ((paymentMethod === 'card' || paymentMethod === 'mixed') && !selectedBank) {
+                            isPaymentValid = false;
+                            buttonText = 'Выберите банк';
+                        }
+
+                        if (paymentMethod === 'mixed') {
+                            const cash = parseFloat(cashAmount) || 0;
+                            const card = parseFloat(cardAmount) || 0;
+                            const total = cash + card;
+
+                            if (total < finalPrice) {
+                                isPaymentValid = false;
+                                buttonText = `Не хватает ${(finalPrice - total).toLocaleString()} сом`;
+                            } else if (total > finalPrice) {
+                                isPaymentValid = false;
+                                buttonText = `Переплата ${(total - finalPrice).toLocaleString()} сом`;
+                            } else {
+                                buttonText = 'Оформить продажу';
+                            }
+                        } else if (paymentMethod) {
+                            buttonText = 'Оформить продажу';
+                        }
+
+                        return (
+                            <TouchableOpacity
+                                style={[
+                                    styles.confirmButton,
+                                    { backgroundColor: isPaymentValid ? accentColor : colors.border.normal }
+                                ]}
+                                onPress={handleConfirm}
+                                activeOpacity={0.8}
+                                disabled={!isPaymentValid}
+                            >
+                                <Text style={[styles.confirmButtonText, { opacity: isPaymentValid ? 1 : 0.5 }]}>
+                                    {buttonText}
+                                </Text>
+                                <Ionicons name="checkmark-circle" size={22} color="white" style={{ opacity: isPaymentValid ? 1 : 0.5 }} />
+                            </TouchableOpacity>
+                        );
+                    })()}
                 </View>
 
                 {/* Модальное окно выбора клиента */}
@@ -752,6 +1279,175 @@ const styles = StyleSheet.create({
         paddingVertical: 14,
         borderRadius: 10,
         borderWidth: 1,
+    },
+    // Стили скидки
+    discountHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    discountHeaderLeft: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    discountBadge: {
+        marginLeft: 8,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 6,
+    },
+    discountBadgeText: {
+        color: 'white',
+        fontSize: 12,
+        fontWeight: '600',
+    },
+    discountContent: {
+        marginTop: 16,
+    },
+    discountModeSelector: {
+        flexDirection: 'row',
+        borderRadius: 10,
+        padding: 4,
+    },
+    discountModeButton: {
+        flex: 1,
+        paddingVertical: 10,
+        alignItems: 'center',
+        borderRadius: 8,
+    },
+    discountModeText: {
+        fontSize: 14,
+        fontWeight: '500',
+    },
+    discountInputContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginTop: 12,
+    },
+    discountInput: {
+        flex: 1,
+        fontSize: 18,
+        paddingHorizontal: 16,
+        paddingVertical: 14,
+        borderRadius: 10,
+        borderWidth: 1,
+    },
+    discountSuffix: {
+        marginLeft: 12,
+        fontSize: 16,
+        fontWeight: '500',
+    },
+    discountCalculation: {
+        marginTop: 12,
+        padding: 12,
+        borderRadius: 8,
+    },
+    discountCalcText: {
+        fontSize: 14,
+        fontWeight: '500',
+        textAlign: 'center',
+    },
+    clearDiscountButton: {
+        marginTop: 12,
+        alignItems: 'center',
+    },
+    clearDiscountText: {
+        fontSize: 14,
+    },
+    // Стили оплаты
+    paymentOptions: {
+        gap: 10,
+    },
+    paymentOption: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        padding: 14,
+        borderRadius: 12,
+        borderWidth: 1.5,
+        gap: 12,
+    },
+    paymentOptionText: {
+        flex: 1,
+        fontSize: 15,
+        fontWeight: '500',
+    },
+    mixedPaymentFields: {
+        marginTop: 16,
+        gap: 12,
+    },
+    mixedPaymentRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    mixedPaymentLabel: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    mixedPaymentLabelText: {
+        fontSize: 14,
+    },
+    mixedPaymentInputWrapper: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    mixedPaymentInput: {
+        width: 120,
+        fontSize: 16,
+        paddingHorizontal: 14,
+        paddingVertical: 10,
+        borderRadius: 8,
+        borderWidth: 1,
+        textAlign: 'right',
+    },
+    mixedPaymentSuffix: {
+        marginLeft: 8,
+        fontSize: 14,
+    },
+    mixedPaymentHint: {
+        marginTop: 4,
+        padding: 10,
+        borderRadius: 8,
+    },
+    mixedPaymentHintText: {
+        fontSize: 13,
+        fontWeight: '500',
+        textAlign: 'center',
+    },
+    // Стили выбора банка
+    bankSelector: {
+        marginTop: 16,
+    },
+    bankSelectorTitle: {
+        fontSize: 13,
+        fontWeight: '500',
+        marginBottom: 10,
+        textTransform: 'uppercase',
+        letterSpacing: 0.5,
+    },
+    bankOptions: {
+        flexDirection: 'row',
+        gap: 12,
+    },
+    bankOption: {
+        flex: 1,
+        flexDirection: 'column',
+        alignItems: 'center',
+        padding: 16,
+        borderRadius: 12,
+        borderWidth: 2,
+        gap: 8,
+    },
+    bankLogo: {
+        width: 48,
+        height: 48,
+        borderRadius: 8,
+    },
+    bankName: {
+        fontSize: 13,
+        fontWeight: '500',
+        textAlign: 'center',
     },
 });
 

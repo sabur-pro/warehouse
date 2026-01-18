@@ -342,19 +342,40 @@ class SyncService {
         console.log(`✅ Successfully uploaded ${successfulImageUploads} image(s)`);
       }
 
-      // 2. Получить items и transactions для синхронизации
+      // 2. Получить items, transactions и clients для синхронизации
       const allItems = await getAllWithRetry<any>(db, 'SELECT * FROM items WHERE needsSync=1');
       const allTransactions = await getAllWithRetry<any>(db, 'SELECT * FROM transactions WHERE needsSync=1');
+      const allClientsToSync = await getAllWithRetry<any>(db, 'SELECT * FROM clients WHERE needsSync=1');
 
-      if (allItems.length === 0 && allTransactions.length === 0) {
-        console.log('✅ Nothing to sync');
+      // Логируем общее количество клиентов в локальной БД
+      const totalClientsInDb = await getFirstWithRetry<{ count: number }>(db, 'SELECT COUNT(*) as count FROM clients');
+      console.log(`\n📊 ============ LOCAL DATABASE STATS ============`);
+      console.log(`📦 Total items in local DB: ${(await getFirstWithRetry<{ count: number }>(db, 'SELECT COUNT(*) as count FROM items'))?.count || 0}`);
+      console.log(`📦 Items needing sync: ${allItems.length}`);
+      console.log(`📋 Total transactions in local DB: ${(await getFirstWithRetry<{ count: number }>(db, 'SELECT COUNT(*) as count FROM transactions'))?.count || 0}`);
+      console.log(`📋 Transactions needing sync: ${allTransactions.length}`);
+      console.log(`👥 Total clients in local DB: ${totalClientsInDb?.count || 0}`);
+      console.log(`👥 Clients needing sync: ${allClientsToSync.length}`);
+
+      if (allClientsToSync.length > 0) {
+        console.log(`📋 Clients to sync details:`, allClientsToSync.map((c: any) => ({
+          id: c.id,
+          name: c.name,
+          serverId: c.serverId,
+          needsSync: c.needsSync,
+          uuid: c.uuid
+        })));
+      }
+
+      if (allItems.length === 0 && allTransactions.length === 0 && allClientsToSync.length === 0) {
+        console.log('✅ Nothing to sync (no items, transactions, or clients with needsSync=1)');
         if (this.onSyncProgress) {
           this.onSyncProgress({ phase: 'complete', current: 0, total: 0, message: 'Нет данных для синхронизации' });
         }
         return;
       }
 
-      console.log(`📤 Syncing ${allItems.length} items and ${allTransactions.length} transactions (batch size: ${this.BATCH_SIZE})`);
+      console.log(`📤 Syncing ${allItems.length} items, ${allTransactions.length} transactions, ${allClientsToSync.length} clients (batch size: ${this.BATCH_SIZE})`);
 
       // 3. Разбить на batches
       const itemBatches = this.chunk(allItems, this.BATCH_SIZE);
@@ -447,19 +468,38 @@ class SyncService {
           });
         }
 
+        // Для каждой транзакции получаем itemServerId из items
+        const transactionsWithServerId = await Promise.all(
+          batch.map(async (tx: any) => {
+            let itemServerId: number | null = null;
+            if (tx.itemId) {
+              const item = await getFirstWithRetry<{ serverId: number }>(
+                db,
+                'SELECT serverId FROM items WHERE id = ?',
+                [tx.itemId]
+              );
+              if (item?.serverId) {
+                itemServerId = item.serverId;
+              }
+            }
+            return {
+              localId: tx.id,
+              serverId: tx.serverId,
+              itemId: tx.itemId,
+              itemServerId: itemServerId, // Добавляем серверный ID товара
+              action: tx.action,
+              itemName: tx.itemName,
+              timestamp: tx.timestamp,
+              details: tx.details,
+              isDeleted: tx.isDeleted === 1,
+              uuid: tx.uuid,
+            };
+          })
+        );
+
         const payload = {
           items: [], // Transactions только в этом batch
-          transactions: batch.map((tx: any) => ({
-            localId: tx.id,
-            serverId: tx.serverId,
-            itemId: tx.itemId,
-            action: tx.action,
-            itemName: tx.itemName,
-            timestamp: tx.timestamp,
-            details: tx.details,
-            isDeleted: tx.isDeleted === 1,
-            uuid: tx.uuid,
-          })),
+          transactions: transactionsWithServerId,
         };
 
         const responseData = await this.sendBatchWithRetry(
@@ -492,7 +532,12 @@ class SyncService {
 
       // 6. Отправить clients batch по batch
       const allClients = await getAllWithRetry<any>(db, 'SELECT * FROM clients WHERE needsSync=1');
-      console.log(`📤 Syncing ${allClients.length} clients`);
+      console.log(`\n👥 ============ CLIENTS PUSH ============`);
+      console.log(`📤 Found ${allClients.length} clients with needsSync=1`);
+
+      if (allClients.length > 0) {
+        console.log(`📋 Clients to sync:`, allClients.map((c: any) => ({ id: c.id, name: c.name, serverId: c.serverId, uuid: c.uuid })));
+      }
 
       const clientBatches = this.chunk(allClients, this.BATCH_SIZE);
       let failedClientsCount = 0;
@@ -521,10 +566,10 @@ class SyncService {
             address: client.address,
             notes: client.notes,
             birthday: client.birthday,
-            isDeleted: client.isDeleted ?? false,
+            isDeleted: client.isDeleted === 1 || client.isDeleted === true,
           })),
         };
-        console.log('📦 Sending client batch:', JSON.stringify(payload.clients, null, 2));
+        console.log(`📦 Sending client batch ${i + 1}/${clientBatches.length}:`, JSON.stringify(payload.clients, null, 2));
 
         const responseData = await this.sendBatchWithRetry(
           api,
@@ -535,16 +580,20 @@ class SyncService {
           clientBatches.length
         );
 
+        console.log(`📥 Server response for clients batch:`, JSON.stringify(responseData?.clients || [], null, 2));
+
         if (responseData) {
           for (const client of responseData.clients || []) {
+            console.log(`✅ Client synced: localId=${client.localId} -> serverId=${client.serverId}`);
             await runWithRetry(
               db,
               'UPDATE clients SET serverId=?, needsSync=0, updatedAt=? WHERE id=?',
               [client.serverId, Date.now(), client.localId]
             );
           }
-          console.log(`✅ Clients batch ${i + 1}/${clientBatches.length} synced`);
+          console.log(`✅ Clients batch ${i + 1}/${clientBatches.length} synced (${responseData.clients?.length || 0} clients)`);
         } else {
+          console.log(`❌ Clients batch ${i + 1}/${clientBatches.length} failed`);
           failedClientsCount += batch.length;
         }
       }
@@ -1100,15 +1149,62 @@ class SyncService {
 
       console.log(`✅ Transactions sync completed: ${processedTransactions} transactions`);
 
+      // === ЗАГРУЗКА CLIENTS ПАРТИЯМИ (для админа) ===
+      let clientsCursor = 0;
+      let clientsHasMore = true;
+      let processedClients = 0;
+
+      console.log('🔄 Starting clients pull for admin...');
+
+      while (clientsHasMore) {
+        if (this.onSyncProgress) {
+          this.onSyncProgress({
+            phase: 'syncing_clients',
+            current: processedItems + processedTransactions + processedClients,
+            total: totalCount,
+            message: `Загрузка клиентов... ${processedClients}`,
+          });
+        }
+
+        const response = await api.get('/sync/admin/pull', {
+          params: {
+            lastSyncAt: lastSyncAt ? new Date(lastSyncAt).toISOString() : undefined,
+            type: 'clients',
+            limit: PULL_BATCH_SIZE,
+            cursor: clientsCursor,
+          },
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+
+        const { clients = [], clientsNextCursor, hasMore, totalClientsCount = 0 } = response.data;
+
+        console.log(`📥 Received ${clients.length} clients (cursor: ${clientsCursor}, hasMore: ${hasMore}, total: ${totalClientsCount})`);
+
+        for (const client of clients) {
+          if (client.isDeleted) {
+            console.log(`🗑️ Client ${client.id} is deleted on server, removing locally`);
+            await runWithRetry(db, 'DELETE FROM clients WHERE serverId=?', [client.id]);
+          } else {
+            await this.upsertClient(client);
+          }
+          processedClients++;
+        }
+
+        clientsCursor = clientsNextCursor || 0;
+        clientsHasMore = hasMore && clients.length > 0;
+      }
+
+      console.log(`✅ Clients sync completed: ${processedClients} clients`);
+
       // Обновить lastSyncAt
       await this.updateLastSyncTimestamp();
 
       if (this.onSyncProgress) {
         this.onSyncProgress({
           phase: 'complete',
-          current: totalCount,
-          total: totalCount,
-          message: `Синхронизировано: ${processedItems} товаров, ${processedTransactions} записей`,
+          current: totalCount + processedClients,
+          total: totalCount + processedClients,
+          message: `Синхронизировано: ${processedItems} товаров, ${processedTransactions} записей, ${processedClients} клиентов`,
         });
       }
 
@@ -1363,6 +1459,8 @@ class SyncService {
   private async upsertClient(client: any): Promise<void> {
     const db = await getDatabaseInstance();
 
+    console.log(`📥 upsertClient: id=${client.id}, name=${client.name}, uuid=${client.uuid}, birthday=${client.birthday}`);
+
     // Проверить существует ли client с serverId или uuid
     const existing = await getFirstWithRetry<{ id: number }>(
       db,
@@ -1371,23 +1469,27 @@ class SyncService {
     );
 
     if (existing) {
+      console.log(`📝 Updating existing client localId=${existing.id}`);
       await runWithRetry(db, `
         UPDATE clients SET
-          serverId=?, name=?, phone=?, address=?, notes=?,
+          serverId=?, name=?, phone=?, address=?, notes=?, birthday=?,
           isDeleted=?, needsSync=0, updatedAt=?
         WHERE id=?
       `, [
-        client.id, client.name, client.phone, client.address, client.notes,
+        client.id, client.name, client.phone || null, client.address || null,
+        client.notes || null, client.birthday || null,
         client.isDeleted ? 1 : 0, Date.now(), existing.id
       ]);
     } else {
+      console.log(`➕ Inserting new client`);
       await runWithRetry(db, `
         INSERT INTO clients (
-          serverId, uuid, name, phone, address, notes,
+          serverId, uuid, name, phone, address, notes, birthday,
           isDeleted, needsSync, createdAt, updatedAt
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
       `, [
-        client.id, client.uuid, client.name, client.phone, client.address, client.notes,
+        client.id, client.uuid, client.name, client.phone || null,
+        client.address || null, client.notes || null, client.birthday || null,
         client.isDeleted ? 1 : 0, Date.now(), Date.now()
       ]);
     }
