@@ -587,7 +587,7 @@ const SettingsScreen: React.FC = () => {
         <SectionHeader title="О приложении" />
 
         <View style={[styles.appInfo, { backgroundColor: colors.background.card }]}>
-          <Text style={[styles.appName, { color: colors.text.normal }]}>Умный склад</Text>
+          <Text style={[styles.appName, { color: colors.text.normal }]}>Norov</Text>
           <Text style={[styles.appVersion, { color: colors.text.muted }]}>Версия 1.0.3</Text>
           <Text style={[styles.appDescription, { color: colors.text.muted }]}>
             Система управления складскими запасами с современным интерфейсом и аналитикой созданно командой NOROV

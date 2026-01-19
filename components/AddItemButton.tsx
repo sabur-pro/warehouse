@@ -221,10 +221,13 @@ export const AddItemButton = () => {
       const result = useCamera
         ? await ImagePicker.launchCameraAsync({
           allowsEditing: true,
+          aspect: [1, 1], // Квадратное соотношение для сохранения пропорций при сжатии
           quality: 1.0, // Высокое качество для последующего сжатия
+          cameraType: ImagePicker.CameraType.back, // Задняя камера для товаров
         })
         : await ImagePicker.launchImageLibraryAsync({
           allowsEditing: true,
+          aspect: [1, 1], // Квадратное соотношение для сохранения пропорций
           quality: 1.0, // Высокое качество для последующего сжатия
         });
 

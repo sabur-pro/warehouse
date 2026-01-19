@@ -1,14 +1,16 @@
 // src/screens/WarehouseScreen.tsx
 import React, { useState, useRef } from 'react';
-import { View, StyleSheet, TouchableOpacity, Text } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, Text, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useNavigation } from '@react-navigation/native';
 import { ItemList } from '../../components/ItemList';
 import { AddItemButton } from '../../components/AddItemButton';
 import { QRScanner } from '../../components/QRScanner';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
+import { useCart } from '../contexts/CartContext';
 import { getThemeColors, shadows } from '../../constants/theme';
 
 interface ItemListRef {
@@ -20,6 +22,8 @@ const WarehouseScreen: React.FC = () => {
   const { user, isAssistant } = useAuth();
   const { isDark } = useTheme();
   const colors = getThemeColors(isDark);
+  const { cartItems } = useCart();
+  const navigation = useNavigation<any>();
   const [scannerVisible, setScannerVisible] = useState(false);
   const itemListRef = useRef<ItemListRef>(null);
 
@@ -63,6 +67,28 @@ const WarehouseScreen: React.FC = () => {
         <AddItemButton />
       )}
 
+      {/* Фиксированная кнопка "В корзину" - только для ассистента и только если есть товары в корзине */}
+      {isAssistant() && cartItems.length > 0 && (
+        <View style={styles.cartButtonContainer}>
+          <TouchableOpacity
+            onPress={() => navigation.navigate('Cart')}
+            style={[styles.cartButton, {
+              backgroundColor: isDark ? colors.primary.gold : colors.primary.purple,
+              shadowColor: isDark ? colors.primary.gold : colors.primary.purple,
+            }]}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="cart" size={22} color="#fff" style={{ marginRight: 8 }} />
+            <Text style={styles.cartButtonText}>В корзину</Text>
+            <View style={styles.cartBadge}>
+              <Text style={styles.cartBadgeText}>
+                {cartItems.reduce((sum, item) => sum + item.quantity, 0)}
+              </Text>
+            </View>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Сканер QR-кодов */}
       <QRScanner
         visible={scannerVisible}
@@ -72,6 +98,7 @@ const WarehouseScreen: React.FC = () => {
     </SafeAreaView>
   );
 };
+
 
 const styles = StyleSheet.create({
   container: {
@@ -102,6 +129,46 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 8,
+  },
+  cartButtonContainer: {
+    position: 'absolute',
+    bottom: 24,
+    left: 90,
+    right: 90,
+    alignItems: 'center',
+    zIndex: 50,
+  },
+  cartButton: {
+    width: '100%',
+    paddingVertical: 14,
+    borderRadius: 28,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  cartButtonText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  cartBadge: {
+    backgroundColor: '#ef4444',
+    borderRadius: 10,
+    minWidth: 20,
+    height: 20,
+    marginLeft: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 5,
+  },
+  cartBadgeText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: 'bold',
   },
 });
 

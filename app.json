@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "Умный склад",
+    "name": "Norov",
     "slug": "sklad",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "web": {
       "favicon": "./assets/favicon.png"
     },

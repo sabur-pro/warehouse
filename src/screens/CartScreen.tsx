@@ -526,7 +526,7 @@ const CartScreen: React.FC = () => {
                 />
             )}
 
-            {/* Кнопка "Далее" - floating справа */}
+            {/* Кнопка "Оформить" - floating справа */}
             {!showSearchResults && cartItems.length > 0 && (
                 <TouchableOpacity
                     style={[styles.nextButton, {
@@ -537,7 +537,7 @@ const CartScreen: React.FC = () => {
                     activeOpacity={0.8}
                 >
                     <Ionicons name="checkmark" size={22} color="white" />
-                    <Text style={styles.nextButtonText}>Далее</Text>
+                    <Text style={styles.nextButtonText}>Оформить</Text>
                 </TouchableOpacity>
             )}
 
@@ -991,7 +991,7 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
         paddingLeft: 8,
     },
-    // Кнопка Далее (floating справа)
+    // Кнопка Оформить (floating справа)
     nextButton: {
         position: 'absolute',
         bottom: 24,

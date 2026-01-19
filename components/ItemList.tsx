@@ -206,16 +206,24 @@ export const ItemList = forwardRef<any, ItemListProps>(({ onRefresh }, ref) => {
   useImperativeHandle(ref, () => ({
     openItemById: async (itemId: number, context?: { boxIndex?: number; size?: number | string }) => {
       try {
-        // Сначала ищем в загруженных товарах
+        // Сначала ищем по локальному id в загруженных товарах
         const existingItem = items.find(i => i.id === itemId);
         if (existingItem) {
           handleItemPress(existingItem, context);
           return;
         }
 
-        // Если не найден, загружаем все товары и ищем
+        // Пробуем найти по serverId в загруженных товарах
+        // (важно для QR-кодов созданных на другом устройстве)
+        const byServerId = items.find(i => i.serverId === itemId);
+        if (byServerId) {
+          handleItemPress(byServerId, context);
+          return;
+        }
+
+        // Если не найден в кэше, загружаем все товары и ищем по обоим id
         const allItems = await getItems();
-        const foundItem = allItems.find(i => i.id === itemId);
+        const foundItem = allItems.find(i => i.id === itemId || i.serverId === itemId);
         if (foundItem) {
           handleItemPress(foundItem, context);
         } else {
@@ -226,6 +234,7 @@ export const ItemList = forwardRef<any, ItemListProps>(({ onRefresh }, ref) => {
         Alert.alert('Ошибка', 'Не удалось открыть товар');
       }
     },
+
     refresh: () => {
       loadFirstPage();
     },

@@ -302,7 +302,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: true,
-        aspect: [4, 3],
+        aspect: [1, 1], // Квадратное соотношение для сохранения пропорций при сжатии
         quality: 1.0, // Высокое качество для последующего сжатия
       });
 
@@ -1237,7 +1237,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
 
           <ScrollView
             style={{ flex: 1 }}
-            contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+            contentContainerStyle={{ padding: 16, paddingBottom: isAssistant() && !isEditing ? 140 : 40 }}
             showsVerticalScrollIndicator={false}
           >
             {isEditing ? (
@@ -1779,6 +1779,58 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
               </>
             )}
           </ScrollView>
+
+          {/* Фиксированная кнопка "В корзину" внизу экрана - только для ассистента и если есть товары */}
+          {isAssistant() && !isEditing && cartItems.length > 0 && (
+            <View style={{
+              position: 'absolute',
+              bottom: Platform.OS === 'ios' ? 34 : 20,
+              left: 0,
+              right: 0,
+              alignItems: 'center',
+              zIndex: 100,
+            }}>
+              <TouchableOpacity
+                onPress={() => {
+                  onClose();
+                  setTimeout(() => navigation.navigate('Cart'), 100);
+                }}
+                style={{
+                  width: '90%',
+                  backgroundColor: isDark ? colors.primary.gold : colors.primary.purple,
+                  paddingVertical: 16,
+                  borderRadius: 16,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  shadowColor: isDark ? colors.primary.gold : '#22c55e',
+                  shadowOffset: { width: 0, height: 4 },
+                  shadowOpacity: 0.4,
+                  shadowRadius: 8,
+                  elevation: 8,
+                }}
+              >
+                <Ionicons name="cart" size={24} color="#fff" style={{ marginRight: 10 }} />
+                <Text style={{ color: '#fff', fontSize: 17, fontWeight: '700' }}>В корзину</Text>
+                {cartItems.length > 0 && (
+                  <View style={{
+                    backgroundColor: '#ef4444',
+                    borderRadius: 12,
+                    minWidth: 24,
+                    height: 24,
+                    marginLeft: 10,
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    paddingHorizontal: 6,
+                  }}>
+                    <Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>
+                      {cartItems.reduce((sum, item) => sum + item.quantity, 0)}
+                    </Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            </View>
+          )}
 
           {/* Sale Input Overlay */}
           {
