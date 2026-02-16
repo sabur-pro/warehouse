@@ -28,6 +28,7 @@ export interface PeriodStatistics {
   salesCount: number;
   shoesQuantity: number; // количество проданной обуви
   clothesQuantity: number; // количество проданной одежды
+  totalDiscount: number; // общая сумма скидок за период
 }
 
 export class StatisticsService {
@@ -75,7 +76,10 @@ export class StatisticsService {
             const sale = details.sale || details; // Пытаемся взять из вложенного объекта или из корня
             const quantity = Number(sale.quantity || 0);
             const salePrice = Number(sale.salePrice || 0);
-            const saleAmount = salePrice * quantity;
+            // Используем actualSaleAmount если есть (учитывает скидку), иначе вычисляем
+            const saleAmount = sale.actualSaleAmount !== undefined
+              ? Number(sale.actualSaleAmount)
+              : salePrice * quantity;
             const profit = Number(sale.profit || 0);
 
             if (quantity > 0 || salePrice > 0) {
@@ -168,6 +172,7 @@ export class StatisticsService {
     let salesCount = 0;
     let shoesQuantity = 0;
     let clothesQuantity = 0;
+    let totalDiscount = 0;
 
     // Создаем карту товаров для быстрого поиска с приведением ID к строке для надежности
     const itemsMap = new Map<string, Item>();
@@ -191,9 +196,18 @@ export class StatisticsService {
               const salePrice = Number(sale.salePrice || 0);
               const saleProfit = Number(sale.profit || 0);
 
-              sales += salePrice * quantity;
+              // Используем actualSaleAmount если есть (учитывает скидку), иначе вычисляем
+              const saleAmount = sale.actualSaleAmount !== undefined
+                ? Number(sale.actualSaleAmount)
+                : salePrice * quantity;
+
+              sales += saleAmount;
               profit += saleProfit;
               salesCount++;
+
+              // Накапливаем скидку
+              const appliedDiscount = Number(sale.appliedDiscount || 0);
+              totalDiscount += appliedDiscount;
 
               // Подсчет по типам товаров
               let itemType: string | undefined = undefined;
@@ -279,6 +293,7 @@ export class StatisticsService {
       salesCount,
       shoesQuantity,
       clothesQuantity,
+      totalDiscount,
     };
   }
 

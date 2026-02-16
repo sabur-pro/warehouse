@@ -14,7 +14,7 @@ import { useCart } from '../contexts/CartContext';
 import { getThemeColors, shadows } from '../../constants/theme';
 
 interface ItemListRef {
-  openItemById: (itemId: number, context?: { boxIndex?: number; size?: number | string }) => void;
+  openItemById: (itemId: number, context?: { boxIndex?: number; size?: number | string }, itemUuid?: string) => void;
   refresh: () => void;
 }
 
@@ -30,11 +30,11 @@ const WarehouseScreen: React.FC = () => {
   const handleQRScanned = (data: string) => {
     try {
       const parsedData = JSON.parse(data);
-      const { itemId, boxIndex, size } = parsedData;
+      const { itemId, itemUuid, boxIndex, size } = parsedData;
 
-      // Открываем карточку товара через ref
+      // Открываем карточку товара через ref, передаём itemUuid для кросс-девайс поиска
       if (itemListRef.current?.openItemById) {
-        itemListRef.current.openItemById(itemId, { boxIndex, size });
+        itemListRef.current.openItemById(itemId, { boxIndex, size }, itemUuid);
       }
     } catch (error) {
       console.error('Error parsing QR data:', error);

@@ -202,10 +202,24 @@ export const ItemList = forwardRef<any, ItemListProps>(({ onRefresh }, ref) => {
     setDetailModalVisible(true);
   };
 
-  // Метод для открытия товара по ID (вызывается из QR-сканера)
+  // Метод для открытия товара по ID или UUID (вызывается из QR-сканера)
   useImperativeHandle(ref, () => ({
-    openItemById: async (itemId: number, context?: { boxIndex?: number; size?: number | string }) => {
+    openItemById: async (itemId: number, context?: { boxIndex?: number; size?: number | string }, itemUuid?: string) => {
       try {
+        // Приоритет поиска:
+        // 1. По UUID (самый надёжный после синхронизации)
+        // 2. По локальному id
+        // 3. По serverId (для QR-кодов созданных на другом устройстве)
+
+        // Поиск по UUID в загруженных товарах
+        if (itemUuid) {
+          const byUuid = items.find(i => i.uuid === itemUuid);
+          if (byUuid) {
+            handleItemPress(byUuid, context);
+            return;
+          }
+        }
+
         // Сначала ищем по локальному id в загруженных товарах
         const existingItem = items.find(i => i.id === itemId);
         if (existingItem) {
@@ -221,13 +235,24 @@ export const ItemList = forwardRef<any, ItemListProps>(({ onRefresh }, ref) => {
           return;
         }
 
-        // Если не найден в кэше, загружаем все товары и ищем по обоим id
+        // Если не найден в кэше, загружаем все товары и ищем по всем идентификаторам
         const allItems = await getItems();
+
+        // Сначала по UUID (приоритет)
+        if (itemUuid) {
+          const foundByUuid = allItems.find(i => i.uuid === itemUuid);
+          if (foundByUuid) {
+            handleItemPress(foundByUuid, context);
+            return;
+          }
+        }
+
+        // Затем по id или serverId
         const foundItem = allItems.find(i => i.id === itemId || i.serverId === itemId);
         if (foundItem) {
           handleItemPress(foundItem, context);
         } else {
-          Alert.alert('Ошибка', 'Товар не найден');
+          Alert.alert('Ошибка', 'Товар не найден. Возможно, он был удален или еще не синхронизирован на это устройство.');
         }
       } catch (error) {
         console.error('Error opening item by ID:', error);

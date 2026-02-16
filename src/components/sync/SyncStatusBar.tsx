@@ -3,10 +3,12 @@ import React, { useState, useEffect, useContext } from 'react';
 import { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import NetInfo, { NetInfoState } from '@react-native-community/netinfo';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAutoSync } from '../../hooks/useAutoSync';
 import { useTheme } from '../../contexts/ThemeContext';
 import { getThemeColors } from '../../../constants/theme';
 import { IncompleteDataAlert } from './IncompleteDataAlert';
+import { SYNC_INTERVAL_KEY, DEFAULT_SYNC_INTERVAL } from '../../screens/SettingsScreen';
 
 // Создаём локальный контекст для refresh
 interface SyncRefreshContextType {
@@ -69,6 +71,20 @@ interface SyncStatusBarProps {
 export const SyncStatusBar: React.FC<SyncStatusBarProps> = ({ onSyncComplete }) => {
   const { isDark } = useTheme();
   const colors = getThemeColors(isDark);
+
+  // Загрузить интервал из AsyncStorage
+  const [syncInterval, setSyncIntervalState] = useState(DEFAULT_SYNC_INTERVAL);
+  useEffect(() => {
+    const loadInterval = async () => {
+      const val = await AsyncStorage.getItem(SYNC_INTERVAL_KEY);
+      if (val) setSyncIntervalState(parseInt(val, 10));
+    };
+    loadInterval();
+    // Перечитывать интервал каждую минуту (на случай изменения в настройках)
+    const timer = setInterval(loadInterval, 60000);
+    return () => clearInterval(timer);
+  }, []);
+
   const {
     isSyncing,
     lastSyncTime,
@@ -79,7 +95,7 @@ export const SyncStatusBar: React.FC<SyncStatusBarProps> = ({ onSyncComplete }) 
     showDataQualityAlert,
     dismissDataQualityAlert,
     syncProgress,
-  } = useAutoSync();
+  } = useAutoSync({ syncInterval });
   const [isConnected, setIsConnected] = useState<boolean | null>(true);
   const syncContext = useContext(SyncRefreshContext);
 

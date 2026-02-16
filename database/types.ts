@@ -41,6 +41,7 @@ export interface Transaction {
   itemImageUri?: string | null; // картинка товара для офлайн отображения
   timestamp: number;
   details?: string | null;
+  itemUuid?: string;
 }
 
 export interface SizeRange {

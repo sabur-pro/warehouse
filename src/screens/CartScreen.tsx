@@ -306,13 +306,13 @@ const CartScreen: React.FC = () => {
     const handleQRScanned = useCallback(async (data: string) => {
         try {
             const parsedData = JSON.parse(data);
-            const { itemId, boxIndex, size } = parsedData;
+            const { itemId, itemUuid, itemName, boxIndex, size } = parsedData;
 
-            // Получаем товар из БД
-            const item = await getItemById(itemId);
+            // Получаем товар из БД (с поддержкой кросс-девайс поиска по uuid)
+            const item = await getItemById(itemId, itemName, itemUuid);
 
             if (!item) {
-                Alert.alert('Ошибка', 'Товар не найден в базе данных');
+                Alert.alert('Ошибка', 'Товар не найден в базе данных. Возможно, он ещё не синхронизирован на это устройство.');
                 return;
             }
 
@@ -617,8 +617,41 @@ const CartScreen: React.FC = () => {
                             cardAmount: saleData.cardAmount,
                         };
 
+                        // Рассчитываем общую скидку
+                        let totalDiscount = 0;
+                        if (saleData.discount && saleData.discount.value > 0) {
+                            if (saleData.discount.mode === 'percent') {
+                                totalDiscount = Math.round(totals.totalRecommendedPrice * saleData.discount.value / 100);
+                            } else {
+                                totalDiscount = saleData.discount.value;
+                            }
+                        }
+
+                        // Распределяем скидку пропорционально стоимости каждого товара
+                        let discountDistributed = 0;
+                        const itemDiscounts: number[] = [];
+
+                        for (let i = 0; i < cartItems.length; i++) {
+                            const cartItem = cartItems[i];
+                            const itemTotal = (cartItem.recommendedPrice || cartItem.price) * cartItem.quantity;
+
+                            if (i === cartItems.length - 1) {
+                                // Последний товар получает остаток скидки (для избежания ошибок округления)
+                                itemDiscounts.push(totalDiscount - discountDistributed);
+                            } else {
+                                // Пропорциональная доля скидки
+                                const itemShare = totals.totalRecommendedPrice > 0
+                                    ? itemTotal / totals.totalRecommendedPrice
+                                    : 0;
+                                const itemDiscount = Math.round(totalDiscount * itemShare);
+                                itemDiscounts.push(itemDiscount);
+                                discountDistributed += itemDiscount;
+                            }
+                        }
+
                         // Обрабатываем продажу для каждого товара в корзине
-                        for (const cartItem of cartItems) {
+                        for (let i = 0; i < cartItems.length; i++) {
+                            const cartItem = cartItems[i];
                             await processSaleTransaction(
                                 cartItem.item.id,
                                 cartItem.boxIndex,
@@ -630,7 +663,9 @@ const CartScreen: React.FC = () => {
                                 paymentInfo,
                                 saleData.clientId,
                                 saleData.discount,
-                                saleId // Общий ID продажи для группировки
+                                saleId, // Общий ID продажи для группировки
+                                itemDiscounts[i], // Распределённая скидка для этого товара
+                                saleData.clientUuid // UUID клиента для синхронизации
                             );
                         }
 

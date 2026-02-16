@@ -147,6 +147,21 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
   const mainTransaction = transactions[0];
   const { deleteTransaction } = useDatabase();
 
+  // Компонент для строки с пунктирным разделителем
+  const DetailRow = ({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) => (
+    <View style={styles.row}>
+      <Text style={[styles.label, { color: colors.text.muted }]}>{label}</Text>
+      <Text
+        style={[styles.rowDotsText, { color: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' }]}
+        numberOfLines={1}
+        ellipsizeMode="clip"
+      >
+        {"................................................................................................"}
+      </Text>
+      <Text style={[styles.value, { color: valueColor || colors.text.normal }]}>{value}</Text>
+    </View>
+  );
+
   // State для хранения данных товара (картинка)
   const [itemData, setItemData] = useState<Item | null>(null);
 
@@ -412,7 +427,7 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
     );
   };
 
-  const renderSaleDetails = (details: TransactionDetails, imageUri?: string | null, itemNameForImage?: string) => {
+  const renderSaleDetails = (details: TransactionDetails, imageUri?: string | null, itemNameForImage?: string, isGrouped: boolean = false) => {
     // Хелпер для названия способа оплаты
     const getPaymentMethodName = (method?: 'cash' | 'card' | 'mixed') => {
       switch (method) {
@@ -474,108 +489,89 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
           <View>
             {/* Название товара если есть */}
             {details.itemName && (
-              <View style={styles.row}>
-                <Text style={[styles.label, { color: colors.text.muted }]}>Товар:</Text>
-                <Text style={[styles.value, { color: colors.text.normal, fontWeight: '600' }]}>{details.itemName}</Text>
-              </View>
+              <DetailRow label="Товар" value={details.itemName} valueColor={colors.text.normal} />
             )}
-            <View style={styles.row}>
-              <Text style={[styles.label, { color: colors.text.muted }]}>Размер:</Text>
-              <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.size}</Text>
-            </View>
-            <View style={styles.row}>
-              <Text style={[styles.label, { color: colors.text.muted }]}>Количество:</Text>
-              <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.quantity} шт.</Text>
-            </View>
-            <View style={styles.row}>
-              <Text style={[styles.label, { color: colors.text.muted }]}>Было товаров:</Text>
-              <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.previousQuantity} шт.</Text>
-            </View>
-            <View style={styles.row}>
-              <Text style={[styles.label, { color: colors.text.muted }]}>Осталось товаров:</Text>
-              <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.previousQuantity - details.sale.quantity} шт.</Text>
-            </View>
+            <DetailRow label="Размер" value={String(details.sale.size)} />
+            <DetailRow label="Количество" value={`${details.sale.quantity} шт.`} />
+            <DetailRow label="Было товаров" value={`${details.sale.previousQuantity} шт.`} />
+            <DetailRow label="Осталось товаров" value={`${details.sale.previousQuantity - details.sale.quantity} шт.`} />
 
-            {/* Способ оплаты */}
-            {details.paymentInfo && (
+            {/* Способ оплаты — только если НЕ групповая продажа (для групповых выводится один раз выше) */}
+            {!isGrouped && details.paymentInfo && (
               <>
                 <View style={[styles.divider, { borderBottomColor: colors.border.normal }]} />
                 <Text style={[styles.subsectionTitle, { color: colors.text.normal }]}>Способ оплаты:</Text>
-                <View style={styles.row}>
-                  <Text style={[styles.label, { color: colors.text.muted }]}>Тип:</Text>
-                  <Text style={[styles.value, { color: colors.text.normal }]}>{getPaymentMethodName(details.paymentInfo.method)}</Text>
-                </View>
+                <DetailRow label="Тип" value={getPaymentMethodName(details.paymentInfo.method)} />
                 {getBankName(details.paymentInfo.bank) && (
-                  <View style={styles.row}>
-                    <Text style={[styles.label, { color: colors.text.muted }]}>Банк:</Text>
-                    <Text style={[styles.value, { color: details.paymentInfo.bank === 'alif' ? '#00C853' : '#1976D2', fontWeight: '500' }]}>
-                      {getBankName(details.paymentInfo.bank)}
-                    </Text>
-                  </View>
+                  <DetailRow
+                    label="Банк"
+                    value={getBankName(details.paymentInfo.bank) || ''}
+                    valueColor={details.paymentInfo.bank === 'alif' ? '#00C853' : '#1976D2'}
+                  />
                 )}
                 {details.paymentInfo.method === 'mixed' && (
                   <>
-                    <View style={styles.row}>
-                      <Text style={[styles.label, { color: colors.text.muted }]}>Наличными:</Text>
-                      <Text style={[styles.value, { color: colors.text.normal }]}>{(details.paymentInfo.cashAmount || 0).toLocaleString()} сом</Text>
-                    </View>
-                    <View style={styles.row}>
-                      <Text style={[styles.label, { color: colors.text.muted }]}>Картой:</Text>
-                      <Text style={[styles.value, { color: colors.text.normal }]}>{(details.paymentInfo.cardAmount || 0).toLocaleString()} сом</Text>
-                    </View>
+                    <DetailRow label="Наличными" value={`${(details.paymentInfo.cashAmount || 0).toLocaleString()} сом`} />
+                    <DetailRow label="Картой" value={`${(details.paymentInfo.cardAmount || 0).toLocaleString()} сом`} />
                   </>
                 )}
               </>
             )}
 
-            {/* Скидка */}
-            {details.discount && (
-              <View style={styles.row}>
-                <Text style={[styles.label, { color: colors.text.muted }]}>Скидка:</Text>
-                <Text style={[styles.value, { color: '#F59E0B' }]}>
-                  {details.discount.mode === 'percent'
-                    ? `${details.discount.value}%`
-                    : `${details.discount.value} сом`}
-                </Text>
-              </View>
+            {/* Скидка на весь заказ — только если НЕ групповая */}
+            {!isGrouped && details.discount && (
+              <DetailRow
+                label="Скидка"
+                value={details.discount.mode === 'percent' ? `${details.discount.value}%` : `${details.discount.value} сом`}
+                valueColor="#F59E0B"
+              />
+            )}
+
+            {/* Распределённая скидка для этого товара */}
+            {(details.sale as any).appliedDiscount > 0 && (
+              <DetailRow
+                label="Скидка на товар"
+                value={`-${(details.sale as any).appliedDiscount.toLocaleString()} сом`}
+                valueColor="#EF4444"
+              />
+            )}
+
+            {/* Итого после скидки */}
+            {(details.sale as any).actualSaleAmount !== undefined && (details.sale as any).appliedDiscount > 0 && (
+              <DetailRow
+                label="Итого со скидкой"
+                value={`${(details.sale as any).actualSaleAmount.toLocaleString()} сом`}
+                valueColor="#10b981"
+              />
             )}
 
             <View style={[styles.divider, { borderBottomColor: colors.border.normal }]} />
 
             {isAssistant() ? (
               <>
-                <View style={styles.row}>
-                  <Text style={[styles.label, { color: colors.text.muted }]}>Рекомендуемая цена:</Text>
-                  <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.recommendedSellingPrice?.toFixed(2) || '0.00'} сомонӣ</Text>
-                </View>
-                <View style={styles.row}>
-                  <Text style={[styles.label, { color: colors.text.muted }]}>Цена продажи:</Text>
-                  <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.salePrice.toFixed(2)} сомонӣ</Text>
-                </View>
+                <DetailRow label="Рекомендуемая цена" value={`${details.sale.salePrice.toFixed(2)} сомонӣ`} />
+                <DetailRow
+                  label="Цена продажи"
+                  value={`${(details.sale as any).actualSaleAmount !== undefined
+                    ? ((details.sale as any).actualSaleAmount / details.sale.quantity).toFixed(2)
+                    : details.sale.salePrice.toFixed(2)} сомонӣ`}
+                />
               </>
             ) : (
               <>
-                <View style={styles.row}>
-                  <Text style={[styles.label, { color: colors.text.muted }]}>Себестоимость пары:</Text>
-                  <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.costPrice.toFixed(2)} сомонӣ</Text>
-                </View>
-                <View style={styles.row}>
-                  <Text style={[styles.label, { color: colors.text.muted }]}>Рекомендуемая цена:</Text>
-                  <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.recommendedSellingPrice?.toFixed(2) || '0.00'} сомонӣ</Text>
-                </View>
-                <View style={styles.row}>
-                  <Text style={[styles.label, { color: colors.text.muted }]}>Цена продажи:</Text>
-                  <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.salePrice.toFixed(2)} сомонӣ</Text>
-                </View>
-                <View style={styles.row}>
-                  <Text style={[styles.label, { color: colors.text.muted }]}>Прибыль:</Text>
-                  <Text style={[
-                    styles.value,
-                    { color: details.sale.profit > 0 ? '#10b981' : '#ef4444' }
-                  ]}>
-                    {details.sale.profit.toFixed(2)} сомонӣ
-                  </Text>
-                </View>
+                <DetailRow label="Рекомендуемая цена" value={`${details.sale.salePrice.toFixed(2)} сомонӣ`} />
+                <DetailRow
+                  label="Цена продажи"
+                  value={`${(details.sale as any).actualSaleAmount !== undefined
+                    ? ((details.sale as any).actualSaleAmount / details.sale.quantity).toFixed(2)
+                    : details.sale.salePrice.toFixed(2)} сомонӣ`}
+                />
+                <DetailRow label="Себестоимость пары" value={`${details.sale.costPrice.toFixed(2)} сомонӣ`} />
+                <DetailRow
+                  label="Прибыль"
+                  value={`${details.sale.profit.toFixed(2)} сомонӣ`}
+                  valueColor={details.sale.profit > 0 ? '#10b981' : '#ef4444'}
+                />
               </>
             )}
           </View>
@@ -1258,6 +1254,79 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
         <View>
           {saleTxs.length > 0 && (
             <View>
+              {/* Блок оплаты и скидки — один раз для всей продажи */}
+              {(() => {
+                const firstTxDetails = parseDetails(saleTxs[0].details);
+                if (!firstTxDetails) return null;
+
+                const getPaymentMethodName = (method?: 'cash' | 'card' | 'mixed') => {
+                  switch (method) {
+                    case 'cash': return 'Наличные';
+                    case 'card': return 'Карта';
+                    case 'mixed': return 'Смешанная';
+                    default: return 'Не указан';
+                  }
+                };
+
+                const getBankName = (bank?: 'alif' | 'dc') => {
+                  switch (bank) {
+                    case 'alif': return 'АлифБанк';
+                    case 'dc': return 'ДушанбеСити';
+                    default: return null;
+                  }
+                };
+
+                // Считаем общую скидку по всем товарам
+                let totalAppliedDiscount = 0;
+                saleTxs.forEach(tx => {
+                  const txDetails = parseDetails(tx.details);
+                  if (txDetails?.sale && (txDetails.sale as any).appliedDiscount) {
+                    totalAppliedDiscount += (txDetails.sale as any).appliedDiscount;
+                  }
+                });
+
+                return (
+                  <View style={{
+                    marginBottom: 16,
+                    padding: 12,
+                    backgroundColor: isDark ? 'rgba(255,255,255,0.05)' : '#f9fafb',
+                    borderRadius: 12
+                  }}>
+                    {/* Способ оплаты */}
+                    {firstTxDetails.paymentInfo && (
+                      <>
+                        <Text style={[styles.subsectionTitle, { color: colors.text.normal, marginBottom: 8 }]}>Способ оплаты:</Text>
+                        <DetailRow label="Тип" value={getPaymentMethodName(firstTxDetails.paymentInfo.method)} />
+                        {getBankName(firstTxDetails.paymentInfo.bank) && (
+                          <DetailRow
+                            label="Банк"
+                            value={getBankName(firstTxDetails.paymentInfo.bank) || ''}
+                            valueColor={firstTxDetails.paymentInfo.bank === 'alif' ? '#00C853' : '#1976D2'}
+                          />
+                        )}
+                        {firstTxDetails.paymentInfo.method === 'mixed' && (
+                          <>
+                            <DetailRow label="Наличными" value={`${(firstTxDetails.paymentInfo.cashAmount || 0).toLocaleString()} сом`} />
+                            <DetailRow label="Картой" value={`${(firstTxDetails.paymentInfo.cardAmount || 0).toLocaleString()} сом`} />
+                          </>
+                        )}
+                      </>
+                    )}
+
+                    {/* Скидка — общая информация */}
+                    {firstTxDetails.discount && (
+                      <DetailRow
+                        label="Скидка"
+                        value={firstTxDetails.discount.mode === 'percent'
+                          ? `${firstTxDetails.discount.value}%${totalAppliedDiscount > 0 ? ` (−${totalAppliedDiscount.toLocaleString()} сом)` : ''}`
+                          : `${firstTxDetails.discount.value} сом${totalAppliedDiscount > 0 ? ` (−${totalAppliedDiscount.toLocaleString()} сом)` : ''}`}
+                        valueColor="#F59E0B"
+                      />
+                    )}
+                  </View>
+                );
+              })()}
+
               {saleTxs.length > 1 && (
                 <Text style={[styles.sectionTitle, { color: colors.text.normal, marginBottom: 8 }]}>
                   Товары в продаже ({saleTxs.length}):
@@ -1283,7 +1352,7 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
                         Позиция {index + 1}
                       </Text>
                     )}
-                    {renderSaleDetails(details, tx.itemImageUri || loadedItemImages.get(tx.itemName) || null, tx.itemName)}
+                    {renderSaleDetails(details, tx.itemImageUri || loadedItemImages.get(tx.itemName) || null, tx.itemName, true)}
                   </View>
                 );
               })}
@@ -1567,15 +1636,29 @@ const styles = StyleSheet.create({
   },
   row: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 4,
+    alignItems: 'center',
+    paddingVertical: 6,
   },
   label: {
     fontSize: 14,
+    flexShrink: 0,
+    marginRight: 4,
+  },
+  rowDotsText: {
+    flex: 1,
+    fontSize: 12,
+    letterSpacing: 2,
+    textAlign: 'center',
+    textAlignVertical: 'bottom',
+    includeFontPadding: false,
+    marginBottom: 2,
   },
   value: {
     fontSize: 14,
     fontWeight: '500',
+    flexShrink: 0,
+    textAlign: 'right',
+    marginLeft: 4,
   },
   noData: {
     fontSize: 14,

@@ -557,6 +557,7 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
       const itemsColumns = await getAllWithRetry<TableInfo>(databaseInstance!, 'PRAGMA table_info(items);');
       const itemsColumnNames = itemsColumns.map(col => col.name);
 
+      // Сначала добавляем ВСЕ колонки, затем выполняем legacy миграцию
       if (!itemsColumnNames.includes('serverId')) {
         console.log('Adding serverId column to items');
         await execWithRetry(databaseInstance!, 'ALTER TABLE items ADD COLUMN serverId INTEGER;');
@@ -572,15 +573,6 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
       if (!itemsColumnNames.includes('needsSync')) {
         console.log('Adding needsSync column to items');
         await execWithRetry(databaseInstance!, 'ALTER TABLE items ADD COLUMN needsSync INTEGER DEFAULT 0;');
-
-        // ВАЖНО: Помечаем ВСЕ существующие записи без serverId как требующие синхронизации
-        // Это нужно для миграции старых данных
-        console.log('Marking all existing items without serverId as needing sync (legacy data migration)...');
-        const legacyUpdateResult = await execWithRetry(
-          databaseInstance!,
-          'UPDATE items SET needsSync = 1, imageNeedsUpload = CASE WHEN imageUri IS NOT NULL AND imageUri != \'\' THEN 1 ELSE 0 END WHERE serverId IS NULL;'
-        );
-        console.log('Legacy items marked for sync');
       }
       if (!itemsColumnNames.includes('syncedAt')) {
         console.log('Adding syncedAt column to items');
@@ -593,6 +585,25 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
       if (!itemsColumnNames.includes('serverImageUrl')) {
         console.log('Adding serverImageUrl column to items');
         await execWithRetry(databaseInstance!, 'ALTER TABLE items ADD COLUMN serverImageUrl TEXT;');
+      }
+
+      // Legacy миграция - выполняется ПОСЛЕ создания всех колонок
+      // Проверяем наличие записей без serverId и помечаем их для синхронизации
+      try {
+        const legacyCount = await getFirstWithRetry<{ count: number }>(
+          databaseInstance!,
+          'SELECT COUNT(*) as count FROM items WHERE serverId IS NULL AND needsSync = 0'
+        );
+        if (legacyCount && legacyCount.count > 0) {
+          console.log(`Marking ${legacyCount.count} existing items without serverId as needing sync (legacy data migration)...`);
+          await execWithRetry(
+            databaseInstance!,
+            'UPDATE items SET needsSync = 1, imageNeedsUpload = CASE WHEN imageUri IS NOT NULL AND imageUri != \'\' THEN 1 ELSE 0 END WHERE serverId IS NULL AND needsSync = 0;'
+          );
+          console.log('Legacy items marked for sync');
+        }
+      } catch (legacyErr) {
+        console.warn('Legacy items migration failed (ignored, will retry):', legacyErr);
       }
 
       // Добавить sync поля в transactions
@@ -626,6 +637,26 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
       if (!transColumnNames.includes('itemImageUri')) {
         console.log('Adding itemImageUri column to transactions');
         await execWithRetry(databaseInstance!, 'ALTER TABLE transactions ADD COLUMN itemImageUri TEXT;');
+      }
+      if (!transColumnNames.includes('itemUuid')) {
+        console.log('Adding itemUuid column to transactions');
+        await execWithRetry(databaseInstance!, 'ALTER TABLE transactions ADD COLUMN itemUuid TEXT;');
+        await execWithRetry(databaseInstance!, 'CREATE INDEX IF NOT EXISTS idx_transactions_itemUuid ON transactions(itemUuid);');
+
+        // MIGRATION: Backfill itemUuid from existing items
+        console.log('Migrating transactions: backfilling itemUuid from items table...');
+        try {
+          // SQLite supports UPDATE with FROM/JOIN in newer versions, but safe way is subquery or row-by-row
+          // Let's try to update using a correlated subquery which is standard SQL
+          await execWithRetry(databaseInstance!, `
+            UPDATE transactions 
+            SET itemUuid = (SELECT uuid FROM items WHERE items.id = transactions.itemId)
+            WHERE itemId IS NOT NULL AND itemUuid IS NULL;
+          `);
+          console.log('Transactions itemUuid backfill completed');
+        } catch (backfillErr) {
+          console.error('Failed to backfill itemUuid (ignored):', backfillErr);
+        }
       }
 
       // Создать таблицу pending_actions
@@ -717,6 +748,7 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
             phone TEXT,
             address TEXT,
             notes TEXT,
+            birthday TEXT,
             isDeleted INTEGER DEFAULT 0,
             needsSync INTEGER DEFAULT 1,
             createdAt INTEGER DEFAULT (strftime('%s', 'now') * 1000),
@@ -743,6 +775,82 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
         console.warn('Failed to create clients indices (ignored):', idxErr);
       }
 
+      // Migration: Regenerate QR codes to include itemUuid for cross-device compatibility
+      try {
+        console.log('🔄 Checking items for UUID and QR code migration...');
+
+        // Step 1: Generate UUIDs for items that don't have them
+        const itemsWithoutUuid = await getAllWithRetry<{ id: number }>(
+          databaseInstance!,
+          'SELECT id FROM items WHERE uuid IS NULL OR uuid = ""',
+          []
+        );
+
+        if (itemsWithoutUuid.length > 0) {
+          console.log(`📝 Generating UUIDs for ${itemsWithoutUuid.length} items...`);
+          for (const item of itemsWithoutUuid) {
+            const newUuid = generateUUID();
+            await runWithRetry(
+              databaseInstance!,
+              'UPDATE items SET uuid = ? WHERE id = ?',
+              [newUuid, item.id]
+            );
+          }
+          console.log(`✅ Generated UUIDs for ${itemsWithoutUuid.length} items`);
+        }
+
+        // Step 2: Update QR codes to include itemUuid
+        const itemsWithQR = await getAllWithRetry<{ id: number; name: string; code: string; uuid: string; qrCodes: string; qrCodeType: string; numberOfBoxes: number; boxSizeQuantities: string }>(
+          databaseInstance!,
+          'SELECT id, name, code, uuid, qrCodes, qrCodeType, numberOfBoxes, boxSizeQuantities FROM items WHERE qrCodes IS NOT NULL AND qrCodes != ""',
+          []
+        );
+
+        let migratedCount = 0;
+        for (const item of itemsWithQR) {
+          try {
+            if (!item.uuid) continue; // Skip if still no UUID
+
+            const qrCodes = JSON.parse(item.qrCodes);
+            if (!Array.isArray(qrCodes) || qrCodes.length === 0) continue;
+
+            // Check if first QR code already has itemUuid
+            const firstQRData = JSON.parse(qrCodes[0].data || '{}');
+            if (firstQRData.itemUuid) {
+              // Already migrated
+              continue;
+            }
+
+            // Regenerate QR codes with UUID
+            const updatedQRCodes = qrCodes.map((qr: any) => {
+              try {
+                const data = JSON.parse(qr.data || '{}');
+                data.itemUuid = item.uuid;
+                return { ...qr, data: JSON.stringify(data) };
+              } catch {
+                return qr;
+              }
+            });
+
+            await runWithRetry(
+              databaseInstance!,
+              'UPDATE items SET qrCodes = ? WHERE id = ?',
+              [JSON.stringify(updatedQRCodes), item.id]
+            );
+            migratedCount++;
+          } catch (itemErr) {
+            console.warn(`Failed to migrate QR codes for item ${item.id}:`, itemErr);
+          }
+        }
+
+        if (migratedCount > 0) {
+          console.log(`✅ QR code UUID migration complete: ${migratedCount} items updated`);
+        } else {
+          console.log('✅ QR codes already up to date (no migration needed)');
+        }
+      } catch (qrMigrationErr) {
+        console.warn('QR code UUID migration failed (ignored, will retry on next init):', qrMigrationErr);
+      }
 
       console.log('Sync system migration completed');
       console.log('Database initialized successfully');
@@ -762,6 +870,11 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
 
 
 export const getDatabaseInstance = async (): Promise<SQLite.SQLiteDatabase> => {
+  // Если есть активный initPromise (база инициализируется), ждём его
+  if (initPromise) {
+    return await initPromise;
+  }
+  // Если база не инициализирована, инициализируем
   if (!databaseInstance) {
     return await initDatabase();
   }
@@ -949,16 +1062,30 @@ export const getItems = async (): Promise<Item[]> => {
 };
 
 /**
- * Get single item by ID (tries local id, then serverId, then by name)
+ * Get single item by ID (tries uuid first, then local id, then serverId, then by name)
+ * @param id - local item id
+ * @param itemName - optional item name for fallback search
+ * @param itemUuid - optional UUID for cross-device identification (highest priority)
  */
-export const getItemById = async (id: number, itemName?: string): Promise<Item | null> => {
+export const getItemById = async (id: number, itemName?: string, itemUuid?: string): Promise<Item | null> => {
   return withLock(async () => {
     try {
       const db = await getDatabaseInstance();
-      console.log('🔍 getItemById: searching for id=', id, 'name=', itemName);
+      console.log('🔍 getItemById: searching for id=', id, 'name=', itemName, 'uuid=', itemUuid);
 
-      // First try by local id
-      let result = await getFirstWithRetry<Item>(db, 'SELECT * FROM items WHERE id = ?', [id]);
+      // First try by UUID (highest priority for cross-device sync)
+      let result: Item | null = null;
+      if (itemUuid) {
+        console.log('🔍 getItemById: trying uuid...');
+        result = await getFirstWithRetry<Item>(db, 'SELECT * FROM items WHERE uuid = ? AND isDeleted = 0', [itemUuid]);
+        if (result) {
+          console.log('🔍 getItemById: found by uuid!');
+          return result;
+        }
+      }
+
+      // Then try by local id
+      result = await getFirstWithRetry<Item>(db, 'SELECT * FROM items WHERE id = ?', [id]);
 
       // If not found, try by serverId
       if (!result) {
@@ -974,15 +1101,15 @@ export const getItemById = async (id: number, itemName?: string): Promise<Item |
 
       if (!result) {
         // Debug: show what IDs exist
-        const allItems = await getAllWithRetry<{ id: number, serverId: number | null, name: string }>(
+        const allItems = await getAllWithRetry<{ id: number, serverId: number | null, name: string, uuid: string }>(
           db,
-          'SELECT id, serverId, name FROM items LIMIT 10',
+          'SELECT id, serverId, name, uuid FROM items LIMIT 10',
           []
         );
-        console.log('🔍 getItemById: NOT FOUND. First 10 items in DB:', allItems.map(i => `id=${i.id}, serverId=${i.serverId}`).join('; '));
+        console.log('🔍 getItemById: NOT FOUND. First 10 items in DB:', allItems.map(i => `id=${i.id}, serverId=${i.serverId}, uuid=${i.uuid?.slice(0, 8)}...`).join('; '));
       }
 
-      console.log('🔍 getItemById: result=', result ? `found (id=${result.id}, serverId=${result.serverId})` : 'NOT FOUND');
+      console.log('🔍 getItemById: result=', result ? `found (id=${result.id}, serverId=${result.serverId}, uuid=${result.uuid?.slice(0, 8)}...)` : 'NOT FOUND');
       return result || null;
     } catch (error) {
       console.error('Error fetching item by id:', error);
@@ -1299,7 +1426,9 @@ export const processSaleTransaction = async (
   paymentInfo: PaymentInfo,
   clientId?: number | null,
   discount?: { mode: 'amount' | 'percent'; value: number },
-  saleId?: string // ID для группировки товаров одной продажи
+  saleId?: string, // ID для группировки товаров одной продажи
+  appliedDiscount: number = 0, // Сумма скидки для этого товара (пропорционально распределённая)
+  clientUuid?: string | null // UUID клиента для синхронизации
 ): Promise<void> => {
   return withLock(async () => {
     const db = await getDatabaseInstance();
@@ -1349,7 +1478,11 @@ export const processSaleTransaction = async (
         });
       });
 
-      const profit = (salePrice - costPrice) * quantity;
+      // Рассчитываем прибыль с учётом скидки
+      const grossSaleAmount = salePrice * quantity; // Сумма продажи до скидки
+      const actualSaleAmount = grossSaleAmount - appliedDiscount; // Фактическая сумма после скидки
+      const costAmount = costPrice * quantity;
+      const profit = actualSaleAmount - costAmount; // Прибыль с учётом скидки
 
       // Формируем детали транзакции
       const saleDetails = {
@@ -1363,9 +1496,12 @@ export const processSaleTransaction = async (
           profit,
           boxIndex,
           sizeIndex,
+          appliedDiscount, // Сумма скидки для этого товара
+          actualSaleAmount, // Фактическая сумма продажи после скидки
         },
         paymentInfo,
         clientId: clientId || null,
+        clientUuid: clientUuid || null,
         discount: discount || null,
         totalProfit: profit,
         saleId: saleId || null, // Для группировки множественных продаж
@@ -1380,8 +1516,8 @@ export const processSaleTransaction = async (
 
       // Создаём транзакцию продажи
       await runWithRetry(db, `
-        INSERT INTO transactions (action, itemId, itemName, itemImageUri, timestamp, details, needsSync, uuid)
-        VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+        INSERT INTO transactions (action, itemId, itemName, itemImageUri, timestamp, details, needsSync, uuid, itemUuid)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
       `, [
         'sale',
         itemId,
@@ -1390,6 +1526,7 @@ export const processSaleTransaction = async (
         Math.floor(Date.now() / 1000),
         JSON.stringify(saleDetails),
         generateUUID(),
+        item.uuid || null,
       ]);
 
       await execWithRetry(db, 'COMMIT;');
@@ -1415,8 +1552,8 @@ export const addTransaction = async (transaction: Omit<Transaction, 'id'>): Prom
     const db = await getDatabaseInstance();
     try {
       await runWithRetry(db, `
-        INSERT INTO transactions (action, itemId, itemName, itemImageUri, timestamp, details, needsSync, uuid)
-        VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+        INSERT INTO transactions (action, itemId, itemName, itemImageUri, timestamp, details, needsSync, uuid, itemUuid)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
       `, [
         transaction.action,
         transaction.itemId,
@@ -1425,6 +1562,7 @@ export const addTransaction = async (transaction: Omit<Transaction, 'id'>): Prom
         transaction.timestamp,
         transaction.details,
         generateUUID(),
+        transaction.itemUuid || null,
       ]);
       console.log('Transaction added successfully');
     } catch (error) {
@@ -1461,6 +1599,78 @@ export const getTransactionsBySaleId = async (saleId: string): Promise<Transacti
 };
 
 /**
+ * Получение всех транзакций по clientId / clientUuid / serverId
+ * Используется для отображения истории покупок клиента
+ * Ищет по: clientUuid (самый надёжный), локальному clientId, и serverId клиента
+ */
+export const getTransactionsByClient = async (client: Client): Promise<Transaction[]> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    try {
+      const { id: clientId, uuid: clientUuid, serverId: clientServerId } = client as Client & { serverId?: number | null };
+
+      // Строим условия поиска
+      const conditions: string[] = [];
+
+      // 1. UUID search — самый надёжный для синхронизированных данных
+      if (clientUuid) {
+        conditions.push(`details LIKE '%"clientUuid":"${clientUuid}"%'`);
+        conditions.push(`details LIKE '%"clientUuid": "${clientUuid}"%'`);
+      }
+
+      // 2. Локальный ID — для локально созданных транзакций
+      conditions.push(`details LIKE '%"clientId":${clientId},%'`);
+      conditions.push(`details LIKE '%"clientId": ${clientId},%'`);
+      conditions.push(`details LIKE '%"clientId":${clientId}}%'`);
+      conditions.push(`details LIKE '%"clientId": ${clientId}}%'`);
+      // String format (potential sync artifact)
+      conditions.push(`details LIKE '%"clientId":"${clientId}",%'`);
+      conditions.push(`details LIKE '%"clientId": "${clientId}",%'`);
+      conditions.push(`details LIKE '%"clientId":"${clientId}"}%'`);
+      conditions.push(`details LIKE '%"clientId": "${clientId}"}%'`);
+
+      // 3. Server ID — транзакции которые хранят серверный clientId (до ремаппинга)
+      if (clientServerId && clientServerId !== clientId) {
+        conditions.push(`details LIKE '%"clientId":${clientServerId},%'`);
+        conditions.push(`details LIKE '%"clientId": ${clientServerId},%'`);
+        conditions.push(`details LIKE '%"clientId":${clientServerId}}%'`);
+        conditions.push(`details LIKE '%"clientId": ${clientServerId}}%'`);
+        conditions.push(`details LIKE '%"clientId":"${clientServerId}",%'`);
+        conditions.push(`details LIKE '%"clientId": "${clientServerId}",%'`);
+        conditions.push(`details LIKE '%"clientId":"${clientServerId}"}%'`);
+        conditions.push(`details LIKE '%"clientId": "${clientServerId}"}%'`);
+      }
+
+      const query = `
+        SELECT * FROM transactions 
+        WHERE action = 'sale' 
+        AND isDeleted = 0
+        AND (
+          ${conditions.join(' OR \n          ')}
+        )
+        ORDER BY timestamp DESC
+      `;
+
+      const transactions = await getAllWithRetry<Transaction>(db, query);
+
+      // Дедупликация по id (разные условия могут найти одну и ту же транзакцию)
+      const seen = new Set<number>();
+      const unique = transactions.filter(tx => {
+        if (seen.has(tx.id)) return false;
+        seen.add(tx.id);
+        return true;
+      });
+
+      console.log(`getTransactionsByClient: found ${unique.length} transactions for client ${client.name} (id=${clientId}, uuid=${clientUuid}, serverId=${clientServerId})`);
+      return unique;
+    } catch (error) {
+      console.error('Error getting transactions by client:', error);
+      return [];
+    }
+  });
+};
+
+/**
  * New: insertTransactionImport
  * Inserts a transaction during import, ignoring id.
  */
@@ -1469,8 +1679,8 @@ export const insertTransactionImport = async (transaction: Omit<Transaction, 'id
     const db = await getDatabaseInstance();
     try {
       await runWithRetry(db, `
-        INSERT INTO transactions (action, itemId, itemName, timestamp, details, uuid)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO transactions (action, itemId, itemName, timestamp, details, uuid, itemUuid)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       `, [
         transaction.action,
         transaction.itemId,
@@ -1478,6 +1688,7 @@ export const insertTransactionImport = async (transaction: Omit<Transaction, 'id
         transaction.timestamp,
         transaction.details,
         transaction.uuid || generateUUID(),
+        transaction.itemUuid || null,
       ]);
       console.log('Imported transaction inserted successfully');
     } catch (error) {

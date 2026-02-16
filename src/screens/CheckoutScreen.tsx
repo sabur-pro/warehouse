@@ -14,6 +14,7 @@ import {
     Platform,
     Image,
 } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../contexts/ThemeContext';
@@ -26,6 +27,7 @@ import { Toast } from '../components/Toast';
 // Интерфейс данных продажи
 export interface SaleData {
     clientId: number | null;
+    clientUuid?: string | null;
     paymentMethod: 'cash' | 'card' | 'mixed';
     bank?: 'alif' | 'dc';
     cashAmount?: number;
@@ -65,6 +67,8 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
     const [newClientPhone, setNewClientPhone] = useState('');
     const [newClientAddress, setNewClientAddress] = useState('');
     const [newClientBirthday, setNewClientBirthday] = useState('');
+    const [showDatePicker, setShowDatePicker] = useState(false);
+    const [selectedDate, setSelectedDate] = useState<Date | null>(null);
     const [isAddingClient, setIsAddingClient] = useState(false);
 
     // Toast
@@ -119,6 +123,8 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
             setNewClientPhone('');
             setNewClientAddress('');
             setNewClientBirthday('');
+            setSelectedDate(null);
+            setShowDatePicker(false);
             setSearchQuery('');
             setIsAddingClient(false);
             // Сброс скидки
@@ -177,6 +183,8 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
             setNewClientPhone('');
             setNewClientAddress('');
             setNewClientBirthday('');
+            setSelectedDate(null);
+            setShowDatePicker(false);
 
             // Устанавливаем выбранного клиента
             setSelectedClient(newClient);
@@ -217,6 +225,7 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
 
         const saleData: SaleData = {
             clientId: selectedClient?.id || null,
+            clientUuid: selectedClient?.uuid || null,
             paymentMethod: paymentMethod!,
             subtotal: cartTotals.totalRecommendedPrice,
             finalPrice,
@@ -988,11 +997,12 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
                                             color: colors.text.normal,
                                             borderColor: colors.border.normal
                                         }]}
-                                        placeholder="+992 XXX XX XX XX"
+                                        placeholder="992XXXXXXXXX"
                                         placeholderTextColor={colors.text.muted}
                                         value={newClientPhone}
-                                        onChangeText={setNewClientPhone}
-                                        keyboardType="phone-pad"
+                                        onChangeText={(text) => setNewClientPhone(text.replace(/[^0-9]/g, ''))}
+                                        keyboardType="number-pad"
+                                        maxLength={12}
                                     />
                                 </View>
 
@@ -1017,21 +1027,96 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
                                     <Text style={[styles.inputLabel, { color: colors.text.muted }]}>
                                         День рождения
                                     </Text>
-                                    <TextInput
+                                    <TouchableOpacity
                                         style={[styles.textInput, {
                                             backgroundColor: colors.background.card,
-                                            color: colors.text.normal,
-                                            borderColor: colors.border.normal
+                                            borderColor: colors.border.normal,
+                                            flexDirection: 'row',
+                                            alignItems: 'center',
+                                            justifyContent: 'space-between'
                                         }]}
-                                        placeholder="ДД.ММ.ГГГГ"
-                                        placeholderTextColor={colors.text.muted}
-                                        value={newClientBirthday}
-                                        onChangeText={setNewClientBirthday}
-                                    />
+                                        onPress={() => setShowDatePicker(true)}
+                                    >
+                                        <Text style={{
+                                            fontSize: 16,
+                                            color: newClientBirthday ? colors.text.normal : colors.text.muted
+                                        }}>
+                                            {newClientBirthday || 'Выберите дату'}
+                                        </Text>
+                                        <Ionicons name="calendar-outline" size={20} color={colors.text.muted} />
+                                    </TouchableOpacity>
                                 </View>
                             </ScrollView>
                         </SafeAreaView>
                     </KeyboardAvoidingView>
+
+                    {/* Birthday Date Picker */}
+                    {Platform.OS === 'ios' ? (
+                        <Modal
+                            visible={showDatePicker}
+                            transparent={true}
+                            animationType="fade"
+                            onRequestClose={() => setShowDatePicker(false)}
+                        >
+                            <View style={styles.datePickerOverlay}>
+                                <View style={[styles.datePickerContainer, { backgroundColor: colors.background.card }]}>
+                                    <View style={[styles.datePickerHeader, { borderBottomColor: colors.border.normal }]}>
+                                        <TouchableOpacity onPress={() => setShowDatePicker(false)}>
+                                            <Text style={[styles.datePickerCancel, { color: colors.text.muted }]}>Отмена</Text>
+                                        </TouchableOpacity>
+                                        <Text style={[styles.datePickerTitle, { color: colors.text.normal }]}>День рождения</Text>
+                                        <TouchableOpacity onPress={() => {
+                                            if (selectedDate) {
+                                                const day = selectedDate.getDate().toString().padStart(2, '0');
+                                                const month = (selectedDate.getMonth() + 1).toString().padStart(2, '0');
+                                                const year = selectedDate.getFullYear();
+                                                setNewClientBirthday(`${day}.${month}.${year}`);
+                                            }
+                                            setShowDatePicker(false);
+                                        }}>
+                                            <Text style={[styles.datePickerDone, { color: accentColor }]}>Готово</Text>
+                                        </TouchableOpacity>
+                                    </View>
+                                    <DateTimePicker
+                                        value={selectedDate || new Date(2000, 0, 1)}
+                                        mode="date"
+                                        display="spinner"
+                                        themeVariant={isDark ? 'dark' : 'light'}
+                                        textColor={colors.text.normal}
+                                        maximumDate={new Date()}
+                                        minimumDate={new Date(1920, 0, 1)}
+                                        onChange={(event, date) => {
+                                            if (date) {
+                                                setSelectedDate(date);
+                                            }
+                                        }}
+                                        style={{ backgroundColor: colors.background.card }}
+                                    />
+                                </View>
+                            </View>
+                        </Modal>
+                    ) : (
+                        showDatePicker && (
+                            <DateTimePicker
+                                value={selectedDate || new Date(2000, 0, 1)}
+                                mode="date"
+                                display="default"
+                                themeVariant={isDark ? 'dark' : 'light'}
+                                maximumDate={new Date()}
+                                minimumDate={new Date(1920, 0, 1)}
+                                onChange={(event, date) => {
+                                    setShowDatePicker(false);
+                                    if (date && event.type !== 'dismissed') {
+                                        setSelectedDate(date);
+                                        const day = date.getDate().toString().padStart(2, '0');
+                                        const month = (date.getMonth() + 1).toString().padStart(2, '0');
+                                        const year = date.getFullYear();
+                                        setNewClientBirthday(`${day}.${month}.${year}`);
+                                    }
+                                }}
+                            />
+                        )
+                    )}
                 </Modal>
 
                 <Toast
@@ -1448,6 +1533,36 @@ const styles = StyleSheet.create({
         fontSize: 13,
         fontWeight: '500',
         textAlign: 'center',
+    },
+    // Date Picker Modal styles
+    datePickerOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        justifyContent: 'flex-end',
+    },
+    datePickerContainer: {
+        borderTopLeftRadius: 20,
+        borderTopRightRadius: 20,
+        paddingBottom: 34,
+    },
+    datePickerHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingHorizontal: 16,
+        paddingVertical: 14,
+        borderBottomWidth: 1,
+    },
+    datePickerCancel: {
+        fontSize: 16,
+    },
+    datePickerTitle: {
+        fontSize: 17,
+        fontWeight: '600',
+    },
+    datePickerDone: {
+        fontSize: 16,
+        fontWeight: '600',
     },
 });
 

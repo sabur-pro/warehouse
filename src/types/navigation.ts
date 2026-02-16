@@ -14,6 +14,7 @@ export type ProfileStackParamList = {
   PendingActions: undefined;
   Settings: undefined;
   Clients: undefined;
+  ClientDetails: { client: import('../../database/types').Client };
 };
 
 export type AuthStackParamList = {

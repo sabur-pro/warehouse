@@ -51,6 +51,13 @@ function ProfileNavigator() {
         }}
       />
       <ProfileStack.Screen
+        name="ClientDetails"
+        component={require('../screens/ClientDetailsScreen').default}
+        options={{
+          headerShown: false,
+        }}
+      />
+      <ProfileStack.Screen
         name="Subscription"
         component={SubscriptionScreen}
         options={{
@@ -144,9 +151,10 @@ const CustomTabBar: React.FC<CustomTabBarProps> = ({ state, descriptors, navigat
             styles.tabIconContainer,
             {
               borderRadius: 12,
+              overflow: 'hidden' as const, // Fixes borderRadius not working on Android with transparent background
               backgroundColor: isFocused
                 ? (isDark ? 'rgba(212, 175, 55, 0.15)' : 'rgba(42, 171, 238, 0.12)')
-                : 'transparent'
+                : 'rgba(0, 0, 0, 0.001)' // Use near-transparent instead of 'transparent' for Android borderRadius fix
             }
           ], [isFocused, isDark]);
 

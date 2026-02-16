@@ -487,6 +487,7 @@ class SyncService {
               serverId: tx.serverId,
               itemId: tx.itemId,
               itemServerId: itemServerId, // Добавляем серверный ID товара
+              itemUuid: tx.itemUuid,      // Добавляем UUID товара (NEW)
               action: tx.action,
               itemName: tx.itemName,
               timestamp: tx.timestamp,
@@ -1412,6 +1413,74 @@ class SyncService {
   private async upsertTransaction(tx: any): Promise<void> {
     const db = await getDatabaseInstance();
 
+    // Resolving local itemId by itemUuid (preferred) or serverId
+    let localItemId: number | null = null;
+
+    if (tx.itemUuid) {
+      const item = await getFirstWithRetry<{ id: number }>(
+        db,
+        'SELECT id FROM items WHERE uuid=?',
+        [tx.itemUuid]
+      );
+      if (item) {
+        localItemId = item.id;
+      }
+    }
+
+    // Fallback: if no itemUuid or not found, try by serverId (if provided in tx)
+    if (!localItemId && tx.itemServerId) {
+      const item = await getFirstWithRetry<{ id: number }>(
+        db,
+        'SELECT id FROM items WHERE serverId=?',
+        [tx.itemServerId]
+      );
+      if (item) {
+        localItemId = item.id;
+      }
+    }
+
+    // If still not found, keep existing logic (maybe it's null or legacy)
+    // But ensure we don't overwrite with a wrong ID if we found nothing better.
+    // If localItemId is found, use it. Otherwise use tx.itemId (which might be wrong if it's from server, but maybe it's null).
+    // Actually, server sends "itemId" which is usually referencing the ITEM's ID on server (if simplistic) or null.
+    // We should be careful. If we found a local item, use that ID.
+    const finalItemId = localItemId !== null ? localItemId : tx.itemId;
+
+    // Ремаппинг clientId если есть clientUuid или clientId
+    let finalDetails = tx.details;
+    if (tx.details && typeof tx.details === 'string') {
+      try {
+        const detailsObj = JSON.parse(tx.details);
+        if (detailsObj.clientUuid) {
+          // Приоритет: ремаппинг по UUID (самый надёжный)
+          const client = await getFirstWithRetry<{ id: number }>(
+            db,
+            'SELECT id FROM clients WHERE uuid=?',
+            [detailsObj.clientUuid]
+          );
+          if (client) {
+            console.log(`♻️ Remapped clientId=${detailsObj.clientId} to localId=${client.id} (by UUID) for tx serverId=${tx.id}`);
+            detailsObj.clientId = client.id;
+            finalDetails = JSON.stringify(detailsObj);
+          }
+        } else if (detailsObj.clientId) {
+          // Fallback: ремаппинг по serverId (clientId из сервера = serverId локально)
+          const client = await getFirstWithRetry<{ id: number }>(
+            db,
+            'SELECT id FROM clients WHERE serverId=?',
+            [detailsObj.clientId]
+          );
+          if (client) {
+            console.log(`♻️ Remapped clientId=${detailsObj.clientId} to localId=${client.id} (by serverId) for tx serverId=${tx.id}`);
+            detailsObj.clientId = client.id;
+            finalDetails = JSON.stringify(detailsObj);
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to parse details for remapping:', e);
+      }
+    }
+
     // Проверить существует ли transaction с serverId
     const existing = await getFirstWithRetry<{ id: number }>(
       db,
@@ -1424,22 +1493,22 @@ class SyncService {
       await runWithRetry(db, `
         UPDATE transactions SET
           action=?, itemId=?, itemName=?, timestamp=?, details=?,
-          isDeleted=?, syncedAt=?
+          isDeleted=?, needsSync=0, syncedAt=?, itemUuid=?
         WHERE serverId=?
       `, [
-        tx.action, tx.itemId, tx.itemName, tx.timestamp, tx.details,
-        tx.isDeleted ? 1 : 0, Date.now(), tx.id
+        tx.action, finalItemId, tx.itemName, tx.timestamp, finalDetails,
+        tx.isDeleted ? 1 : 0, Date.now(), tx.itemUuid || null, tx.id
       ]);
     } else {
       // Вставить новый
       await runWithRetry(db, `
         INSERT INTO transactions (
           serverId, action, itemId, itemName, timestamp, details,
-          isDeleted, needsSync, syncedAt
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+          isDeleted, needsSync, syncedAt, itemUuid
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
       `, [
-        tx.id, tx.action, tx.itemId, tx.itemName, tx.timestamp, tx.details,
-        tx.isDeleted ? 1 : 0, Date.now()
+        tx.id, tx.action, finalItemId, tx.itemName, tx.timestamp, finalDetails,
+        tx.isDeleted ? 1 : 0, Date.now(), tx.itemUuid || null
       ]);
     }
   }

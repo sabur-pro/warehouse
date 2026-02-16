@@ -10,6 +10,8 @@ import {
   Alert,
   RefreshControl,
   TextInput,
+  Modal,
+  Platform,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
@@ -640,19 +642,57 @@ const HistoryContentNew = forwardRef<HistoryContentNewRef>((_, ref) => {
       />
 
       {/* Date Picker */}
-      {showDatePicker && (
-        <DateTimePicker
-          value={filterDate || new Date()}
-          mode="date"
-          display="default"
-          onChange={(event: DateTimePickerEvent, selectedDate?: Date) => {
-            if (event.type === 'set' && selectedDate) {
-              handleDateFilter(selectedDate);
-            } else {
+      {Platform.OS === 'ios' ? (
+        <Modal
+          visible={showDatePicker}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={() => setShowDatePicker(false)}
+        >
+          <View style={styles.datePickerOverlay}>
+            <View style={[styles.datePickerContainer, { backgroundColor: colors.background.card }]}>
+              <View style={[styles.datePickerHeader, { borderBottomColor: colors.border.normal }]}>
+                <TouchableOpacity onPress={() => setShowDatePicker(false)}>
+                  <Text style={[styles.datePickerCancel, { color: colors.text.muted }]}>Отмена</Text>
+                </TouchableOpacity>
+                <Text style={[styles.datePickerTitle, { color: colors.text.normal }]}>Выберите дату</Text>
+                <TouchableOpacity onPress={() => {
+                  handleDateFilter(filterDate || new Date());
+                }}>
+                  <Text style={[styles.datePickerDone, { color: isDark ? colors.primary.gold : '#10b981' }]}>Готово</Text>
+                </TouchableOpacity>
+              </View>
+              <DateTimePicker
+                value={filterDate || new Date()}
+                mode="date"
+                display="spinner"
+                themeVariant={isDark ? 'dark' : 'light'}
+                textColor={colors.text.normal}
+                onChange={(event: DateTimePickerEvent, selectedDate?: Date) => {
+                  if (selectedDate) {
+                    setFilterDate(selectedDate);
+                  }
+                }}
+                style={{ backgroundColor: colors.background.card }}
+              />
+            </View>
+          </View>
+        </Modal>
+      ) : (
+        showDatePicker && (
+          <DateTimePicker
+            value={filterDate || new Date()}
+            mode="date"
+            display="default"
+            themeVariant={isDark ? 'dark' : 'light'}
+            onChange={(event: DateTimePickerEvent, selectedDate?: Date) => {
               setShowDatePicker(false);
-            }
-          }}
-        />
+              if (event.type === 'set' && selectedDate) {
+                handleDateFilter(selectedDate);
+              }
+            }}
+          />
+        )
       )}
 
       {selectedGroup && (
@@ -903,6 +943,36 @@ const styles = StyleSheet.create({
   emptySubtext: {
     fontSize: 14,
     textAlign: 'center',
+  },
+  // Date Picker Modal styles
+  datePickerOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  datePickerContainer: {
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingBottom: 34,
+  },
+  datePickerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+  },
+  datePickerCancel: {
+    fontSize: 16,
+  },
+  datePickerTitle: {
+    fontSize: 17,
+    fontWeight: '600',
+  },
+  datePickerDone: {
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
 

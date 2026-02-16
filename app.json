@@ -2,7 +2,7 @@
   "expo": {
     "name": "Norov",
     "slug": "sklad",
-    "version": "1.0.3",
+    "version": "1.0.6",
     "web": {
       "favicon": "./assets/favicon.png"
     },

@@ -234,6 +234,27 @@ const StatisticsScreen: React.FC = () => {
               ]}
               color="#f59e0b"
             />
+
+            {/* Статистика скидок */}
+            {statistics.periodStats.totalDiscount > 0 && (
+              <CombinedStatCard
+                items={[
+                  {
+                    icon: 'local-offer',
+                    title: 'Скидки',
+                    value: `${statistics.periodStats.totalDiscount.toFixed(2)}`,
+                    subtitle: 'сомонӣ',
+                  },
+                  {
+                    icon: 'percent',
+                    title: '% от продаж',
+                    value: `${statistics.periodStats.sales > 0 ? ((statistics.periodStats.totalDiscount / (statistics.periodStats.sales + statistics.periodStats.totalDiscount)) * 100).toFixed(1) : 0}%`,
+                    subtitle: 'скидки',
+                  },
+                ]}
+                color="#ef4444"
+              />
+            )}
           </View>
         </View>
 

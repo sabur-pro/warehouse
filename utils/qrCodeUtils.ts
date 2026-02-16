@@ -19,12 +19,19 @@ export const generateQRId = (): string => {
 
 /**
  * Генерирует данные для QR-кода
+ * @param itemId - локальный ID товара (для обратной совместимости)
+ * @param itemName - название товара
+ * @param itemCode - код товара
+ * @param itemUuid - UUID товара (уникальный идентификатор для кросс-девайс синхронизации)
+ * @param boxIndex - индекс коробки
+ * @param size - размер товара
  */
-export const generateQRData = (itemId: number, itemName: string, itemCode: string, boxIndex?: number, size?: number | string): string => {
+export const generateQRData = (itemId: number, itemName: string, itemCode: string, itemUuid?: string, boxIndex?: number, size?: number | string): string => {
   const baseData = {
     itemId,
     itemName,
     itemCode,
+    itemUuid, // UUID для поиска на других устройствах после синхронизации
     type: 'warehouse_item',
   };
 
@@ -46,6 +53,7 @@ export const createQRCodesForItem = (
   itemId: number,
   itemName: string,
   itemCode: string,
+  itemUuid: string | undefined,
   qrCodeType: QRCodeType,
   numberOfBoxes: number,
   boxSizeQuantities: string
@@ -61,7 +69,7 @@ export const createQRCodesForItem = (
     for (let i = 0; i < numberOfBoxes; i++) {
       qrCodes.push({
         id: generateQRId(),
-        data: generateQRData(itemId, itemName, itemCode, i),
+        data: generateQRData(itemId, itemName, itemCode, itemUuid, i),
         boxIndex: i,
       });
     }
@@ -78,7 +86,7 @@ export const createQRCodesForItem = (
                 for (let itemIndex = 0; itemIndex < sizeQuantity.quantity; itemIndex++) {
                   qrCodes.push({
                     id: generateQRId(),
-                    data: generateQRData(itemId, itemName, itemCode, boxIndex, sizeQuantity.size),
+                    data: generateQRData(itemId, itemName, itemCode, itemUuid, boxIndex, sizeQuantity.size),
                     boxIndex,
                     size: sizeQuantity.size,
                     itemIndex: itemIndex + 1, // Номер пары/единицы (начинается с 1)

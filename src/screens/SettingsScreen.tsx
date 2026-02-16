@@ -1,5 +1,5 @@
 // src/screens/SettingsScreen.tsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -24,12 +24,26 @@ import {
 } from '../../database/streamingImportExport';
 import { generateLocalTestData } from '../../database/database';
 import * as DocumentPicker from 'expo-document-picker';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
 import { getThemeColors } from '../../constants/theme';
 import { useNavigation } from '@react-navigation/native';
 import LogService from '../services/LogService';
 import SyncService from '../services/SyncService';
+
+export const SYNC_INTERVAL_KEY = 'sync_interval_ms';
+export const DEFAULT_SYNC_INTERVAL = 5 * 60 * 1000; // 5 минут
+
+const SYNC_INTERVAL_OPTIONS = [
+  { label: '30 секунд', value: 30 * 1000 },
+  { label: '1 минута', value: 60 * 1000 },
+  { label: '2 минуты', value: 2 * 60 * 1000 },
+  { label: '3 минуты', value: 3 * 60 * 1000 },
+  { label: '5 минут', value: 5 * 60 * 1000 },
+  { label: '7 минут', value: 7 * 60 * 1000 },
+  { label: '10 минут', value: 10 * 60 * 1000 },
+];
 
 const SettingsScreen: React.FC = () => {
   const navigation = useNavigation();
@@ -44,6 +58,26 @@ const SettingsScreen: React.FC = () => {
   const [exportProgress, setExportProgress] = useState<StreamingExportProgress | null>(null);
   const [importProgress, setImportProgress] = useState<StreamingImportProgress | null>(null);
   const [showStreamingExport, setShowStreamingExport] = useState(false);
+  const [syncInterval, setSyncInterval] = useState(DEFAULT_SYNC_INTERVAL);
+  const [showSyncIntervalPicker, setShowSyncIntervalPicker] = useState(false);
+
+  // Загрузить сохранённый интервал при монтировании
+  useEffect(() => {
+    AsyncStorage.getItem(SYNC_INTERVAL_KEY).then(val => {
+      if (val) setSyncInterval(parseInt(val, 10));
+    });
+  }, []);
+
+  const handleSelectSyncInterval = async (value: number) => {
+    setSyncInterval(value);
+    await AsyncStorage.setItem(SYNC_INTERVAL_KEY, String(value));
+    setShowSyncIntervalPicker(false);
+  };
+
+  const getSyncIntervalLabel = () => {
+    const opt = SYNC_INTERVAL_OPTIONS.find(o => o.value === syncInterval);
+    return opt ? opt.label : `${Math.round(syncInterval / 1000)} сек`;
+  };
 
   const {
     clearDatabase,
@@ -475,6 +509,29 @@ const SettingsScreen: React.FC = () => {
       </View>
 
       <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent}>
+        <SectionHeader title="Синхронизация" />
+
+        <TouchableOpacity
+          style={[
+            styles.settingItem,
+            { backgroundColor: colors.background.card, borderColor: colors.border.light }
+          ]}
+          onPress={() => setShowSyncIntervalPicker(true)}
+          activeOpacity={0.7}
+        >
+          <View style={[styles.iconContainer, { backgroundColor: 'rgba(16, 185, 129, 0.12)' }]}>
+            <MaterialIcons name="timer" size={24} color="#10b981" />
+          </View>
+          <View style={styles.settingContent}>
+            <Text style={[styles.settingTitle, { color: colors.text.normal }]}>Интервал автосинхронизации</Text>
+            <Text style={[styles.settingDescription, { color: colors.text.muted }]}>
+              Текущий: {getSyncIntervalLabel()}
+            </Text>
+          </View>
+          <MaterialIcons name="chevron-right" size={24} color={colors.text.muted} />
+        </TouchableOpacity>
+
+        {/* === Данные — временно отключено для прода ===
         <SectionHeader title="Данные" />
 
         <SettingItem
@@ -511,8 +568,9 @@ const SettingsScreen: React.FC = () => {
           onPress={handleGenerateTestData}
           color="#ec4899"
         />
-        */}
+        * /}
 
+        === Очистка — временно отключено для прода ===
         <SectionHeader title="Очистка" />
 
         <SettingItem
@@ -531,6 +589,7 @@ const SettingsScreen: React.FC = () => {
           color="#ef4444"
           destructive
         />
+        === конец закомментированного блока === */}
 
         <SectionHeader title="Отладка" />
 
@@ -588,7 +647,7 @@ const SettingsScreen: React.FC = () => {
 
         <View style={[styles.appInfo, { backgroundColor: colors.background.card }]}>
           <Text style={[styles.appName, { color: colors.text.normal }]}>Norov</Text>
-          <Text style={[styles.appVersion, { color: colors.text.muted }]}>Версия 1.0.3</Text>
+          <Text style={[styles.appVersion, { color: colors.text.muted }]}>Версия 1.0.6</Text>
           <Text style={[styles.appDescription, { color: colors.text.muted }]}>
             Система управления складскими запасами с современным интерфейсом и аналитикой созданно командой NOROV
           </Text>
@@ -654,6 +713,45 @@ const SettingsScreen: React.FC = () => {
             </Text>
           </View>
         </View>
+      </Modal>
+
+      {/* Sync Interval Picker Modal */}
+      <Modal visible={showSyncIntervalPicker} transparent animationType="fade">
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowSyncIntervalPicker(false)}
+        >
+          <View style={[styles.intervalPickerContent, { backgroundColor: colors.background.card }]}>
+            <Text style={[styles.intervalPickerTitle, { color: colors.text.normal }]}>
+              Интервал автосинхронизации
+            </Text>
+            {SYNC_INTERVAL_OPTIONS.map(opt => (
+              <TouchableOpacity
+                key={opt.value}
+                style={[
+                  styles.intervalOption,
+                  { borderBottomColor: colors.border.light },
+                  syncInterval === opt.value && {
+                    backgroundColor: isDark ? 'rgba(212, 175, 55, 0.15)' : 'rgba(59, 130, 246, 0.08)'
+                  }
+                ]}
+                onPress={() => handleSelectSyncInterval(opt.value)}
+              >
+                <Text style={[
+                  styles.intervalOptionText,
+                  { color: colors.text.normal },
+                  syncInterval === opt.value && { fontWeight: '700', color: isDark ? '#d4af37' : '#3b82f6' }
+                ]}>
+                  {opt.label}
+                </Text>
+                {syncInterval === opt.value && (
+                  <MaterialIcons name="check" size={20} color={isDark ? '#d4af37' : '#3b82f6'} />
+                )}
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
       </Modal>
 
     </SafeAreaView>
@@ -777,6 +875,29 @@ const styles = StyleSheet.create({
     marginTop: 16,
     fontSize: 16,
     fontWeight: '600',
+  },
+  intervalPickerContent: {
+    width: '80%',
+    borderRadius: 16,
+    padding: 20,
+    maxWidth: 400,
+  },
+  intervalPickerTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  intervalOption: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+  },
+  intervalOptionText: {
+    fontSize: 16,
   },
 });
 

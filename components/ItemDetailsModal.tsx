@@ -547,6 +547,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
               currentItem.id,
               updatedBasic.name,
               updatedBasic.code,
+              currentItem.uuid,
               currentItem.qrCodeType,
               updatedBasic.numberOfBoxes || 1,
               newBoxJson
@@ -648,6 +649,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
           currentItem.id,
           updatedBasic.name,
           updatedBasic.code,
+          currentItem.uuid,
           currentItem.qrCodeType,
           updatedBasic.numberOfBoxes || 1,
           newBoxJson
@@ -778,6 +780,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
           currentItem.id,
           currentItem.name,
           currentItem.code,
+          currentItem.uuid,
           currentItem.qrCodeType,
           currentItem.numberOfBoxes || 1,
           JSON.stringify(newBoxSizeQuantities)
@@ -916,6 +919,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
           currentItem.id,
           currentItem.name,
           currentItem.code,
+          currentItem.uuid,
           currentItem.qrCodeType,
           currentItem.numberOfBoxes || 1,
           JSON.stringify(newBoxSizeQuantities)
@@ -2257,6 +2261,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
             itemId={currentItem.id}
             itemName={currentItem.name}
             itemCode={currentItem.code}
+            itemUuid={currentItem.uuid}
             numberOfBoxes={currentItem.numberOfBoxes}
             boxSizeQuantities={currentItem.boxSizeQuantities}
           />

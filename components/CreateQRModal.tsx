@@ -12,6 +12,7 @@ interface CreateQRModalProps {
   itemId: number;
   itemName: string;
   itemCode: string;
+  itemUuid?: string; // UUID для кросс-девайс идентификации
   numberOfBoxes: number;
   boxSizeQuantities: string;
 }
@@ -23,6 +24,7 @@ export const CreateQRModal: React.FC<CreateQRModalProps> = ({
   itemId,
   itemName,
   itemCode,
+  itemUuid,
   numberOfBoxes,
   boxSizeQuantities,
 }) => {
@@ -55,8 +57,8 @@ export const CreateQRModal: React.FC<CreateQRModalProps> = ({
 
     setIsCreating(true);
     try {
-      // Генерируем QR-коды
-      const qrCodes = createQRCodesForItem(itemId, itemName, itemCode, selectedType, numberOfBoxes, boxSizeQuantities);
+      // Генерируем QR-коды с UUID для кросс-девайс идентификации
+      const qrCodes = createQRCodesForItem(itemId, itemName, itemCode, itemUuid, selectedType, numberOfBoxes, boxSizeQuantities);
       const qrCodesString = JSON.stringify(qrCodes);
 
       await onCreateQR(selectedType, qrCodesString);

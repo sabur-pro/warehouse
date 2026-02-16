@@ -339,15 +339,13 @@ export default function ProfileScreen() {
                 <Text style={[styles.quickActionText, { color: colors.text.normal }]}>Заявки</Text>
               </TouchableOpacity>
             )}
-            {isAdmin() && (
-              <TouchableOpacity
-                style={[styles.quickAction, { backgroundColor: colors.background.card }]}
-                onPress={() => navigation.navigate('Clients')}
-              >
-                <MaterialIcons name="people" size={24} color={isDark ? colors.primary.gold : colors.primary.blue} />
-                <Text style={[styles.quickActionText, { color: colors.text.normal }]}>Клиенты</Text>
-              </TouchableOpacity>
-            )}
+            <TouchableOpacity
+              style={[styles.quickAction, { backgroundColor: colors.background.card }]}
+              onPress={() => navigation.navigate('Clients')}
+            >
+              <MaterialIcons name="people" size={24} color={isDark ? colors.primary.gold : colors.primary.blue} />
+              <Text style={[styles.quickActionText, { color: colors.text.normal }]}>Клиенты</Text>
+            </TouchableOpacity>
             <TouchableOpacity
               style={[styles.quickAction, { backgroundColor: colors.background.card }]}
               onPress={() => navigation.navigate('Settings')}
@@ -545,7 +543,7 @@ export default function ProfileScreen() {
           <View style={[styles.appInfo, { backgroundColor: colors.background.card }]}>
             <MaterialIcons name="inventory-2" size={40} color={isDark ? colors.primary.gold : colors.primary.blue} />
             <Text style={[styles.appName, { color: colors.text.normal }]}>Склад</Text>
-            <Text style={[styles.appVersion, { color: colors.text.muted }]}>Версия 1.0.3</Text>
+            <Text style={[styles.appVersion, { color: colors.text.muted }]}>Версия 1.0.6</Text>
             <Text style={[styles.appDescription, { color: colors.text.muted }]}>
               Система управления складскими запасами
             </Text>

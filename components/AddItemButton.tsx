@@ -359,8 +359,8 @@ export const AddItemButton = () => {
       // Преобразуем данные о коробках в JSON строку
       const boxesDataString = JSON.stringify(modifiedBoxSizeQuantities);
 
-      // Генерируем QR-коды (используем временный ID 0, он обновится после вставки)
-      const qrCodes = createQRCodesForItem(0, name, code, qrCodeType, numberOfBoxes, boxesDataString);
+      // Генерируем QR-коды (используем временный ID 0 и undefined для UUID, они обновятся после вставки)
+      const qrCodes = createQRCodesForItem(0, name, code, undefined, qrCodeType, numberOfBoxes, boxesDataString);
       const qrCodesString = qrCodes.length > 0 ? JSON.stringify(qrCodes) : null;
 
       await addItem({
