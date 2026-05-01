@@ -852,6 +852,42 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
         console.warn('QR code UUID migration failed (ignored, will retry on next init):', qrMigrationErr);
       }
 
+      // ========================================
+      // CATALOGS TABLE (мульти-каталог)
+      // ========================================
+      const catalogsTableInfo = await getFirstWithRetry<{ name: string }>(
+        databaseInstance!,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='catalogs';"
+      );
+
+      if (!catalogsTableInfo) {
+        console.log('Creating catalogs table');
+        await execWithRetry(databaseInstance!, `
+          CREATE TABLE catalogs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            serverId INTEGER,
+            uuid TEXT UNIQUE,
+            name TEXT NOT NULL,
+            icon TEXT,
+            color TEXT,
+            sortOrder INTEGER DEFAULT 0,
+            isEnabled INTEGER DEFAULT 1,
+            sizeTypes TEXT NOT NULL DEFAULT '[]',
+            version INTEGER DEFAULT 1,
+            isDeleted INTEGER DEFAULT 0,
+            needsSync INTEGER DEFAULT 0,
+            createdAt INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+            updatedAt INTEGER DEFAULT (strftime('%s', 'now') * 1000)
+          );
+        `);
+        try {
+          await execWithRetry(databaseInstance!, 'CREATE INDEX IF NOT EXISTS idx_catalogs_isDeleted ON catalogs(isDeleted);');
+          await execWithRetry(databaseInstance!, 'CREATE UNIQUE INDEX IF NOT EXISTS idx_catalogs_uuid ON catalogs(uuid);');
+        } catch (idxErr) {
+          console.warn('Failed to create catalogs indices (ignored):', idxErr);
+        }
+      }
+
       console.log('Sync system migration completed');
       console.log('Database initialized successfully');
       return databaseInstance!;

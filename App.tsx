@@ -6,6 +6,7 @@ import { DatabaseProvider } from './hooks/useDatabase';
 import { AuthProvider } from './src/contexts/AuthContext';
 import { ThemeProvider, useTheme } from './src/contexts/ThemeContext';
 import { CartProvider } from './src/contexts/CartContext';
+import { CatalogsProvider } from './src/contexts/CatalogsContext';
 import { SyncRefreshProvider } from './src/components/sync/SyncStatusBar';
 import RootNavigator from './src/navigation/RootNavigator';
 import LogService from './src/services/LogService';
@@ -33,11 +34,13 @@ export default function App() {
     <ThemeProvider>
       <AuthProvider>
         <DatabaseProvider>
-          <SyncRefreshProvider>
-            <CartProvider>
-              <AppContent />
-            </CartProvider>
-          </SyncRefreshProvider>
+          <CatalogsProvider>
+            <SyncRefreshProvider>
+              <CartProvider>
+                <AppContent />
+              </CartProvider>
+            </SyncRefreshProvider>
+          </CatalogsProvider>
         </DatabaseProvider>
       </AuthProvider>
     </ThemeProvider>

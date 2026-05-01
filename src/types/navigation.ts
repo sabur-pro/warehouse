@@ -15,6 +15,8 @@ export type ProfileStackParamList = {
   Settings: undefined;
   Clients: undefined;
   ClientDetails: { client: import('../../database/types').Client };
+  Catalogs: undefined;
+  CatalogEdit: { catalogId?: number };
 };
 
 export type AuthStackParamList = {

@@ -39,7 +39,7 @@ export interface DatabaseContextType {
   addItem: (item: Omit<Item, 'id' | 'createdAt'>) => Promise<void>;
   getItems: () => Promise<Item[]>;
   getAllItems: () => Promise<Item[]>;
-  getItemsPage: (limit: number, offset: number, searchTerm?: string, warehouse?: string, itemType?: 'all' | 'обувь' | 'одежда') => Promise<{ items: Item[]; hasMore: boolean }>;
+  getItemsPage: (limit: number, offset: number, searchTerm?: string, warehouse?: string, itemType?: 'all' | string) => Promise<{ items: Item[]; hasMore: boolean }>;
   getDistinctWarehouses: () => Promise<string[]>;
   updateItemQuantity: (id: number, boxSizeQuantities: string, totalQuantity: number, totalValue: number) => Promise<void>;
   updateItem: (item: Item) => Promise<void>;

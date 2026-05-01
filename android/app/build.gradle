@@ -92,7 +92,7 @@ android {
         applicationId 'com.umed1.sklad'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 5
+        versionCode 1
         versionName "1.0.6"
     }
     signingConfigs {

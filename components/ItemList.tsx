@@ -26,6 +26,7 @@ import ItemDetailsModal from './ItemDetailsModal';
 import { useTheme } from '../src/contexts/ThemeContext';
 import { getThemeColors } from '../constants/theme';
 import { useSyncRefresh } from '../src/components/sync/SyncStatusBar';
+import { useCatalogs } from '../src/contexts/CatalogsContext';
 
 type ItemWithExtras = Item & {
   parsedBoxSizeQuantities?: unknown;
@@ -70,7 +71,8 @@ export const ItemList = forwardRef<any, ItemListProps>(({ onRefresh }, ref) => {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selectedWarehouse, setSelectedWarehouse] = useState('Все');
   const [warehouses, setWarehouses] = useState<string[]>([]);
-  const [selectedItemType, setSelectedItemType] = useState<'all' | ItemType>('all');
+  const [selectedItemType, setSelectedItemType] = useState<'all' | string>('all');
+  const { enabledCatalogs } = useCatalogs();
   const debounceRef = useRef<number | null>(null);
 
 
@@ -406,85 +408,39 @@ export const ItemList = forwardRef<any, ItemListProps>(({ onRefresh }, ref) => {
             </View>
           </View>
 
-          {/* Фильтры по типу товара */}
-          <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-            <TouchableOpacity
-              onPress={() => setSelectedItemType('all')}
-              style={[
-                styles.filterTag,
-                {
-                  backgroundColor: selectedItemType === 'all' ? accentColor : (isDark ? colors.background.light : '#f3f4f6'),
-                  borderColor: selectedItemType === 'all' ? accentColor : colors.border.normal
-                }
-              ]}
-              activeOpacity={0.7}
-            >
-              <Ionicons
-                name="apps"
-                size={16}
-                color={selectedItemType === 'all' ? '#fff' : colors.text.muted}
-                style={{ marginRight: 4 }}
+          {/* Фильтры по каталогам */}
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <View style={{ flex: 1 }}>
+              <FlatList
+                horizontal
+                data={[{ id: 'all', name: 'Все', icon: '🗂' } as any, ...enabledCatalogs]}
+                keyExtractor={(item) => String(item.id)}
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ gap: 8 }}
+                renderItem={({ item }) => {
+                  const value = item.id === 'all' ? 'all' : item.name;
+                  const selected = selectedItemType === value;
+                  return (
+                    <TouchableOpacity
+                      onPress={() => setSelectedItemType(value)}
+                      style={[
+                        styles.filterTag,
+                        {
+                          backgroundColor: selected ? accentColor : (isDark ? colors.background.light : '#f3f4f6'),
+                          borderColor: selected ? accentColor : colors.border.normal,
+                        },
+                      ]}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={{ fontSize: 14, marginRight: 4 }}>{item.icon || '📦'}</Text>
+                      <Text style={[styles.filterTagText, { color: selected ? '#fff' : colors.text.muted }]}>
+                        {item.name}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                }}
               />
-              <Text style={[
-                styles.filterTagText,
-                { color: selectedItemType === 'all' ? '#fff' : colors.text.muted }
-              ]}>
-                Все
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={() => setSelectedItemType('обувь')}
-              style={[
-                styles.filterTag,
-                {
-                  backgroundColor: selectedItemType === 'обувь' ? accentColor : (isDark ? colors.background.light : '#f3f4f6'),
-                  borderColor: selectedItemType === 'обувь' ? accentColor : colors.border.normal
-                }
-              ]}
-              activeOpacity={0.7}
-            >
-              <Ionicons
-                name="footsteps"
-                size={16}
-                color={selectedItemType === 'обувь' ? '#fff' : colors.text.muted}
-                style={{ marginRight: 4 }}
-              />
-              <Text style={[
-                styles.filterTagText,
-                { color: selectedItemType === 'обувь' ? '#fff' : colors.text.muted }
-              ]}>
-                Обувь
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={() => setSelectedItemType('одежда')}
-              style={[
-                styles.filterTag,
-                {
-                  backgroundColor: selectedItemType === 'одежда' ? accentColor : (isDark ? colors.background.light : '#f3f4f6'),
-                  borderColor: selectedItemType === 'одежда' ? accentColor : colors.border.normal
-                }
-              ]}
-              activeOpacity={0.7}
-            >
-              <Ionicons
-                name="shirt-outline"
-                size={16}
-                color={selectedItemType === 'одежда' ? '#fff' : colors.text.muted}
-                style={{ marginRight: 4 }}
-              />
-              <Text style={[
-                styles.filterTagText,
-                { color: selectedItemType === 'одежда' ? '#fff' : colors.text.muted }
-              ]}>
-                Одежда
-              </Text>
-            </TouchableOpacity>
-
-            {/* Spacer */}
-            <View style={{ flex: 1 }} />
+            </View>
 
             {/* Refresh button */}
             <TouchableOpacity

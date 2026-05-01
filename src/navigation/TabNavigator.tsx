@@ -17,6 +17,8 @@ import ProfileScreen from '../screens/ProfileScreen';
 import SubscriptionScreen from '../screens/SubscriptionScreen';
 import PendingActionsScreen from '../screens/PendingActionsScreen';
 import SettingsScreen from '../screens/SettingsScreen';
+import CatalogsScreen from '../screens/CatalogsScreen';
+import CatalogEditScreen from '../screens/CatalogEditScreen';
 import ClientsScreen from '../screens/ClientsScreen';
 import CartScreen from '../screens/CartScreen';
 import { useAuth } from '../contexts/AuthContext';
@@ -86,6 +88,16 @@ function ProfileNavigator() {
         options={{
           headerShown: false, // SettingsScreen draws its own header
         }}
+      />
+      <ProfileStack.Screen
+        name="Catalogs"
+        component={CatalogsScreen}
+        options={{ headerShown: false }}
+      />
+      <ProfileStack.Screen
+        name="CatalogEdit"
+        component={CatalogEditScreen}
+        options={{ headerShown: false }}
       />
     </ProfileStack.Navigator>
   );

@@ -26,9 +26,12 @@ export interface PeriodStatistics {
   profitMargin: number;
   averageProfit: number;
   salesCount: number;
-  shoesQuantity: number; // количество проданной обуви
-  clothesQuantity: number; // количество проданной одежды
-  totalDiscount: number; // общая сумма скидок за период
+  // Обобщённый разрез по каталогам: { 'обувь': 12, 'одежда': 5, 'овощи': 3 }
+  quantityByCatalog: Record<string, number>;
+  // Сохранены для обратной совместимости со старыми экранами; равны quantityByCatalog['обувь'/'одежда']
+  shoesQuantity: number;
+  clothesQuantity: number;
+  totalDiscount: number;
 }
 
 export class StatisticsService {
@@ -170,9 +173,14 @@ export class StatisticsService {
     let sales = 0;
     let profit = 0;
     let salesCount = 0;
-    let shoesQuantity = 0;
-    let clothesQuantity = 0;
     let totalDiscount = 0;
+    const quantityByCatalog: Record<string, number> = {};
+
+    const addToCatalog = (rawType: string | undefined, qty: number) => {
+      if (qty <= 0) return;
+      const key = (rawType || 'неизвестно').trim() || 'неизвестно';
+      quantityByCatalog[key] = (quantityByCatalog[key] || 0) + qty;
+    };
 
     // Создаем карту товаров для быстрого поиска с приведением ID к строке для надежности
     const itemsMap = new Map<string, Item>();
@@ -223,20 +231,7 @@ export class StatisticsService {
                 }
               }
 
-              // 3. Категоризируем (проверяем разные варианты написания)
-              if (itemType) {
-                const normalizedType = itemType.trim().toLowerCase();
-                // Проверяем на одежду (включая варианты с разными регистрами и возможные опечатки)
-                if (normalizedType === 'одежда' || normalizedType.includes('одежд')) {
-                  clothesQuantity += quantity;
-                } else {
-                  // Все остальное (включая обувь и неопознанное) считаем обувью
-                  shoesQuantity += quantity;
-                }
-              } else {
-                // Если тип вообще не найден, считаем обувью по умолчанию
-                shoesQuantity += quantity;
-              }
+              addToCatalog(itemType, quantity);
             } else if (isWholesaleSale) {
               const wholesale = details.wholesale || details;
               const totalSalePrice = Number(wholesale.totalSalePrice || wholesale.salePrice || 0);
@@ -261,19 +256,7 @@ export class StatisticsService {
                 }
               }
 
-              // 3. Категоризируем (проверяем разные варианты написания)
-              if (itemType) {
-                const normalizedType = itemType.trim().toLowerCase();
-                // Проверяем на одежду (включая варианты с разными регистрами и возможные опечатки)
-                if (normalizedType === 'одежда' || normalizedType.includes('одежд')) {
-                  clothesQuantity += totalQuantity;
-                } else {
-                  // Все остальное (включая обувь и неопознанное) считаем обувью
-                  shoesQuantity += totalQuantity;
-                }
-              } else {
-                shoesQuantity += totalQuantity;
-              }
+              addToCatalog(itemType, totalQuantity);
             }
           } catch (e) {
             // Игнорируем ошибки парсинга
@@ -285,12 +268,24 @@ export class StatisticsService {
     const averageProfit = salesCount > 0 ? profit / salesCount : 0;
     const profitMargin = sales > 0 ? (profit / sales) * 100 : 0;
 
+    // Обратная совместимость: достаём накопленные значения для известных ключей
+    const findQuantity = (predicate: (key: string) => boolean): number => {
+      let total = 0;
+      Object.entries(quantityByCatalog).forEach(([key, value]) => {
+        if (predicate(key.toLowerCase())) total += value;
+      });
+      return total;
+    };
+    const shoesQuantity = findQuantity((k) => k === 'обувь' || k.includes('обув'));
+    const clothesQuantity = findQuantity((k) => k === 'одежда' || k.includes('одежд'));
+
     return {
       sales,
       profit,
       profitMargin,
       averageProfit,
       salesCount,
+      quantityByCatalog,
       shoesQuantity,
       clothesQuantity,
       totalDiscount,

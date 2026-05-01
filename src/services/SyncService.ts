@@ -228,6 +228,9 @@ class SyncService {
     try {
       console.log('🔄 Starting assistant push sync (batch mode)...');
 
+      // Каталоги синхронизируются ДО товаров — товары ссылаются на itemType (имя каталога).
+      await this.syncCatalogs();
+
       // 0. МИГРАЦИЯ: Пометить старые данные для синхронизации
       // Это нужно для устройств, где sync колонки уже существовали, но данные не были помечены
       const legacyResult = await markLegacyDataForSync();
@@ -997,6 +1000,9 @@ class SyncService {
     try {
       console.log('🔄 Starting admin pull sync (batch mode)...');
 
+      // Каталоги синхронизируются ДО товаров — товары ссылаются на itemType (имя каталога).
+      await this.syncCatalogs();
+
       const lastSyncAt = await this.getLastSyncTimestamp();
       const PULL_BATCH_SIZE = 10;
 
@@ -1714,6 +1720,154 @@ class SyncService {
       itemsWithMissingImages,
       issues,
     };
+  }
+
+  // ============================================
+  // КАТАЛОГИ (мульти-каталог)
+  // ============================================
+
+  /**
+   * Push локальных изменений каталогов на сервер + получить серверные изменения.
+   * Безопасно вызывать перед обычным sync items.
+   */
+  async syncCatalogs(): Promise<void> {
+    const accessToken = await AuthService.getAccessToken();
+    if (!accessToken) {
+      console.warn('No access token, skipping catalogs sync');
+      return;
+    }
+    const api = AuthService.getApiInstance();
+    const db = await getDatabaseInstance();
+
+    // 1. PUSH — отправляем все каталоги с needsSync=1
+    try {
+      const dirty = await getAllWithRetry<any>(db, 'SELECT * FROM catalogs WHERE needsSync = 1');
+      if (dirty.length > 0) {
+        const payload = dirty.map((row: any) => ({
+          localId: row.id,
+          serverId: row.serverId ?? undefined,
+          uuid: row.uuid,
+          name: row.name,
+          icon: row.icon ?? undefined,
+          color: row.color ?? undefined,
+          sortOrder: row.sortOrder ?? 0,
+          isEnabled: !!row.isEnabled,
+          sizeTypes: row.sizeTypes ?? '[]',
+          version: row.version ?? 1,
+          isDeleted: !!row.isDeleted,
+        }));
+        const resp = await api.post(
+          '/catalogs/push',
+          { catalogs: payload },
+          { headers: { Authorization: `Bearer ${accessToken}` } },
+        );
+        const result = resp.data?.catalogs ?? [];
+        for (const r of result) {
+          if (r.localId && r.serverId) {
+            await runWithRetry(
+              db,
+              'UPDATE catalogs SET serverId = ?, needsSync = 0 WHERE id = ?',
+              [r.serverId, r.localId],
+            );
+          }
+        }
+        console.log(`📤 Pushed ${dirty.length} catalogs`);
+      }
+    } catch (err: any) {
+      console.warn('Catalogs push failed:', err?.response?.data || err?.message || err);
+    }
+
+    // 2. PULL — забираем изменения с сервера
+    try {
+      const lastSyncAt = await this.getLastSyncTimestamp();
+      let cursor = 0;
+      let hasMore = true;
+      while (hasMore) {
+        const resp = await api.get('/catalogs/pull', {
+          params: {
+            lastSyncAt: lastSyncAt ? new Date(lastSyncAt).toISOString() : undefined,
+            limit: 200,
+            cursor,
+          },
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const { catalogs = [], hasMore: more = false, nextCursor } = resp.data || {};
+        for (const cat of catalogs) {
+          await this.upsertCatalog(cat);
+        }
+        hasMore = !!more;
+        cursor = nextCursor || cursor;
+        if (catalogs.length === 0) break;
+      }
+      console.log('📥 Catalogs pull complete');
+    } catch (err: any) {
+      console.warn('Catalogs pull failed:', err?.response?.data || err?.message || err);
+    }
+  }
+
+  private async upsertCatalog(remote: any): Promise<void> {
+    const db = await getDatabaseInstance();
+    let existing = await getFirstWithRetry<any>(
+      db,
+      'SELECT id FROM catalogs WHERE serverId = ? OR uuid = ?',
+      [remote.id, remote.uuid],
+    );
+    // Если по uuid/serverId не нашли, но локально есть каталог с таким же именем,
+    // ещё не отправленный на сервер — сливаем (избегаем дубликата при seed на двух устройствах).
+    if (!existing) {
+      existing = await getFirstWithRetry<any>(
+        db,
+        'SELECT id FROM catalogs WHERE LOWER(name) = LOWER(?) AND (serverId IS NULL OR needsSync = 1) LIMIT 1',
+        [remote.name],
+      );
+    }
+    const updatedAt = remote.updatedAt
+      ? new Date(remote.updatedAt).getTime()
+      : Date.now();
+    if (existing) {
+      await runWithRetry(
+        db,
+        `UPDATE catalogs SET
+          serverId = ?, uuid = ?, name = ?, icon = ?, color = ?, sortOrder = ?,
+          isEnabled = ?, sizeTypes = ?, version = ?, isDeleted = ?, needsSync = 0, updatedAt = ?
+         WHERE id = ?`,
+        [
+          remote.id,
+          remote.uuid,
+          remote.name,
+          remote.icon ?? null,
+          remote.color ?? null,
+          remote.sortOrder ?? 0,
+          remote.isEnabled === false ? 0 : 1,
+          remote.sizeTypes ?? '[]',
+          remote.version ?? 1,
+          remote.isDeleted ? 1 : 0,
+          updatedAt,
+          existing.id,
+        ],
+      );
+    } else {
+      await runWithRetry(
+        db,
+        `INSERT INTO catalogs
+          (serverId, uuid, name, icon, color, sortOrder, isEnabled, sizeTypes, version, isDeleted, needsSync, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+        [
+          remote.id,
+          remote.uuid,
+          remote.name,
+          remote.icon ?? null,
+          remote.color ?? null,
+          remote.sortOrder ?? 0,
+          remote.isEnabled === false ? 0 : 1,
+          remote.sizeTypes ?? '[]',
+          remote.version ?? 1,
+          remote.isDeleted ? 1 : 0,
+          updatedAt,
+          updatedAt,
+        ],
+      );
+    }
   }
 }
 

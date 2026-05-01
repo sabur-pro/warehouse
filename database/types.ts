@@ -1,7 +1,31 @@
 // database/types.ts
-export type ItemType = 'обувь' | 'одежда';
+// ItemType — это имя пользовательского каталога (раньше было 'обувь' | 'одежда').
+export type ItemType = string;
 
 export type QRCodeType = 'none' | 'per_box' | 'per_item';
+
+export interface CatalogSizeType {
+  id: string;
+  name: string;
+  sizes: (number | string)[];
+}
+
+export interface Catalog {
+  id: number;
+  serverId?: number | null;
+  uuid: string;
+  name: string;
+  icon?: string | null;
+  color?: string | null;
+  sortOrder: number;
+  isEnabled: boolean;
+  sizeTypes: CatalogSizeType[];
+  version?: number;
+  isDeleted?: boolean;
+  needsSync?: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
 
 export interface QRCodeData {
   type: QRCodeType;

@@ -32,7 +32,7 @@
       </dict>
     </array>
     <key>CFBundleVersion</key>
-    <string>5</string>
+    <string>1</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>LSRequiresIPhoneOS</key>
@@ -46,6 +46,8 @@
     </dict>
     <key>NSCameraUsageDescription</key>
     <string>Norov использует камеру для сканирования QR-кодов товаров и фотографирования продукции при добавлении на склад. Например, вы можете отсканировать QR-код для быстрого поиска товара или сфотографировать новый товар для каталога.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Allow $(PRODUCT_NAME) to access your microphone</string>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>Norov использует доступ к фотографиям для загрузки изображений товаров из вашей галереи. Например, вы можете выбрать готовое фото продукта для добавления в каталог склада.</string>
     <key>UILaunchStoryboardName</key>
@@ -62,6 +64,8 @@
     <array>
       <string>UIInterfaceOrientationPortrait</string>
       <string>UIInterfaceOrientationPortraitUpsideDown</string>
+      <string>UIInterfaceOrientationLandscapeLeft</string>
+      <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
     <key>UISupportedInterfaceOrientations~ipad</key>
     <array>

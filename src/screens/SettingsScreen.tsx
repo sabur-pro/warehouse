@@ -509,6 +509,16 @@ const SettingsScreen: React.FC = () => {
       </View>
 
       <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent}>
+        <SectionHeader title="Каталоги" />
+
+        <SettingItem
+          icon="category"
+          title="Каталоги товаров"
+          description="Создайте свои каталоги, размерные ряды и шаблоны под сферу бизнеса"
+          onPress={() => (navigation as any).navigate('Catalogs')}
+          color={isDark ? '#fbbf24' : '#f59e0b'}
+        />
+
         <SectionHeader title="Синхронизация" />
 
         <TouchableOpacity

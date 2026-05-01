@@ -21,6 +21,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useDatabase } from '../hooks/useDatabase';
 import { SizeRange, SizeQuantity, ItemType, QRCodeType } from '../database/types';
+import { useCatalogs } from '../src/contexts/CatalogsContext';
 import { compressImage, showCompressionDialog, getRecommendedProfile, formatFileSize } from '../utils/imageCompression';
 import { createQRCodesForItem } from '../utils/qrCodeUtils';
 import * as FileSystem from 'expo-file-system';
@@ -101,13 +102,15 @@ export const AddItemButton = () => {
   const { isDark } = useTheme();
   const themeColors = getThemeColors(isDark);
 
+  const { enabledCatalogs } = useCatalogs();
   const [modalVisible, setModalVisible] = useState(false);
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [warehouse, setWarehouse] = useState('');
   const [numberOfBoxes, setNumberOfBoxes] = useState(1);
-  const [itemType, setItemType] = useState<ItemType>('обувь');
-  const [sizeType, setSizeType] = useState('детский');
+  const initialCatalog = enabledCatalogs[0];
+  const [itemType, setItemType] = useState<ItemType>(initialCatalog?.name ?? '');
+  const [sizeType, setSizeType] = useState<string>(initialCatalog?.sizeTypes[0]?.name ?? '');
   const [boxSizeQuantities, setBoxSizeQuantities] = useState<SizeQuantity[][]>([]);
   const [row, setRow] = useState('');
   const [position, setPosition] = useState('');
@@ -123,71 +126,53 @@ export const AddItemButton = () => {
 
   const accentColor = isDark ? themeColors.primary.gold : themeColors.primary.blue;
 
-  // Определяем размерные ряды для обуви
-  const shoeSizeRanges: Record<string, SizeRange> = {
-    'детский': { type: 'детский', sizes: [30, 31, 32, 33, 34, 35, 36] },
-    'подростковый': { type: 'подростковый', sizes: [36, 37, 38, 39, 40, 41] },
-    'мужской': { type: 'мужской', sizes: [39, 40, 41, 42, 43, 44] },
-    'великан': { type: 'великан', sizes: [44, 45, 46, 47, 48] },
-    'общий': { type: 'общий', sizes: [36, 37, 38, 39, 40, 41, 42, 43, 44, 45] },
-  };
+  // Активный каталог
+  const activeCatalog = useMemo(
+    () => enabledCatalogs.find((c) => c.name === itemType) ?? enabledCatalogs[0],
+    [enabledCatalogs, itemType],
+  );
 
-  // Определяем размерные ряды для одежды
-  const clothingSizeRanges: Record<string, SizeRange> = {
-    'международный': { type: 'международный', sizes: ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL'] },
-    'брюки': { type: 'брюки', sizes: ['44 (XS)', '46 (S)', '48 (M)', '50 (L)', '52 (XL)', '54 (2XL)', '56 (3XL)', '58 (4XL)', '60 (5XL)'] },
-  };
+  // Размерные ряды текущего каталога
+  const sizeRanges = useMemo<Record<string, SizeRange>>(() => {
+    if (!activeCatalog) return {};
+    return Object.fromEntries(
+      activeCatalog.sizeTypes.map((st) => [st.name, { type: st.name, sizes: st.sizes }]),
+    );
+  }, [activeCatalog]);
 
-  // Выбираем размерные ряды в зависимости от типа товара
-  const sizeRanges = useMemo(() => {
-    return itemType === 'обувь' ? shoeSizeRanges : clothingSizeRanges;
-  }, [itemType]);
-
-  // Получаем валидный sizeType для текущего itemType
+  // Валидный sizeType
   const validSizeType = useMemo(() => {
-    // Проверяем, существует ли текущий sizeType в текущих размерных рядах
-    if (sizeRanges[sizeType]) {
-      return sizeType;
-    }
+    if (sizeRanges[sizeType]) return sizeType;
+    return Object.keys(sizeRanges)[0] ?? '';
+  }, [sizeType, sizeRanges]);
 
-    // Если нет - возвращаем первый доступный для текущего типа товара
-    const firstAvailable = Object.keys(sizeRanges)[0];
-    if (firstAvailable) {
-      return firstAvailable;
-    }
-
-    // Последний резерв
-    return itemType === 'обувь' ? 'детский' : 'международный';
-  }, [itemType, sizeType, sizeRanges]);
-
-  // При изменении типа товара синхронизируем размерный ряд
+  // Если itemType не валиден (каталог удалён/выключен) — синхронизируем
   useEffect(() => {
-    const currentRanges = itemType === 'обувь' ? shoeSizeRanges : clothingSizeRanges;
-    const firstSizeType = Object.keys(currentRanges)[0];
+    if (!activeCatalog) return;
+    if (itemType !== activeCatalog.name) {
+      setItemType(activeCatalog.name);
+    }
+  }, [activeCatalog, itemType]);
 
-    if (firstSizeType && !currentRanges[sizeType]) {
+  // Синхронизируем sizeType при смене itemType
+  useEffect(() => {
+    const firstSizeType = Object.keys(sizeRanges)[0];
+    if (firstSizeType && !sizeRanges[sizeType]) {
       setSizeType(firstSizeType);
     }
-  }, [itemType]);
+  }, [itemType, sizeRanges, sizeType]);
 
   useEffect(() => {
-    // Инициализируем размерные линейки для каждой коробки
-    const currentRanges = itemType === 'обувь' ? shoeSizeRanges : clothingSizeRanges;
-
-    // Получаем валидный sizeType для текущего типа товара
-    let currentValidSizeType = sizeType;
-    if (!currentRanges[sizeType]) {
-      currentValidSizeType = Object.keys(currentRanges)[0] || (itemType === 'обувь' ? 'детский' : 'международный');
+    const currentSizeRange = sizeRanges[validSizeType];
+    if (!currentSizeRange) {
+      setBoxSizeQuantities([]);
+      return;
     }
-
-    const currentSizeRange = currentRanges[currentValidSizeType];
-    if (!currentSizeRange) return;
-
     const sizes = currentSizeRange.sizes;
-    const initialQuantities = sizes.map(size => ({ size, quantity: 0, price: 0, recommendedSellingPrice: 0 }));
+    const initialQuantities = sizes.map((size) => ({ size, quantity: 0, price: 0, recommendedSellingPrice: 0 }));
     const boxesArray = Array(numberOfBoxes).fill(null).map(() => [...initialQuantities]);
     setBoxSizeQuantities(boxesArray);
-  }, [sizeType, numberOfBoxes, itemType]);
+  }, [validSizeType, numberOfBoxes, sizeRanges]);
 
   // Вычисляем общее количество товара
   const totalItems = boxSizeQuantities.reduce((total, box) => {
@@ -404,11 +389,16 @@ export const AddItemButton = () => {
     setCode('');
     setWarehouse('');
     setNumberOfBoxes(1);
-    setItemType('обувь');
-    setSizeType('детский');
-    const sizes = shoeSizeRanges['детский'].sizes;
-    const initialQuantities = sizes.map(size => ({ size, quantity: 0, price: 0, recommendedSellingPrice: 0 }));
-    setBoxSizeQuantities([[...initialQuantities]]);
+    const firstCatalog = enabledCatalogs[0];
+    setItemType(firstCatalog?.name ?? '');
+    const firstSizeType = firstCatalog?.sizeTypes[0];
+    setSizeType(firstSizeType?.name ?? '');
+    if (firstSizeType) {
+      const initialQuantities = firstSizeType.sizes.map((size) => ({ size, quantity: 0, price: 0, recommendedSellingPrice: 0 }));
+      setBoxSizeQuantities([[...initialQuantities]]);
+    } else {
+      setBoxSizeQuantities([]);
+    }
     setRow('');
     setPosition('');
     setSide('');
@@ -546,70 +536,58 @@ export const AddItemButton = () => {
               />
             </View>
 
-            {/* Тип товара */}
+            {/* Тип товара (каталог) */}
             <View style={{ marginBottom: 24 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
                 <Ionicons name="shirt" size={20} color={isDark ? themeColors.primary.gold : defaultColors.primary.purple} />
-                <Text style={{ fontSize: 16, fontWeight: '600', color: themeColors.text.normal, marginLeft: 8 }}>Тип товара *</Text>
+                <Text style={{ fontSize: 16, fontWeight: '600', color: themeColors.text.normal, marginLeft: 8 }}>Каталог *</Text>
               </View>
 
-              <View style={{ flexDirection: 'row', marginBottom: 16, gap: 12 }}>
-                <TouchableOpacity
-                  style={{
-                    flex: 1,
-                    padding: 16,
-                    borderRadius: 12,
-                    backgroundColor: itemType === 'обувь' ? (isDark ? 'rgba(212, 175, 55, 0.2)' : 'rgba(42, 171, 238, 0.12)') : themeColors.background.card,
-                    borderWidth: 2,
-                    borderColor: itemType === 'обувь' ? accentColor : themeColors.border.normal,
-                  }}
-                  onPress={() => setItemType('обувь')}
-                  disabled={isSaving}
-                >
-                  <View style={{ alignItems: 'center' }}>
-                    <Ionicons
-                      name="footsteps"
-                      size={32}
-                      color={itemType === 'обувь' ? accentColor : themeColors.text.muted}
-                    />
-                    <Text style={{
-                      marginTop: 8,
-                      fontWeight: '600',
-                      color: itemType === 'обувь' ? accentColor : themeColors.text.muted
-                    }}>
-                      Обувь
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={{
-                    flex: 1,
-                    padding: 16,
-                    borderRadius: 12,
-                    backgroundColor: itemType === 'одежда' ? (isDark ? 'rgba(212, 175, 55, 0.2)' : 'rgba(42, 171, 238, 0.12)') : themeColors.background.card,
-                    borderWidth: 2,
-                    borderColor: itemType === 'одежда' ? accentColor : themeColors.border.normal,
-                  }}
-                  onPress={() => setItemType('одежда')}
-                  disabled={isSaving}
-                >
-                  <View style={{ alignItems: 'center' }}>
-                    <Ionicons
-                      name="shirt-outline"
-                      size={32}
-                      color={itemType === 'одежда' ? accentColor : themeColors.text.muted}
-                    />
-                    <Text style={{
-                      marginTop: 8,
-                      fontWeight: '600',
-                      color: itemType === 'одежда' ? accentColor : themeColors.text.muted
-                    }}>
-                      Одежда
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-              </View>
+              {enabledCatalogs.length === 0 ? (
+                <View style={{
+                  padding: 16,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: themeColors.border.normal,
+                  backgroundColor: themeColors.background.card,
+                }}>
+                  <Text style={{ color: themeColors.text.muted, textAlign: 'center' }}>
+                    Нет доступных каталогов. Создайте каталог в Настройки → Каталоги товаров.
+                  </Text>
+                </View>
+              ) : (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 12 }}>
+                  {enabledCatalogs.map((cat) => {
+                    const selected = itemType === cat.name;
+                    return (
+                      <TouchableOpacity
+                        key={cat.id}
+                        style={{
+                          minWidth: 110,
+                          padding: 14,
+                          borderRadius: 12,
+                          backgroundColor: selected ? (isDark ? 'rgba(212, 175, 55, 0.2)' : 'rgba(42, 171, 238, 0.12)') : themeColors.background.card,
+                          borderWidth: 2,
+                          borderColor: selected ? accentColor : themeColors.border.normal,
+                          alignItems: 'center',
+                        }}
+                        onPress={() => setItemType(cat.name)}
+                        disabled={isSaving}
+                      >
+                        <Text style={{ fontSize: 28 }}>{cat.icon || '📦'}</Text>
+                        <Text style={{
+                          marginTop: 6,
+                          fontWeight: '600',
+                          color: selected ? accentColor : themeColors.text.muted,
+                          textAlign: 'center',
+                        }}>
+                          {cat.name}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              )}
             </View>
 
             {/* Размерный ряд */}
@@ -626,34 +604,23 @@ export const AddItemButton = () => {
                 overflow: 'hidden',
                 backgroundColor: themeColors.background.card
               }}>
-                {itemType === 'обувь' ? (
-                  <Picker
-                    key={`picker-обувь-${validSizeType}`}
-                    selectedValue={validSizeType}
-                    onValueChange={(itemValue: string) => setSizeType(itemValue)}
-                    enabled={!isSaving}
-                    style={{ color: themeColors.text.normal }}
-                    dropdownIconColor={themeColors.text.normal}
-                  >
-                    <Picker.Item label="Детский (30-36)" value="детский" color={isDark ? '#fff' : '#000'} />
-                    <Picker.Item label="Подростковый (36-41)" value="подростковый" color={isDark ? '#fff' : '#000'} />
-                    <Picker.Item label="Мужской (39-44)" value="мужской" color={isDark ? '#fff' : '#000'} />
-                    <Picker.Item label="Великан (44-48)" value="великан" color={isDark ? '#fff' : '#000'} />
-                    <Picker.Item label="Общий (36-45)" value="общий" color={isDark ? '#fff' : '#000'} />
-                  </Picker>
-                ) : (
-                  <Picker
-                    key={`picker-одежда-${validSizeType}`}
-                    selectedValue={validSizeType}
-                    onValueChange={(itemValue: string) => setSizeType(itemValue)}
-                    enabled={!isSaving}
-                    style={{ color: themeColors.text.normal }}
-                    dropdownIconColor={themeColors.text.normal}
-                  >
-                    <Picker.Item label="Международный (XS-5XL)" value="международный" color={isDark ? '#fff' : '#000'} />
-                    <Picker.Item label="Брюки (44-60)" value="брюки" color={isDark ? '#fff' : '#000'} />
-                  </Picker>
-                )}
+                <Picker
+                  key={`picker-${itemType}-${validSizeType}`}
+                  selectedValue={validSizeType}
+                  onValueChange={(itemValue: string) => setSizeType(itemValue)}
+                  enabled={!isSaving && Object.keys(sizeRanges).length > 0}
+                  style={{ color: themeColors.text.normal }}
+                  dropdownIconColor={themeColors.text.normal}
+                >
+                  {Object.values(sizeRanges).map((range) => (
+                    <Picker.Item
+                      key={range.type}
+                      label={`${range.type} (${range.sizes.slice(0, 4).join(', ')}${range.sizes.length > 4 ? '…' : ''})`}
+                      value={range.type}
+                      color={isDark ? '#fff' : '#000'}
+                    />
+                  ))}
+                </Picker>
               </View>
             </View>
 

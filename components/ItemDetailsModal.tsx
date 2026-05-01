@@ -14,6 +14,7 @@ import { useAuth } from '../src/contexts/AuthContext';
 import { QRCodeDisplay } from './QRCodeDisplay';
 import { CreateQRModal } from './CreateQRModal';
 import { useTheme } from '../src/contexts/ThemeContext';
+import { useCatalogs } from '../src/contexts/CatalogsContext';
 import { getThemeColors, colors as defaultColors } from '../constants/theme';
 import { createQRCodesForItem } from '../utils/qrCodeUtils';
 import SyncService from '../src/services/SyncService';
@@ -36,6 +37,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
   const { user, isAdmin, isAssistant } = useAuth();
   const { isDark } = useTheme();
   const colors = getThemeColors(isDark);
+  const { catalogs } = useCatalogs();
   const { addToCart, updateQuantity, removeFromCart, validateCartForItem, cartItems } = useCart();
   const navigation = useNavigation<any>();
   const [currentItem, setCurrentItem] = useState<Item>(item);
@@ -147,40 +149,27 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
   const [recommendedSellingPrice, setRecommendedSellingPrice] = useState(0);
   const [editedNumberOfBoxes, setEditedNumberOfBoxes] = useState(item.numberOfBoxes || 1);
 
-  // Размерные ряды для обуви
-  const shoeSizeRanges: Record<string, (number | string)[]> = {
-    'детский': [30, 31, 32, 33, 34, 35, 36],
-    'подростковый': [36, 37, 38, 39, 40, 41],
-    'мужской': [39, 40, 41, 42, 43, 44],
-    'великан': [44, 45, 46, 47, 48],
-    'общий': [36, 37, 38, 39, 40, 41, 42, 43, 44, 45],
-  };
-
-  // Размерные ряды для одежды
-  const clothingSizeRanges: Record<string, (number | string)[]> = {
-    'международный': ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL'],
-    'брюки': ['44 (XS)', '46 (S)', '48 (M)', '50 (L)', '52 (XL)', '54 (2XL)', '56 (3XL)', '58 (4XL)', '60 (5XL)'],
-  };
-
+  // Размерные ряды берутся из активного каталога (динамически, через CatalogsContext)
   const getSizesFromType = (type: string) => {
-    // Определяем тип товара по sizeType или по item.itemType
-    const itemType = currentItem.itemType || 'обувь';
-    const sizeRanges = itemType === 'обувь' ? shoeSizeRanges : clothingSizeRanges;
-
-    // Проверяем, существует ли указанный тип в размерных рядах
-    if (sizeRanges[type]) {
-      return sizeRanges[type];
+    const itemType = currentItem.itemType || '';
+    const cat = catalogs.find((c) => c.name.toLowerCase() === itemType.toLowerCase());
+    if (cat) {
+      const exact = cat.sizeTypes.find((st) => st.name.toLowerCase() === type.toLowerCase());
+      if (exact) return exact.sizes;
+      const fallback = cat.sizeTypes[0];
+      if (fallback) {
+        console.warn(`SizeType "${type}" not found for catalog "${itemType}", using "${fallback.name}"`);
+        return fallback.sizes;
+      }
     }
 
-    // Если не нашли, возвращаем первый доступный размерный ряд
-    const firstAvailable = Object.keys(sizeRanges)[0];
-    if (firstAvailable && sizeRanges[firstAvailable]) {
-      console.warn(`SizeType "${type}" not found for itemType "${itemType}", using "${firstAvailable}" instead`);
-      return sizeRanges[firstAvailable];
+    // Если каталог не найден (legacy/удалён), пытаемся найти в любом каталоге по имени sizeType
+    for (const c of catalogs) {
+      const st = c.sizeTypes.find((s) => s.name.toLowerCase() === type.toLowerCase());
+      if (st) return st.sizes;
     }
 
-    // В крайнем случае возвращаем пустой массив
-    console.error(`No size ranges found for itemType "${itemType}"`);
+    console.warn(`No catalog or size range found for "${itemType}"/"${type}"`);
     return [];
   };
 
