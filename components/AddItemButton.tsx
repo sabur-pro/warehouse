@@ -1,5 +1,5 @@
 // components/AddItemButton.tsx
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef, forwardRef, useImperativeHandle } from 'react';
 import {
   TouchableOpacity,
   Text,
@@ -13,20 +13,30 @@ import {
   Animated,
   KeyboardTypeOptions,
   DeviceEventEmitter,
-  Platform
+  Platform,
+  Switch
 } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useDatabase } from '../hooks/useDatabase';
-import { SizeRange, SizeQuantity, ItemType, QRCodeType } from '../database/types';
+import { SizeRange, SizeQuantity, ItemType, QRCodeType, PriceUnit, isWeightPriceUnit } from '../database/types';
 import { useCatalogs } from '../src/contexts/CatalogsContext';
+import { sanitizePriceText, parsePriceText, priceUnitLabel } from '../utils/priceInput';
 import { compressImage, showCompressionDialog, getRecommendedProfile, formatFileSize } from '../utils/imageCompression';
 import { createQRCodesForItem } from '../utils/qrCodeUtils';
+import { generateUUID } from '../database/database';
+import { ScanButton } from './ScanButton';
+import { generateEan13 } from '../utils/barcodeUtils';
 import * as FileSystem from 'expo-file-system';
 import { useTheme } from '../src/contexts/ThemeContext';
+import { useCurrency } from '../src/contexts/CurrencyContext';
 import { getThemeColors, colors as defaultColors } from '../constants/theme';
+import { CatalogIcon } from '../src/components/common/CatalogIcon';
+import ItemAttributesEditor, { DraftAttribute } from '../src/components/warehouse/ItemAttributesEditor';
+import { CATALOG_TEMPLATES } from '../src/config/catalogTemplates';
+import { replaceAttributesForItem } from '../src/services/ItemAttributeService';
 
 const FloatingTextInput = ({ label, value, onChangeText, error, editable, placeholder, keyboardType, isDark, colors }: {
   label: string;
@@ -98,28 +108,53 @@ const FloatingTextInput = ({ label, value, onChangeText, error, editable, placeh
   );
 };
 
-export const AddItemButton = () => {
+export interface AddItemButtonRef {
+  /** Открыть форму добавления товара с заранее заполненным штрих-кодом (вызывается из сканера) */
+  openWithCode: (code: string) => void;
+}
+
+export const AddItemButton = forwardRef<AddItemButtonRef>((_, ref) => {
   const { isDark } = useTheme();
+  const { label: currencyShort } = useCurrency();
   const themeColors = getThemeColors(isDark);
 
   const { enabledCatalogs } = useCatalogs();
   const [modalVisible, setModalVisible] = useState(false);
+  // (legacy `barcodeScannerVisible` удалён — сканирование теперь через ScanButton)
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [warehouse, setWarehouse] = useState('');
   const [numberOfBoxes, setNumberOfBoxes] = useState(1);
   const initialCatalog = enabledCatalogs[0];
   const [itemType, setItemType] = useState<ItemType>(initialCatalog?.name ?? '');
-  const [sizeType, setSizeType] = useState<string>(initialCatalog?.sizeTypes[0]?.name ?? '');
+  // Храним выбранный размерный ряд по `id`, а не по имени — иначе при двух одноимённых
+  // sizeType ("вес"+"вес") селектор показывал только последний, а первый молча терялся
+  // (Object.fromEntries дедуплицирует по ключу).
+  const [sizeTypeId, setSizeTypeId] = useState<string>(initialCatalog?.sizeTypes[0]?.id ?? '');
   const [boxSizeQuantities, setBoxSizeQuantities] = useState<SizeQuantity[][]>([]);
   const [row, setRow] = useState('');
   const [position, setPosition] = useState('');
   const [side, setSide] = useState('');
   const [imageUri, setImageUri] = useState<string | null>(null);
-  const [priceValue, setPriceValue] = useState(0);
-  const [recommendedSellingPrice, setRecommendedSellingPrice] = useState(0);
-  const [priceMode, setPriceMode] = useState<'per_pair' | 'per_box'>('per_pair');
+  // Цена в стейте — строкой. Это позволяет вводить промежуточные значения
+  // "11.", "0.5" без того чтобы parseFloat округлял их до int и съедал точку.
+  const [priceText, setPriceText] = useState('');
+  const [recommendedPriceText, setRecommendedPriceText] = useState('');
+  const priceValue = useMemo(() => parsePriceText(priceText), [priceText]);
+  const recommendedSellingPrice = useMemo(() => parsePriceText(recommendedPriceText), [recommendedPriceText]);
+  // priceMode определяет, как введённое число интерпретируется:
+  //   per_pair  → "за единицу" (одна штука) — дефолт для штучных товаров
+  //   per_box   → "за коробку" — делится на количество штук в коробке
+  //   per_weight → "на вес" — цена за выбранную единицу веса (кг / 100 г / шт)
+  const [priceMode, setPriceMode] = useState<'per_pair' | 'per_box' | 'per_weight'>('per_pair');
+  // Единица для режима per_weight. По умолчанию — килограмм.
+  const [weightUnit, setWeightUnit] = useState<'kg' | '100g' | 'piece'>('kg');
+  // Тумблер "Разная цена для размеров":
+  // OFF (по умолчанию) — одна цена применяется ко всем размерам (футболки, обувь).
+  // ON — цена закупки и рекомендуемая цена задаются для каждого размера отдельно (молоко 0.5л / 1л).
+  const [perSizePricing, setPerSizePricing] = useState(false);
   const [qrCodeType, setQrCodeType] = useState<QRCodeType>('none');
+  const [extraAttributes, setExtraAttributes] = useState<DraftAttribute[]>([]);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isSaving, setIsSaving] = useState(false);
   const { addItem } = useDatabase();
@@ -132,19 +167,48 @@ export const AddItemButton = () => {
     [enabledCatalogs, itemType],
   );
 
-  // Размерные ряды текущего каталога
-  const sizeRanges = useMemo<Record<string, SizeRange>>(() => {
+  // Помечен ли активный каталог как "весовой" в шаблоне.
+  // Сам каталог в БД пока не хранит флаг — ориентируемся по справочнику шаблонов
+  // (Овощи/Фрукты/Зелень/Бакалея/Корма + "На вес"). Используем чтобы по умолчанию
+  // включить режим цены "На вес" когда пользователь только что выбрал такой каталог.
+  const isByWeightCatalog = useMemo(() => {
+    if (!itemType) return false;
+    for (const tpl of CATALOG_TEMPLATES) {
+      const found = tpl.catalogs.find((c) => c.name.toLowerCase() === itemType.toLowerCase());
+      if (found?.byWeight) return true;
+    }
+    return false;
+  }, [itemType]);
+
+  // Когда выбран весовой каталог — автоматом ставим режим цены "На вес".
+  // Не сбрасываем если пользователь сам уже переключил режим вручную для этого каталога.
+  const prevAutoCatalogRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (prevAutoCatalogRef.current === itemType) return;
+    prevAutoCatalogRef.current = itemType;
+    if (isByWeightCatalog) {
+      setPriceMode('per_weight');
+      setWeightUnit('kg');
+    }
+  }, [itemType, isByWeightCatalog]);
+
+  // Размерные ряды текущего каталога — ключ id, а не name, чтобы одноимённые ряды не
+  // съедались друг другом при дедупликации (см. комментарий к useState sizeTypeId).
+  const sizeRanges = useMemo<Record<string, SizeRange & { id: string }>>(() => {
     if (!activeCatalog) return {};
     return Object.fromEntries(
-      activeCatalog.sizeTypes.map((st) => [st.name, { type: st.name, sizes: st.sizes }]),
+      activeCatalog.sizeTypes.map((st) => [st.id, { id: st.id, type: st.name, sizes: st.sizes }]),
     );
   }, [activeCatalog]);
 
-  // Валидный sizeType
-  const validSizeType = useMemo(() => {
-    if (sizeRanges[sizeType]) return sizeType;
+  // Валидный sizeType (по id)
+  const validSizeTypeId = useMemo(() => {
+    if (sizeRanges[sizeTypeId]) return sizeTypeId;
     return Object.keys(sizeRanges)[0] ?? '';
-  }, [sizeType, sizeRanges]);
+  }, [sizeTypeId, sizeRanges]);
+
+  // Имя выбранного ряда — то, что мы сохраняем в item.sizeType (downstream работает по имени).
+  const validSizeTypeName = sizeRanges[validSizeTypeId]?.type ?? '';
 
   // Если itemType не валиден (каталог удалён/выключен) — синхронизируем
   useEffect(() => {
@@ -154,16 +218,16 @@ export const AddItemButton = () => {
     }
   }, [activeCatalog, itemType]);
 
-  // Синхронизируем sizeType при смене itemType
+  // Синхронизируем sizeTypeId при смене itemType
   useEffect(() => {
-    const firstSizeType = Object.keys(sizeRanges)[0];
-    if (firstSizeType && !sizeRanges[sizeType]) {
-      setSizeType(firstSizeType);
+    const firstSizeTypeId = Object.keys(sizeRanges)[0];
+    if (firstSizeTypeId && !sizeRanges[sizeTypeId]) {
+      setSizeTypeId(firstSizeTypeId);
     }
-  }, [itemType, sizeRanges, sizeType]);
+  }, [itemType, sizeRanges, sizeTypeId]);
 
   useEffect(() => {
-    const currentSizeRange = sizeRanges[validSizeType];
+    const currentSizeRange = sizeRanges[validSizeTypeId];
     if (!currentSizeRange) {
       setBoxSizeQuantities([]);
       return;
@@ -172,7 +236,7 @@ export const AddItemButton = () => {
     const initialQuantities = sizes.map((size) => ({ size, quantity: 0, price: 0, recommendedSellingPrice: 0 }));
     const boxesArray = Array(numberOfBoxes).fill(null).map(() => [...initialQuantities]);
     setBoxSizeQuantities(boxesArray);
-  }, [validSizeType, numberOfBoxes, sizeRanges]);
+  }, [validSizeTypeId, numberOfBoxes, sizeRanges]);
 
   // Вычисляем общее количество товара
   const totalItems = boxSizeQuantities.reduce((total, box) => {
@@ -181,13 +245,18 @@ export const AddItemButton = () => {
 
   // Вычисляем общую стоимость
   const totalValue = boxSizeQuantities.reduce((total, box) => {
+    if (perSizePricing) {
+      // Каждый размер со своей ценой
+      return total + box.reduce((s, item) => s + item.quantity * (item.price || 0), 0);
+    }
     const totalInBox = box.reduce((sum, item) => sum + item.quantity, 0);
     if (totalInBox > 0 && priceValue > 0) {
-      if (priceMode === 'per_pair') {
-        return total + (totalInBox * priceValue);
-      } else {
+      if (priceMode === 'per_box') {
         return total + priceValue;
       }
+      // per_pair и per_weight: цена * количество (для per_weight количество интерпретируется
+      // как количество единиц выбранного "веса" — кг / 100 г / шт)
+      return total + (totalInBox * priceValue);
     }
     return total;
   }, 0);
@@ -285,6 +354,54 @@ export const AddItemButton = () => {
     );
   };
 
+  // Установка точного значения количества (нужно для весовых режимов: 22.22 кг и т.п.).
+  // Округляем до 2 знаков чтобы матёматика по сумме не накапливала плавающую погрешность.
+  const setSizeQuantityValue = (boxIndex: number, size: number | string, value: number) => {
+    const clamped = Math.max(0, value);
+    // Math.round(x * 100) / 100 — обрезаем до 2 знаков; кратность 0.01 кг (или 0.01 ед)
+    // совпадает с тем, что валидируется в sanitizePriceText(maxDecimals=2).
+    const rounded = Math.round(clamped * 100) / 100;
+    setBoxSizeQuantities(prev =>
+      prev.map((box, idx) =>
+        idx === boxIndex
+          ? box.map(item =>
+            item.size === size ? { ...item, quantity: rounded } : item
+          )
+          : box
+      )
+    );
+  };
+
+  // Драфт текстового редактирования количества для весового режима.
+  // Без этого "22." сразу превращалось бы в 22 при ре-рендере и пользователь
+  // не смог бы дописать дробную часть.
+  const [weightQtyDraft, setWeightQtyDraft] = useState<{
+    boxIndex: number;
+    size: number | string;
+    text: string;
+  } | null>(null);
+
+  // Установка цены для конкретного размера в конкретной коробке
+  // (используется когда включён режим "разная цена для размеров")
+  const updateSizePrice = (
+    boxIndex: number,
+    size: number | string,
+    field: 'price' | 'recommendedSellingPrice',
+    value: number,
+  ) => {
+    setBoxSizeQuantities(prev =>
+      prev.map((box, idx) =>
+        idx === boxIndex
+          ? box.map(item =>
+            item.size === size
+              ? { ...item, [field]: Math.max(0, value) }
+              : item,
+          )
+          : box,
+      ),
+    );
+  };
+
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
 
@@ -309,44 +426,69 @@ export const AddItemButton = () => {
 
     try {
       // Копируем boxSizeQuantities для модификации
-      const modifiedBoxSizeQuantities = boxSizeQuantities.map(box => [...box]);
+      const modifiedBoxSizeQuantities = boxSizeQuantities.map(box => box.map(it => ({ ...it })));
 
       // Вычисляем цены для каждой коробки
       let computedTotalValue = 0;
-      modifiedBoxSizeQuantities.forEach((box) => {
-        const totalInBox = box.reduce((sum, item) => sum + item.quantity, 0);
-        let pricePerPair = 0;
-        let recommendedPricePerPair = 0;
-
-        if (totalInBox > 0 && priceValue > 0) {
-          if (priceMode === 'per_box') {
-            pricePerPair = priceValue / totalInBox;
-          } else {
-            pricePerPair = priceValue;
-          }
-        }
-
-        if (totalInBox > 0 && recommendedSellingPrice > 0) {
-          if (priceMode === 'per_box') {
-            recommendedPricePerPair = recommendedSellingPrice / totalInBox;
-          } else {
-            recommendedPricePerPair = recommendedSellingPrice;
-          }
-        }
-
-        box.forEach((item) => {
-          item.price = pricePerPair;
-          item.recommendedSellingPrice = recommendedPricePerPair;
-          computedTotalValue += item.quantity * pricePerPair;
+      if (perSizePricing) {
+        // Цены уже заданы для каждого размера индивидуально — просто суммируем
+        modifiedBoxSizeQuantities.forEach((box) => {
+          box.forEach((item) => {
+            item.price = item.price || 0;
+            item.recommendedSellingPrice = item.recommendedSellingPrice || 0;
+            computedTotalValue += item.quantity * item.price;
+          });
         });
-      });
+      } else {
+        modifiedBoxSizeQuantities.forEach((box) => {
+          const totalInBox = box.reduce((sum, item) => sum + item.quantity, 0);
+          let pricePerPair = 0;
+          let recommendedPricePerPair = 0;
+
+          if (totalInBox > 0 && priceValue > 0) {
+            if (priceMode === 'per_box') {
+              pricePerPair = priceValue / totalInBox;
+            } else {
+              // per_pair и per_weight — введённая цена это и есть цена за единицу
+              pricePerPair = priceValue;
+            }
+          }
+
+          if (totalInBox > 0 && recommendedSellingPrice > 0) {
+            if (priceMode === 'per_box') {
+              recommendedPricePerPair = recommendedSellingPrice / totalInBox;
+            } else {
+              recommendedPricePerPair = recommendedSellingPrice;
+            }
+          }
+
+          box.forEach((item) => {
+            item.price = pricePerPair;
+            item.recommendedSellingPrice = recommendedPricePerPair;
+            computedTotalValue += item.quantity * pricePerPair;
+          });
+        });
+      }
 
       // Преобразуем данные о коробках в JSON строку
       const boxesDataString = JSON.stringify(modifiedBoxSizeQuantities);
 
-      // Генерируем QR-коды (используем временный ID 0 и undefined для UUID, они обновятся после вставки)
-      const qrCodes = createQRCodesForItem(0, name, code, undefined, qrCodeType, numberOfBoxes, boxesDataString);
+      // Генерируем uuid ДО создания QR — иначе QR-коды уйдут с itemUuid=undefined
+      // и не найдутся ни на этом устройстве после смены id, ни на других устройствах после синка.
+      const newUuid = generateUUID();
+      console.log('📦 AddItemButton: creating item, uuid=', newUuid, 'qrType=', qrCodeType);
+      const qrCodes = createQRCodesForItem(0, name, code, newUuid, qrCodeType, numberOfBoxes, boxesDataString);
       const qrCodesString = qrCodes.length > 0 ? JSON.stringify(qrCodes) : null;
+      console.log('📦 AddItemButton: generated', qrCodes.length, 'QR codes with uuid');
+
+      // priceUnit определяется по выбранному режиму цены:
+      //   per_pair → 'pair', per_box → 'box', per_weight → выбранная единица веса (kg / 100g / piece)
+      const resolvedPriceUnit: PriceUnit =
+        priceMode === 'per_box'
+          ? 'box'
+          : priceMode === 'per_weight'
+            ? weightUnit
+            : 'pair';
 
       await addItem({
         name,
@@ -354,7 +496,7 @@ export const AddItemButton = () => {
         warehouse,
         numberOfBoxes,
         boxSizeQuantities: boxesDataString,
-        sizeType,
+        sizeType: validSizeTypeName,
         itemType,
         row: row || null,
         position: position || null,
@@ -364,7 +506,29 @@ export const AddItemButton = () => {
         totalValue: computedTotalValue,
         qrCodeType,
         qrCodes: qrCodesString,
+        priceUnit: resolvedPriceUnit,
+        uuid: newUuid,
       });
+
+      // Сохраняем доп. параметры товара (цвет, материал и т.п.)
+      const filledAttrs = extraAttributes.filter((a) => a.name.trim() && a.value.trim());
+      if (filledAttrs.length > 0) {
+        try {
+          await replaceAttributesForItem(
+            newUuid,
+            filledAttrs.map((a, i) => ({
+              itemUuid: newUuid,
+              name: a.name.trim(),
+              value: a.value.trim(),
+              attrType: a.attrType,
+              unit: a.unit ?? null,
+              sortOrder: i,
+            })),
+          );
+        } catch (e) {
+          console.warn('Failed to save item attributes:', e);
+        }
+      }
 
       // ПОСЛЕ УСПЕШНОГО ДОБАВЛЕНИЯ — эмитим событие, чтобы другие части UI могли обновиться
       try {
@@ -384,6 +548,16 @@ export const AddItemButton = () => {
     }
   };
 
+  // Открывает форму с заполненным `code` — используется из сканера штрих-кодов на главном экране
+  useImperativeHandle(ref, () => ({
+    openWithCode: (preCode: string) => {
+      console.log('➕ AddItemButton.openWithCode:', preCode);
+      resetForm();
+      setCode(preCode);
+      setModalVisible(true);
+    },
+  }));
+
   const resetForm = () => {
     setName('');
     setCode('');
@@ -392,7 +566,7 @@ export const AddItemButton = () => {
     const firstCatalog = enabledCatalogs[0];
     setItemType(firstCatalog?.name ?? '');
     const firstSizeType = firstCatalog?.sizeTypes[0];
-    setSizeType(firstSizeType?.name ?? '');
+    setSizeTypeId(firstSizeType?.id ?? '');
     if (firstSizeType) {
       const initialQuantities = firstSizeType.sizes.map((size) => ({ size, quantity: 0, price: 0, recommendedSellingPrice: 0 }));
       setBoxSizeQuantities([[...initialQuantities]]);
@@ -403,12 +577,24 @@ export const AddItemButton = () => {
     setPosition('');
     setSide('');
     setImageUri(null);
-    setPriceValue(0);
-    setRecommendedSellingPrice(0);
+    setPriceText('');
+    setRecommendedPriceText('');
     setPriceMode('per_pair');
+    setWeightUnit('kg');
+    setPerSizePricing(false);
     setQrCodeType('none');
+    setExtraAttributes([]);
     setErrors({});
   };
+
+  const suggestedAttributes = useMemo(() => {
+    if (!itemType) return [];
+    for (const tpl of CATALOG_TEMPLATES) {
+      const found = tpl.catalogs.find((c) => c.name.toLowerCase() === itemType.toLowerCase());
+      if (found?.suggestedAttributes) return found.suggestedAttributes;
+    }
+    return [];
+  }, [itemType]);
 
   const handleCancel = () => {
     setModalVisible(false);
@@ -515,15 +701,70 @@ export const AddItemButton = () => {
                 colors={themeColors}
               />
 
-              <FloatingTextInput
-                label="Код *"
-                value={code}
-                onChangeText={setCode}
-                error={errors.code}
-                editable={!isSaving}
-                isDark={isDark}
-                colors={themeColors}
-              />
+              {/*
+                Поле "Код / штрих-код" + две круглые кнопки справа: сканировать и сгенерировать.
+                Выравнивание по нижнему краю input'а:
+                  alignItems: 'flex-end' прижимает обёртку с кнопками к низу строки.
+                  Кнопки имеют ту же высоту что input (~48px), а marginBottom: 12 компенсирует
+                  mb-3 (12px) у FloatingTextInput — так нижние края идеально совпадают.
+              */}
+              <View style={{ flexDirection: 'row', alignItems: 'flex-end' }}>
+                <View style={{ flex: 1 }}>
+                  <FloatingTextInput
+                    label="Код / штрих-код *"
+                    value={code}
+                    onChangeText={setCode}
+                    error={errors.code}
+                    editable={!isSaving}
+                    isDark={isDark}
+                    colors={themeColors}
+                  />
+                </View>
+                <View style={{
+                  flexDirection: 'row',
+                  marginLeft: 8,
+                  marginBottom: errors.code ? 24 : 12, // компенсация mb-3 у поля + слот ошибки
+                }}>
+                  {/* Сканировать существующий штрих-код. Источник (камера или
+                      внешний HID-сканер) определяется в настройках сканера. */}
+                  <ScanButton
+                    color={accentColor}
+                    disabled={isSaving}
+                    onScan={(scanned) => {
+                      console.log('➕ AddItemButton: scanned barcode →', scanned);
+                      setCode(scanned);
+                    }}
+                  />
+                  {/* Сгенерировать валидный EAN-13 если у товара нет штрих-кода */}
+                  <TouchableOpacity
+                    onPress={() => {
+                      const generated = generateEan13();
+                      console.log('➕ AddItemButton: generated EAN13 →', generated);
+                      setCode(generated);
+                    }}
+                    disabled={isSaving}
+                    style={{
+                      marginLeft: 8,
+                      backgroundColor: isDark ? '#10B981' : '#059669',
+                      width: 48,
+                      height: 48,
+                      borderRadius: 12,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      shadowColor: '#059669',
+                      shadowOffset: { width: 0, height: 3 },
+                      shadowOpacity: 0.25,
+                      shadowRadius: 5,
+                      elevation: 3,
+                      opacity: isSaving ? 0.5 : 1,
+                    }}
+                    activeOpacity={0.8}
+                    accessibilityLabel="Сгенерировать штрих-код"
+                  >
+                    <Ionicons name="sparkles-outline" size={22} color="white" />
+                  </TouchableOpacity>
+                </View>
+              </View>
 
               <FloatingTextInput
                 label="Склад *"
@@ -574,7 +815,11 @@ export const AddItemButton = () => {
                         onPress={() => setItemType(cat.name)}
                         disabled={isSaving}
                       >
-                        <Text style={{ fontSize: 28 }}>{cat.icon || '📦'}</Text>
+                        <CatalogIcon
+                          value={cat.icon}
+                          size={28}
+                          color={selected ? accentColor : themeColors.text.normal}
+                        />
                         <Text style={{
                           marginTop: 6,
                           fontWeight: '600',
@@ -605,19 +850,22 @@ export const AddItemButton = () => {
                 backgroundColor: themeColors.background.card
               }}>
                 <Picker
-                  key={`picker-${itemType}-${validSizeType}`}
-                  selectedValue={validSizeType}
-                  onValueChange={(itemValue: string) => setSizeType(itemValue)}
+                  key={`picker-${itemType}-${validSizeTypeId}`}
+                  selectedValue={validSizeTypeId}
+                  onValueChange={(itemValue: string) => setSizeTypeId(itemValue)}
                   enabled={!isSaving && Object.keys(sizeRanges).length > 0}
-                  style={{ color: themeColors.text.normal }}
+                  mode="dropdown"
+                  style={{ color: themeColors.text.normal, backgroundColor: themeColors.background.card }}
+                  itemStyle={{ color: themeColors.text.normal, backgroundColor: themeColors.background.card }}
                   dropdownIconColor={themeColors.text.normal}
                 >
                   {Object.values(sizeRanges).map((range) => (
                     <Picker.Item
-                      key={range.type}
+                      key={range.id}
                       label={`${range.type} (${range.sizes.slice(0, 4).join(', ')}${range.sizes.length > 4 ? '…' : ''})`}
-                      value={range.type}
-                      color={isDark ? '#fff' : '#000'}
+                      value={range.id}
+                      color={themeColors.text.normal}
+                      style={{ backgroundColor: themeColors.background.card, color: themeColors.text.normal }}
                     />
                   ))}
                 </Picker>
@@ -644,19 +892,62 @@ export const AddItemButton = () => {
                     selectedValue={numberOfBoxes}
                     onValueChange={(itemValue: number) => setNumberOfBoxes(itemValue)}
                     enabled={!isSaving}
-                    style={{ color: themeColors.text.normal }}
+                    mode="dropdown"
+                    style={{ color: themeColors.text.normal, backgroundColor: themeColors.background.card }}
+                    itemStyle={{ color: themeColors.text.normal, backgroundColor: themeColors.background.card }}
                     dropdownIconColor={themeColors.text.normal}
                   >
                     {Array.from({ length: 20 }, (_, i) => i + 1).map(num => (
-                      <Picker.Item key={num} label={`${num} ${num === 1 ? 'коробка' : num < 5 ? 'коробки' : 'коробок'}`} value={num} color={isDark ? '#fff' : '#000'} />
+                      <Picker.Item
+                        key={num}
+                        label={`${num} ${num === 1 ? 'коробка' : num < 5 ? 'коробки' : 'коробок'}`}
+                        value={num}
+                        color={themeColors.text.normal}
+                        style={{ backgroundColor: themeColors.background.card, color: themeColors.text.normal }}
+                      />
                     ))}
                   </Picker>
                 </View>
               </View>
 
+              {/* Тумблер: одинаковая цена / разная цена для размеров */}
+              <View style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                backgroundColor: themeColors.background.card,
+                borderRadius: 12,
+                padding: 12,
+                marginBottom: 12,
+                borderWidth: 1,
+                borderColor: themeColors.border.normal,
+              }}>
+                <View style={{ flex: 1, marginRight: 12 }}>
+                  <Text style={{ fontSize: 14, fontWeight: '600', color: themeColors.text.normal }}>
+                    Разная цена для размеров
+                  </Text>
+                  <Text style={{ fontSize: 11, color: themeColors.text.muted, marginTop: 2 }}>
+                    {perSizePricing
+                      ? 'Цена и рекомендуемая цена задаются отдельно для каждого размера'
+                      : 'Одна цена применяется ко всем размерам'}
+                  </Text>
+                </View>
+                <Switch
+                  value={perSizePricing}
+                  onValueChange={setPerSizePricing}
+                  disabled={isSaving}
+                  trackColor={{ false: '#767577', true: accentColor }}
+                  thumbColor="#fff"
+                />
+              </View>
+
+              {!perSizePricing && (
+              <>
               <View style={{ marginBottom: 12 }}>
                 <Text style={{ fontSize: 14, color: themeColors.text.muted, marginBottom: 8, fontWeight: '500' }}>Тип цены *</Text>
-                <View style={{ flexDirection: 'row', gap: 12 }}>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  {/* "За штуку" — за единицу товара. Замена бывшей "За пару", т.к. не все товары
+                       продаются парами (напитки, бакалея и т.п.). */}
                   <TouchableOpacity
                     style={{
                       flex: 1,
@@ -681,7 +972,7 @@ export const AddItemButton = () => {
                         fontWeight: '600',
                         color: priceMode === 'per_pair' ? accentColor : themeColors.text.muted
                       }}>
-                        За пару
+                        За штуку
                       </Text>
                     </View>
                   </TouchableOpacity>
@@ -714,29 +1005,127 @@ export const AddItemButton = () => {
                       </Text>
                     </View>
                   </TouchableOpacity>
+
+                  {/* "На вес" — цена за кг / 100 г / шт. При продаже покупатель сможет
+                       взять дробный вес (850 г при цене за кг). */}
+                  <TouchableOpacity
+                    style={{
+                      flex: 1,
+                      padding: 12,
+                      borderRadius: 12,
+                      backgroundColor: priceMode === 'per_weight' ? (isDark ? 'rgba(212, 175, 55, 0.2)' : 'rgba(42, 171, 238, 0.12)') : themeColors.background.card,
+                      borderWidth: 2,
+                      borderColor: priceMode === 'per_weight' ? accentColor : themeColors.border.normal,
+                    }}
+                    onPress={() => setPriceMode('per_weight')}
+                    disabled={isSaving}
+                  >
+                    <View style={{ alignItems: 'center' }}>
+                      <Ionicons
+                        name="scale-outline"
+                        size={24}
+                        color={priceMode === 'per_weight' ? accentColor : themeColors.text.muted}
+                      />
+                      <Text style={{
+                        marginTop: 4,
+                        fontSize: 12,
+                        fontWeight: '600',
+                        color: priceMode === 'per_weight' ? accentColor : themeColors.text.muted
+                      }}>
+                        На вес
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
                 </View>
               </View>
 
+              {priceMode === 'per_weight' && (
+                <View style={{ marginBottom: 12 }}>
+                  <Text style={{ fontSize: 14, color: themeColors.text.muted, marginBottom: 8, fontWeight: '500' }}>Цена за *</Text>
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    {(['kg', '100g', 'piece'] as const).map((u) => {
+                      const selected = weightUnit === u;
+                      const label = u === 'kg' ? '1 кг' : u === '100g' ? '100 г' : 'штуку';
+                      return (
+                        <TouchableOpacity
+                          key={u}
+                          style={{
+                            flex: 1,
+                            padding: 10,
+                            borderRadius: 10,
+                            backgroundColor: selected ? (isDark ? 'rgba(212, 175, 55, 0.2)' : 'rgba(42, 171, 238, 0.12)') : themeColors.background.card,
+                            borderWidth: 1,
+                            borderColor: selected ? accentColor : themeColors.border.normal,
+                            alignItems: 'center',
+                          }}
+                          onPress={() => setWeightUnit(u)}
+                          disabled={isSaving}
+                        >
+                          <Text style={{ fontSize: 13, fontWeight: '600', color: selected ? accentColor : themeColors.text.muted }}>
+                            {label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
+              )}
+
               <FloatingTextInput
-                label={priceMode === 'per_pair' ? "Цена за пару (сомонӣ)" : "Цена за коробку (сомонӣ)"}
-                value={priceValue.toString()}
-                onChangeText={(text) => setPriceValue(parseFloat(text) || 0)}
+                label={
+                  priceMode === 'per_box'
+                    ? `Цена за коробку (${currencyShort})`
+                    : priceMode === 'per_weight'
+                      ? `Цена за ${priceUnitLabel(weightUnit)} (${currencyShort})`
+                      : `Цена закупки (${currencyShort})`
+                }
+                value={priceText}
+                onChangeText={(text) => setPriceText(sanitizePriceText(text))}
                 editable={!isSaving}
                 placeholder="0"
-                keyboardType="numeric"
+                keyboardType="decimal-pad"
                 isDark={isDark}
                 colors={themeColors}
               />
 
               <FloatingTextInput
-                label={priceMode === 'per_pair' ? "Рекомендуемая цена продажи" : "Рекомендуемая цена продажи"}
-                value={recommendedSellingPrice.toString()}
-                onChangeText={(text) => setRecommendedSellingPrice(parseFloat(text) || 0)}
+                label="Рекомендуемая цена продажи"
+                value={recommendedPriceText}
+                onChangeText={(text) => setRecommendedPriceText(sanitizePriceText(text))}
                 editable={!isSaving}
                 placeholder="0"
-                keyboardType="numeric"
+                keyboardType="decimal-pad"
                 isDark={isDark}
                 colors={themeColors}
+              />
+              </>
+              )}
+              {perSizePricing && (
+                <View style={{
+                  backgroundColor: isDark ? 'rgba(212, 175, 55, 0.10)' : 'rgba(42, 171, 238, 0.08)',
+                  borderRadius: 10,
+                  padding: 10,
+                  marginBottom: 12,
+                  borderWidth: 1,
+                  borderColor: isDark ? 'rgba(212, 175, 55, 0.3)' : 'rgba(42, 171, 238, 0.3)',
+                }}>
+                  <Text style={{ fontSize: 12, color: themeColors.text.muted }}>
+                    Цены задаются отдельно для каждого размера ниже, в коробках.
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            {/* Доп. параметры (цвет, материал, бренд и т.п.) */}
+            <View style={{ marginBottom: 24 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+                <Ionicons name="options-outline" size={20} color={accentColor} />
+                <Text style={{ fontSize: 16, fontWeight: '600', color: themeColors.text.normal, marginLeft: 8 }}>Доп. параметры</Text>
+              </View>
+              <ItemAttributesEditor
+                attributes={extraAttributes}
+                onChange={setExtraAttributes}
+                suggestions={suggestedAttributes}
               />
             </View>
 
@@ -860,7 +1249,10 @@ export const AddItemButton = () => {
                 const totalInBox = box.reduce((sum, item) => sum + item.quantity, 0);
                 let pricePerPair = 0;
                 let boxTotalPrice = 0;
-                if (totalInBox > 0 && priceValue > 0) {
+                if (perSizePricing) {
+                  // В режиме per-size суммируем индивидуальные цены
+                  boxTotalPrice = box.reduce((s, it) => s + (it.quantity * (it.price || 0)), 0);
+                } else if (totalInBox > 0 && priceValue > 0) {
                   if (priceMode === 'per_box') {
                     pricePerPair = priceValue / totalInBox;
                     boxTotalPrice = priceValue;
@@ -933,13 +1325,29 @@ export const AddItemButton = () => {
                               }}>
                                 <Text style={{ color: accentColor, fontWeight: 'bold' }}>{item.size}</Text>
                               </View>
-                              {item.quantity > 0 && (
+                              {item.quantity > 0 && !perSizePricing && (
                                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                                   <Text style={{ color: themeColors.text.muted, fontSize: 11 }}>
-                                    {priceMode === 'per_pair' ? priceValue.toFixed(0) : (priceValue / (box.reduce((s, i) => s + i.quantity, 0) || 1)).toFixed(0)}с × {item.quantity} =
+                                    {(priceMode === 'per_box'
+                                      ? (priceValue / (box.reduce((s, i) => s + i.quantity, 0) || 1))
+                                      : priceValue
+                                    ).toFixed(2)}с × {item.quantity} =
                                   </Text>
                                   <Text style={{ color: isDark ? themeColors.primary.gold : '#22c55e', fontWeight: '600', fontSize: 12, marginLeft: 2 }}>
-                                    {(priceMode === 'per_pair' ? priceValue * item.quantity : (priceValue / (box.reduce((s, i) => s + i.quantity, 0) || 1)) * item.quantity).toFixed(0)}с
+                                    {((priceMode === 'per_box'
+                                      ? (priceValue / (box.reduce((s, i) => s + i.quantity, 0) || 1))
+                                      : priceValue
+                                    ) * item.quantity).toFixed(2)}с
+                                  </Text>
+                                </View>
+                              )}
+                              {item.quantity > 0 && perSizePricing && (item.price || 0) > 0 && (
+                                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                  <Text style={{ color: themeColors.text.muted, fontSize: 11 }}>
+                                    {(item.price || 0).toFixed(0)}с × {item.quantity} =
+                                  </Text>
+                                  <Text style={{ color: isDark ? themeColors.primary.gold : '#22c55e', fontWeight: '600', fontSize: 12, marginLeft: 2 }}>
+                                    {((item.price || 0) * item.quantity).toFixed(0)}с
                                   </Text>
                                 </View>
                               )}
@@ -966,9 +1374,57 @@ export const AddItemButton = () => {
                                 <Ionicons name="remove" size={20} color="white" />
                               </TouchableOpacity>
 
-                              <View style={{ marginHorizontal: 12, minWidth: 40, alignItems: 'center' }}>
-                                <Text style={{ fontSize: 18, fontWeight: 'bold', color: themeColors.text.normal }}>{item.quantity}</Text>
-                              </View>
+                              {priceMode === 'per_weight' ? (
+                                <View style={{ marginHorizontal: 12, minWidth: 64, alignItems: 'center' }}>
+                                  <TextInput
+                                    style={{
+                                      fontSize: 18,
+                                      fontWeight: 'bold',
+                                      color: themeColors.text.normal,
+                                      borderWidth: 1,
+                                      borderColor: themeColors.border.normal,
+                                      borderRadius: 8,
+                                      paddingHorizontal: 8,
+                                      paddingVertical: 4,
+                                      minWidth: 64,
+                                      textAlign: 'center',
+                                      backgroundColor: themeColors.background.screen,
+                                    }}
+                                    value={
+                                      weightQtyDraft &&
+                                      weightQtyDraft.boxIndex === boxIndex &&
+                                      weightQtyDraft.size === item.size
+                                        ? weightQtyDraft.text
+                                        : item.quantity ? String(item.quantity) : ''
+                                    }
+                                    onChangeText={(t) => {
+                                      // sanitizePriceText режет до 2 знаков после точки —
+                                      // ровно то ограничение, которое запросил пользователь.
+                                      const cleaned = sanitizePriceText(t, 2);
+                                      setWeightQtyDraft({ boxIndex, size: item.size, text: cleaned });
+                                    }}
+                                    onBlur={() => {
+                                      if (
+                                        weightQtyDraft &&
+                                        weightQtyDraft.boxIndex === boxIndex &&
+                                        weightQtyDraft.size === item.size
+                                      ) {
+                                        setSizeQuantityValue(boxIndex, item.size, parsePriceText(weightQtyDraft.text));
+                                        setWeightQtyDraft(null);
+                                      }
+                                    }}
+                                    keyboardType="decimal-pad"
+                                    placeholder="0"
+                                    placeholderTextColor={themeColors.text.muted}
+                                    editable={!isSaving}
+                                    selectTextOnFocus
+                                  />
+                                </View>
+                              ) : (
+                                <View style={{ marginHorizontal: 12, minWidth: 40, alignItems: 'center' }}>
+                                  <Text style={{ fontSize: 18, fontWeight: 'bold', color: themeColors.text.normal }}>{item.quantity}</Text>
+                                </View>
+                              )}
 
                               <TouchableOpacity
                                 style={{
@@ -992,6 +1448,59 @@ export const AddItemButton = () => {
                             </View>
                           </View>
 
+                          {perSizePricing && (
+                            <View style={{
+                              flexDirection: 'row',
+                              gap: 8,
+                              marginTop: 10,
+                              paddingTop: 8,
+                              borderTopWidth: 1,
+                              borderTopColor: themeColors.border.light,
+                            }}>
+                              <View style={{ flex: 1 }}>
+                                <Text style={{ color: themeColors.text.muted, fontSize: 11, marginBottom: 4 }}>Цена закупки</Text>
+                                <TextInput
+                                  style={{
+                                    borderWidth: 1,
+                                    borderColor: themeColors.border.normal,
+                                    borderRadius: 8,
+                                    paddingHorizontal: 8,
+                                    paddingVertical: 6,
+                                    fontSize: 13,
+                                    color: themeColors.text.normal,
+                                    backgroundColor: themeColors.background.screen,
+                                  }}
+                                  value={String(item.price || '')}
+                                  onChangeText={(t) => updateSizePrice(boxIndex, item.size, 'price', parsePriceText(sanitizePriceText(t)))}
+                                  keyboardType="decimal-pad"
+                                  placeholder="0"
+                                  placeholderTextColor={themeColors.text.muted}
+                                  editable={!isSaving}
+                                />
+                              </View>
+                              <View style={{ flex: 1 }}>
+                                <Text style={{ color: themeColors.text.muted, fontSize: 11, marginBottom: 4 }}>Рек. цена</Text>
+                                <TextInput
+                                  style={{
+                                    borderWidth: 1,
+                                    borderColor: themeColors.border.normal,
+                                    borderRadius: 8,
+                                    paddingHorizontal: 8,
+                                    paddingVertical: 6,
+                                    fontSize: 13,
+                                    color: themeColors.text.normal,
+                                    backgroundColor: themeColors.background.screen,
+                                  }}
+                                  value={String(item.recommendedSellingPrice || '')}
+                                  onChangeText={(t) => updateSizePrice(boxIndex, item.size, 'recommendedSellingPrice', parsePriceText(sanitizePriceText(t)))}
+                                  keyboardType="decimal-pad"
+                                  placeholder="0"
+                                  placeholderTextColor={themeColors.text.muted}
+                                  editable={!isSaving}
+                                />
+                              </View>
+                            </View>
+                          )}
                         </View>
                       ))}
                     </View>
@@ -1007,7 +1516,7 @@ export const AddItemButton = () => {
                       }}>
                         <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
                           <Text style={{ fontSize: 14, color: themeColors.text.normal, fontWeight: '500' }}>Итого в коробке:</Text>
-                          <Text style={{ color: '#22c55e', fontSize: 14, fontWeight: 'bold' }}>{boxTotalPrice.toFixed(2)} сомонӣ</Text>
+                          <Text style={{ color: '#22c55e', fontSize: 14, fontWeight: 'bold' }}>{boxTotalPrice.toFixed(2)} {currencyShort}</Text>
                         </View>
                       </View>
                     )}
@@ -1048,7 +1557,7 @@ export const AddItemButton = () => {
                       <Ionicons name="cash" size={18} color="white" />
                       <Text className="text-white ml-2">Общая стоимость:</Text>
                     </View>
-                    <Text className="text-white font-bold text-xl">{totalValue.toFixed(2)} сомонӣ</Text>
+                    <Text className="text-white font-bold text-xl">{totalValue.toFixed(2)} {currencyShort}</Text>
                   </View>
                 </View>
               </LinearGradient>
@@ -1243,6 +1752,9 @@ export const AddItemButton = () => {
           </ScrollView>
         </View>
       </Modal>
+
     </>
   );
-};
+});
+
+AddItemButton.displayName = 'AddItemButton';

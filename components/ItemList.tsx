@@ -27,6 +27,10 @@ import { useTheme } from '../src/contexts/ThemeContext';
 import { getThemeColors } from '../constants/theme';
 import { useSyncRefresh } from '../src/components/sync/SyncStatusBar';
 import { useCatalogs } from '../src/contexts/CatalogsContext';
+import ItemLookupService from '../src/services/ItemLookupService';
+import { CatalogIcon } from '../src/components/common/CatalogIcon';
+import { healQRCodesForItem } from '../database/database';
+import { ScanButton } from './ScanButton';
 
 type ItemWithExtras = Item & {
   parsedBoxSizeQuantities?: unknown;
@@ -98,7 +102,6 @@ export const ItemList = forwardRef<any, ItemListProps>(({ onRefresh }, ref) => {
     try {
       const whs = await getDistinctWarehouses();
       const cleaned = (whs || []).map(w => (typeof w === 'string' ? w.trim() : '')).filter(Boolean);
-      console.log('Loaded warehouses:', cleaned); // Логирование для отладки
       const newWarehouses = ['Все', ...cleaned];
       setWarehouses(newWarehouses);
 
@@ -117,7 +120,6 @@ export const ItemList = forwardRef<any, ItemListProps>(({ onRefresh }, ref) => {
   const loadFirstPage = async () => {
     try {
       setRefreshing(true);
-      console.log('Starting loadFirstPage, refreshing warehouses...');
       await loadWarehouses(); // Обновляем список складов
       setOffset(0);
       setHasMore(true);
@@ -204,60 +206,63 @@ export const ItemList = forwardRef<any, ItemListProps>(({ onRefresh }, ref) => {
     setDetailModalVisible(true);
   };
 
-  // Метод для открытия товара по ID или UUID (вызывается из QR-сканера)
+  // Метод для открытия товара по ID или UUID (вызывается из QR-сканера со склада)
   useImperativeHandle(ref, () => ({
-    openItemById: async (itemId: number, context?: { boxIndex?: number; size?: number | string }, itemUuid?: string) => {
+    openItemById: async (itemId: number, context?: { boxIndex?: number; size?: number | string }, itemUuid?: string, itemName?: string) => {
+      console.log('🟣 ItemList.openItemById: itemId=', itemId, 'uuid=', itemUuid?.slice(0, 8), 'name=', itemName, 'ctx=', context);
       try {
-        // Приоритет поиска:
-        // 1. По UUID (самый надёжный после синхронизации)
-        // 2. По локальному id
-        // 3. По serverId (для QR-кодов созданных на другом устройстве)
-
-        // Поиск по UUID в загруженных товарах
+        // 1. Быстрый путь: поищем в текущем экранном кэше по uuid
         if (itemUuid) {
-          const byUuid = items.find(i => i.uuid === itemUuid);
-          if (byUuid) {
-            handleItemPress(byUuid, context);
+          const cached = items.find(i => i.uuid === itemUuid);
+          if (cached) {
+            console.log('🟣 ItemList: hit in screen cache by uuid → id=', cached.id);
+            handleItemPress(cached, context);
+            healQRCodesForItem(cached, itemUuid).catch(() => {});
             return;
           }
         }
 
-        // Сначала ищем по локальному id в загруженных товарах
-        const existingItem = items.find(i => i.id === itemId);
-        if (existingItem) {
-          handleItemPress(existingItem, context);
-          return;
-        }
+        // 2. Унифицированный поиск (локальная БД → серверный fallback по uuid).
+        //    Поиск по name/code НЕ делаем — может найти не тот товар.
+        const lookup = await ItemLookupService.findForScan({ itemId, itemUuid, itemName });
 
-        // Пробуем найти по serverId в загруженных товарах
-        // (важно для QR-кодов созданных на другом устройстве)
-        const byServerId = items.find(i => i.serverId === itemId);
-        if (byServerId) {
-          handleItemPress(byServerId, context);
-          return;
-        }
-
-        // Если не найден в кэше, загружаем все товары и ищем по всем идентификаторам
-        const allItems = await getItems();
-
-        // Сначала по UUID (приоритет)
-        if (itemUuid) {
-          const foundByUuid = allItems.find(i => i.uuid === itemUuid);
-          if (foundByUuid) {
-            handleItemPress(foundByUuid, context);
-            return;
+        if (!lookup.item) {
+          console.warn('🟣 ItemList: NOT FOUND. reason=', lookup.reason);
+          let msg = 'Товар не найден.';
+          switch (lookup.reason) {
+            case 'no_uuid':
+              msg = 'QR-код устаревшего формата (без UUID). Перевыпустите QR.';
+              break;
+            case 'not_authenticated':
+              msg = 'Локально товара нет, серверный поиск недоступен — войдите в аккаунт.';
+              break;
+            case 'server_404':
+              msg = 'Товар не найден ни локально, ни на сервере. Возможно, удалён.';
+              break;
+            case 'server_error':
+              msg = 'Ошибка сервера при поиске товара.';
+              break;
+            case 'network':
+              msg = 'Локально товара нет, а сервер недоступен. Проверьте интернет.';
+              break;
           }
+          Alert.alert('Ошибка', msg);
+          return;
         }
 
-        // Затем по id или serverId
-        const foundItem = allItems.find(i => i.id === itemId || i.serverId === itemId);
-        if (foundItem) {
-          handleItemPress(foundItem, context);
-        } else {
-          Alert.alert('Ошибка', 'Товар не найден. Возможно, он был удален или еще не синхронизирован на это устройство.');
+        console.log('🟣 ItemList: resolved via', lookup.source, '→ id=', lookup.item.id);
+
+        // Если товар пришёл с сервера, в текущем `items` его может не быть — добавим, чтобы UI был согласован
+        if (lookup.source === 'server') {
+          setItems(prev => (prev.some(i => i.uuid === lookup.item!.uuid) ? prev : [lookup.item!, ...prev]));
         }
+
+        handleItemPress(lookup.item, context);
+
+        // Авто-починка QR в БД на этом устройстве (без блокировки UI)
+        healQRCodesForItem(lookup.item, itemUuid).catch(() => {});
       } catch (error) {
-        console.error('Error opening item by ID:', error);
+        console.error('🟣 ItemList.openItemById: error', error);
         Alert.alert('Ошибка', 'Не удалось открыть товар');
       }
     },
@@ -373,19 +378,36 @@ export const ItemList = forwardRef<any, ItemListProps>(({ onRefresh }, ref) => {
           borderBottomColor: colors.border.normal
         }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
-            <TextInput
-              style={[styles.searchInput, {
-                flex: 1,
-                marginRight: 8,
-                backgroundColor: colors.background.card,
-                borderColor: colors.border.normal,
-                color: colors.text.normal
-              }]}
-              placeholder="Поиск по названию или коду..."
-              placeholderTextColor={colors.text.muted}
-              value={searchTerm}
-              onChangeText={setSearchTerm}
-            />
+            <View
+              style={[
+                styles.searchInput,
+                {
+                  flex: 1,
+                  marginRight: 8,
+                  backgroundColor: colors.background.card,
+                  borderColor: colors.border.normal,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  paddingRight: 4,
+                },
+              ]}
+            >
+              <TextInput
+                style={{ flex: 1, color: colors.text.normal, paddingVertical: 0 }}
+                placeholder="Поиск по названию или коду..."
+                placeholderTextColor={colors.text.muted}
+                value={searchTerm}
+                onChangeText={setSearchTerm}
+              />
+              {/* Скан-кнопка прямо в поле поиска. По режиму из настроек —
+                  камера или внешний HID-сканер. */}
+              <ScanButton
+                iconOnly
+                color={isDark ? colors.primary.gold : colors.primary.blue}
+                accessibilityLabel="Сканировать штрих-код в поиск"
+                onScan={code => setSearchTerm(code)}
+              />
+            </View>
 
             <View style={{ width: 140 }}>
               <View style={[styles.pickerWrapper, {
@@ -395,13 +417,21 @@ export const ItemList = forwardRef<any, ItemListProps>(({ onRefresh }, ref) => {
                 <Picker
                   selectedValue={selectedWarehouse}
                   onValueChange={(itemValue) => setSelectedWarehouse(itemValue)}
-                  style={[styles.picker, { color: colors.text.normal }]}
+                  style={[styles.picker, { color: colors.text.normal, backgroundColor: colors.background.card }]}
                   dropdownIconColor={colors.text.normal}
                   mode={Platform.OS === 'android' ? 'dropdown' : 'dialog'}
-                  itemStyle={Platform.OS === 'ios' ? { fontSize: 14, height: 40 } : undefined}
+                  itemStyle={Platform.OS === 'ios'
+                    ? { fontSize: 14, height: 40, color: colors.text.normal, backgroundColor: colors.background.card }
+                    : { color: colors.text.normal, backgroundColor: colors.background.card }}
                 >
                   {warehouses.map((wh) => (
-                    <Picker.Item key={String(wh)} label={wh} value={wh} />
+                    <Picker.Item
+                      key={String(wh)}
+                      label={wh}
+                      value={wh}
+                      color={colors.text.normal}
+                      style={{ backgroundColor: colors.background.card, color: colors.text.normal }}
+                    />
                   ))}
                 </Picker>
               </View>
@@ -413,7 +443,7 @@ export const ItemList = forwardRef<any, ItemListProps>(({ onRefresh }, ref) => {
             <View style={{ flex: 1 }}>
               <FlatList
                 horizontal
-                data={[{ id: 'all', name: 'Все', icon: '🗂' } as any, ...enabledCatalogs]}
+                data={[{ id: 'all', name: 'Все'} as any, ...enabledCatalogs]}
                 keyExtractor={(item) => String(item.id)}
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={{ gap: 8 }}
@@ -432,7 +462,13 @@ export const ItemList = forwardRef<any, ItemListProps>(({ onRefresh }, ref) => {
                       ]}
                       activeOpacity={0.7}
                     >
-                      <Text style={{ fontSize: 14, marginRight: 4 }}>{item.icon || '📦'}</Text>
+                      <View style={{ marginRight: 4 }}>
+                        <CatalogIcon
+                          value={item.icon}
+                          size={16}
+                          color={selected ? '#fff' : colors.text.muted}
+                        />
+                      </View>
                       <Text style={[styles.filterTagText, { color: selected ? '#fff' : colors.text.muted }]}>
                         {item.name}
                       </Text>

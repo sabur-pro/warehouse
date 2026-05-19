@@ -230,6 +230,10 @@ class SyncService {
 
       // Каталоги синхронизируются ДО товаров — товары ссылаются на itemType (имя каталога).
       await this.syncCatalogs();
+      // Доп. параметры товара (цвет, материал и т.д.) — пуш/пулл по itemUuid
+      await this.syncItemAttributes();
+      // Поставщики, поставки и оплаты
+      await this.syncSuppliers();
 
       // 0. МИГРАЦИЯ: Пометить старые данные для синхронизации
       // Это нужно для устройств, где sync колонки уже существовали, но данные не были помечены
@@ -420,6 +424,7 @@ class SyncService {
             totalValue: item.totalValue,
             qrCodeType: item.qrCodeType,
             qrCodes: item.qrCodes,
+            priceUnit: item.priceUnit,
             createdAt: item.createdAt,
             version: item.version,
             isDeleted: item.isDeleted === 1,
@@ -497,6 +502,7 @@ class SyncService {
               details: tx.details,
               isDeleted: tx.isDeleted === 1,
               uuid: tx.uuid,
+              currency: tx.currency || undefined,
             };
           })
         );
@@ -666,6 +672,15 @@ class SyncService {
 
     try {
       console.log('🔄 Starting assistant pull sync (batch mode)...');
+
+      // Каталоги/доп. параметры/поставщики — пуш+пулл здесь, чтобы голый pull
+      // (без предшествующего push) тоже подтягивал новые каталоги с сервера.
+      // Раньше syncCatalogs дёргался только из _assistantPushInternal, и если
+      // ассистент жал sync без локальных изменений, новые каталоги других устройств
+      // не появлялись.
+      await this.syncCatalogs();
+      await this.syncItemAttributes();
+      await this.syncSuppliers();
 
       const lastSyncAt = await this.getLastSyncTimestamp();
       const PULL_BATCH_SIZE = 10;
@@ -1002,6 +1017,10 @@ class SyncService {
 
       // Каталоги синхронизируются ДО товаров — товары ссылаются на itemType (имя каталога).
       await this.syncCatalogs();
+      // Доп. параметры товара (цвет, материал и т.д.) — пуш/пулл по itemUuid
+      await this.syncItemAttributes();
+      // Поставщики, поставки и оплаты
+      await this.syncSuppliers();
 
       const lastSyncAt = await this.getLastSyncTimestamp();
       const PULL_BATCH_SIZE = 10;
@@ -1215,6 +1234,20 @@ class SyncService {
         });
       }
 
+      // Admin не пушит items на сервер (есть только assistant push). Поэтому если у товара
+      // есть serverId (значит он уже на сервере) — `needsSync=1` бессмысленный флаг и зависнет
+      // навсегда в UI как "не синхронизировано". Сбросим после успешного pull.
+      try {
+        const db = await getDatabaseInstance();
+        const before = await getFirstWithRetry<{ c: number }>(db, 'SELECT COUNT(*) as c FROM items WHERE needsSync = 1 AND serverId IS NOT NULL', []);
+        if (before && before.c > 0) {
+          await runWithRetry(db, 'UPDATE items SET needsSync = 0 WHERE needsSync = 1 AND serverId IS NOT NULL', []);
+          console.log(`🧹 Admin: cleared needsSync=1 on ${before.c} synced items (admin doesn't push)`);
+        }
+      } catch (cleanupErr) {
+        console.warn('🧹 Admin: needsSync cleanup failed (non-fatal)', cleanupErr);
+      }
+
       console.log('✅ Admin pull completed successfully (batch mode)');
     } catch (error: any) {
       console.error('❌ Admin pull failed:', {
@@ -1383,35 +1416,62 @@ class SyncService {
     );
 
     if (existing) {
-      // Обновить существующий
-      await runWithRetry(db, `
-        UPDATE items SET
-          name=?, code=?, warehouse=?, numberOfBoxes=?, boxSizeQuantities=?,
-          sizeType=?, itemType=?, row=?, position=?, side=?,
-          imageUri=?, serverImageUrl=?, totalQuantity=?, totalValue=?,
-          qrCodeType=?, qrCodes=?, version=?, isDeleted=?, syncedAt=?
-        WHERE serverId=?
-      `, [
-        item.name, item.code, item.warehouse, item.numberOfBoxes, item.boxSizeQuantities,
-        item.sizeType, item.itemType, item.row, item.position, item.side,
-        item.imageUri, item.serverImageUrl, item.totalQuantity, item.totalValue,
-        item.qrCodeType, item.qrCodes, item.version, item.isDeleted ? 1 : 0, Date.now(),
-        item.id
-      ]);
+      // Обновить существующий. ВАЖНО: uuid обновляем тоже — иначе локально-сгенерированный uuid
+      // (если миграция выдала свой) останется навсегда и QR не будут совпадать с сервером и другими устройствами.
+      // Серверный uuid — единственный источник истины. Если сервер по какой-то причине прислал пустой uuid,
+      // оставляем тот что был (COALESCE-семантика через ?: на стороне JS).
+      const uuidToWrite = item.uuid && item.uuid.length > 0 ? item.uuid : null;
+      // priceUnit пришёл с сервера; если сервер старой версии и не вернул его —
+      // оставляем 'pair' (легаси-дефолт), чтобы UI не сломался.
+      const priceUnit = item.priceUnit || 'pair';
+      if (uuidToWrite) {
+        await runWithRetry(db, `
+          UPDATE items SET
+            uuid=?, name=?, code=?, warehouse=?, numberOfBoxes=?, boxSizeQuantities=?,
+            sizeType=?, itemType=?, row=?, position=?, side=?,
+            imageUri=?, serverImageUrl=?, totalQuantity=?, totalValue=?,
+            qrCodeType=?, qrCodes=?, priceUnit=?, version=?, isDeleted=?, syncedAt=?
+          WHERE serverId=?
+        `, [
+          uuidToWrite,
+          item.name, item.code, item.warehouse, item.numberOfBoxes, item.boxSizeQuantities,
+          item.sizeType, item.itemType, item.row, item.position, item.side,
+          item.imageUri, item.serverImageUrl, item.totalQuantity, item.totalValue,
+          item.qrCodeType, item.qrCodes, priceUnit, item.version, item.isDeleted ? 1 : 0, Date.now(),
+          item.id
+        ]);
+      } else {
+        // Сервер не вернул uuid — не трогаем локальный
+        await runWithRetry(db, `
+          UPDATE items SET
+            name=?, code=?, warehouse=?, numberOfBoxes=?, boxSizeQuantities=?,
+            sizeType=?, itemType=?, row=?, position=?, side=?,
+            imageUri=?, serverImageUrl=?, totalQuantity=?, totalValue=?,
+            qrCodeType=?, qrCodes=?, priceUnit=?, version=?, isDeleted=?, syncedAt=?
+          WHERE serverId=?
+        `, [
+          item.name, item.code, item.warehouse, item.numberOfBoxes, item.boxSizeQuantities,
+          item.sizeType, item.itemType, item.row, item.position, item.side,
+          item.imageUri, item.serverImageUrl, item.totalQuantity, item.totalValue,
+          item.qrCodeType, item.qrCodes, priceUnit, item.version, item.isDeleted ? 1 : 0, Date.now(),
+          item.id
+        ]);
+      }
     } else {
-      // Вставить новый
+      // Вставить новый — пишем uuid тоже
+      const priceUnit = item.priceUnit || 'pair';
       await runWithRetry(db, `
         INSERT INTO items (
-          serverId, name, code, warehouse, numberOfBoxes, boxSizeQuantities,
+          serverId, uuid, name, code, warehouse, numberOfBoxes, boxSizeQuantities,
           sizeType, itemType, row, position, side,
           imageUri, serverImageUrl, totalQuantity, totalValue,
-          qrCodeType, qrCodes, version, isDeleted, needsSync, syncedAt
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+          qrCodeType, qrCodes, priceUnit, version, isDeleted, needsSync, syncedAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
       `, [
-        item.id, item.name, item.code, item.warehouse, item.numberOfBoxes, item.boxSizeQuantities,
+        item.id, item.uuid || null, item.name, item.code, item.warehouse, item.numberOfBoxes, item.boxSizeQuantities,
         item.sizeType, item.itemType, item.row, item.position, item.side,
         item.imageUri, item.serverImageUrl, item.totalQuantity, item.totalValue,
-        item.qrCodeType, item.qrCodes, item.version, item.isDeleted ? 1 : 0, Date.now()
+        item.qrCodeType, item.qrCodes, priceUnit, item.version, item.isDeleted ? 1 : 0, Date.now()
       ]);
     }
   }
@@ -1499,22 +1559,22 @@ class SyncService {
       await runWithRetry(db, `
         UPDATE transactions SET
           action=?, itemId=?, itemName=?, timestamp=?, details=?,
-          isDeleted=?, needsSync=0, syncedAt=?, itemUuid=?
+          isDeleted=?, needsSync=0, syncedAt=?, itemUuid=?, currency=?
         WHERE serverId=?
       `, [
         tx.action, finalItemId, tx.itemName, tx.timestamp, finalDetails,
-        tx.isDeleted ? 1 : 0, Date.now(), tx.itemUuid || null, tx.id
+        tx.isDeleted ? 1 : 0, Date.now(), tx.itemUuid || null, tx.currency || null, tx.id
       ]);
     } else {
       // Вставить новый
       await runWithRetry(db, `
         INSERT INTO transactions (
           serverId, action, itemId, itemName, timestamp, details,
-          isDeleted, needsSync, syncedAt, itemUuid
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+          isDeleted, needsSync, syncedAt, itemUuid, currency
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
       `, [
         tx.id, tx.action, finalItemId, tx.itemName, tx.timestamp, finalDetails,
-        tx.isDeleted ? 1 : 0, Date.now(), tx.itemUuid || null
+        tx.isDeleted ? 1 : 0, Date.now(), tx.itemUuid || null, tx.currency || null
       ]);
     }
   }
@@ -1730,6 +1790,137 @@ class SyncService {
    * Push локальных изменений каталогов на сервер + получить серверные изменения.
    * Безопасно вызывать перед обычным sync items.
    */
+  async syncItemAttributes(): Promise<void> {
+    const accessToken = await AuthService.getAccessToken();
+    if (!accessToken) {
+      console.warn('No access token, skipping item attributes sync');
+      return;
+    }
+    const api = AuthService.getApiInstance();
+    const db = await getDatabaseInstance();
+
+    // 1. PUSH
+    try {
+      const dirty = await getAllWithRetry<any>(db, 'SELECT * FROM item_attributes WHERE needsSync = 1');
+      if (dirty.length > 0) {
+        const payload = dirty.map((row: any) => ({
+          localId: row.id,
+          serverId: row.serverId ?? undefined,
+          uuid: row.uuid,
+          itemUuid: row.itemUuid,
+          name: row.name,
+          value: row.value,
+          attrType: row.attrType ?? 'text',
+          unit: row.unit ?? undefined,
+          sortOrder: row.sortOrder ?? 0,
+          version: row.version ?? 1,
+          isDeleted: !!row.isDeleted,
+        }));
+        const resp = await api.post(
+          '/item-attributes/push',
+          { attributes: payload },
+          { headers: { Authorization: `Bearer ${accessToken}` } },
+        );
+        const result = resp.data?.attributes ?? [];
+        for (const r of result) {
+          if (r.localId && r.serverId) {
+            await runWithRetry(
+              db,
+              'UPDATE item_attributes SET serverId = ?, needsSync = 0 WHERE id = ?',
+              [r.serverId, r.localId],
+            );
+          }
+        }
+        console.log(`📤 Pushed ${dirty.length} item attributes`);
+      }
+    } catch (err: any) {
+      console.warn('Item attributes push failed:', err?.response?.data || err?.message || err);
+    }
+
+    // 2. PULL
+    try {
+      const lastSyncAt = await this.getLastSyncTimestamp();
+      let cursor = 0;
+      let hasMore = true;
+      while (hasMore) {
+        const resp = await api.get('/item-attributes/pull', {
+          params: {
+            lastSyncAt: lastSyncAt ? new Date(lastSyncAt).toISOString() : undefined,
+            limit: 200,
+            cursor,
+          },
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const { attributes = [], hasMore: more = false, nextCursor } = resp.data || {};
+        for (const a of attributes) {
+          await this.upsertItemAttribute(a);
+        }
+        hasMore = !!more;
+        cursor = nextCursor || cursor;
+        if (attributes.length === 0) break;
+      }
+      console.log('📥 Item attributes pull complete');
+    } catch (err: any) {
+      console.warn('Item attributes pull failed:', err?.response?.data || err?.message || err);
+    }
+  }
+
+  private async upsertItemAttribute(remote: any): Promise<void> {
+    const db = await getDatabaseInstance();
+    const existing = await getFirstWithRetry<any>(
+      db,
+      'SELECT id FROM item_attributes WHERE serverId = ? OR uuid = ?',
+      [remote.id, remote.uuid],
+    );
+    const updatedAt = remote.updatedAt
+      ? new Date(remote.updatedAt).getTime()
+      : Date.now();
+    if (existing) {
+      await runWithRetry(
+        db,
+        `UPDATE item_attributes SET
+          serverId = ?, uuid = ?, itemUuid = ?, name = ?, value = ?, attrType = ?, unit = ?,
+          sortOrder = ?, version = ?, isDeleted = ?, needsSync = 0, updatedAt = ?
+         WHERE id = ?`,
+        [
+          remote.id,
+          remote.uuid,
+          remote.itemUuid,
+          remote.name,
+          remote.value,
+          remote.attrType ?? 'text',
+          remote.unit ?? null,
+          remote.sortOrder ?? 0,
+          remote.version ?? 1,
+          remote.isDeleted ? 1 : 0,
+          updatedAt,
+          existing.id,
+        ],
+      );
+    } else {
+      await runWithRetry(
+        db,
+        `INSERT INTO item_attributes
+          (serverId, uuid, itemUuid, name, value, attrType, unit, sortOrder, version, isDeleted, needsSync, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+        [
+          remote.id,
+          remote.uuid,
+          remote.itemUuid,
+          remote.name,
+          remote.value,
+          remote.attrType ?? 'text',
+          remote.unit ?? null,
+          remote.sortOrder ?? 0,
+          remote.version ?? 1,
+          remote.isDeleted ? 1 : 0,
+          updatedAt,
+          updatedAt,
+        ],
+      );
+    }
+  }
+
   async syncCatalogs(): Promise<void> {
     const accessToken = await AuthService.getAccessToken();
     if (!accessToken) {
@@ -1867,6 +2058,205 @@ class SyncService {
           updatedAt,
         ],
       );
+    }
+  }
+
+  // ============================================
+  // SUPPLIERS / SUPPLIES / SUPPLIER_PAYMENTS SYNC
+  // ============================================
+  async syncSuppliers(): Promise<void> {
+    const accessToken = await AuthService.getAccessToken();
+    if (!accessToken) {
+      console.warn('No access token, skipping suppliers sync');
+      return;
+    }
+    const api = AuthService.getApiInstance();
+    const db = await getDatabaseInstance();
+    const headers = { Authorization: `Bearer ${accessToken}` };
+
+    // 1) PUSH — сначала поставщики, потом поставки/оплаты (зависят от supplierUuid)
+    try {
+      const dirtySuppliers = await getAllWithRetry<any>(db, 'SELECT * FROM suppliers WHERE needsSync = 1');
+      const dirtySupplies = await getAllWithRetry<any>(db, 'SELECT * FROM supplies WHERE needsSync = 1');
+      const dirtyPayments = await getAllWithRetry<any>(db, 'SELECT * FROM supplier_payments WHERE needsSync = 1');
+
+      if (dirtySuppliers.length || dirtySupplies.length || dirtyPayments.length) {
+        const payload: any = {};
+        if (dirtySuppliers.length) {
+          payload.suppliers = dirtySuppliers.map((s: any) => ({
+            localId: s.id,
+            serverId: s.serverId ?? undefined,
+            uuid: s.uuid,
+            name: s.name,
+            phone: s.phone ?? undefined,
+            address: s.address ?? undefined,
+            notes: s.notes ?? undefined,
+            isDeleted: !!s.isDeleted,
+          }));
+        }
+        if (dirtySupplies.length) {
+          payload.supplies = dirtySupplies.map((s: any) => ({
+            localId: s.id,
+            serverId: s.serverId ?? undefined,
+            uuid: s.uuid,
+            supplierId: s.supplierServerId ?? undefined,
+            supplierUuid: s.supplierUuid ?? undefined,
+            lines: s.lines || '[]',
+            totalAmount: s.totalAmount || 0,
+            paidAmount: s.paidAmount || 0,
+            note: s.note ?? undefined,
+            date: Number(s.date),
+            isDeleted: !!s.isDeleted,
+          }));
+        }
+        if (dirtyPayments.length) {
+          payload.payments = dirtyPayments.map((p: any) => ({
+            localId: p.id,
+            serverId: p.serverId ?? undefined,
+            uuid: p.uuid,
+            supplierId: p.supplierServerId ?? undefined,
+            supplierUuid: p.supplierUuid ?? undefined,
+            supplyUuid: p.supplyUuid ?? undefined,
+            allocations: p.allocations || '[]',
+            amount: p.amount || 0,
+            note: p.note ?? undefined,
+            date: Number(p.date),
+            isDeleted: !!p.isDeleted,
+          }));
+        }
+
+        const resp = await api.post('/suppliers/push', payload, { headers });
+        const result = resp.data || {};
+
+        for (const r of result.suppliers ?? []) {
+          if (r.localId && r.serverId) {
+            await runWithRetry(db, 'UPDATE suppliers SET serverId = ?, needsSync = 0 WHERE id = ?', [r.serverId, r.localId]);
+          }
+        }
+        for (const r of result.supplies ?? []) {
+          if (r.localId && r.serverId) {
+            await runWithRetry(db, 'UPDATE supplies SET serverId = ?, needsSync = 0 WHERE id = ?', [r.serverId, r.localId]);
+          }
+        }
+        for (const r of result.payments ?? []) {
+          if (r.localId && r.serverId) {
+            await runWithRetry(db, 'UPDATE supplier_payments SET serverId = ?, needsSync = 0 WHERE id = ?', [r.serverId, r.localId]);
+          }
+        }
+        console.log(`📤 Pushed ${dirtySuppliers.length} suppliers, ${dirtySupplies.length} supplies, ${dirtyPayments.length} payments`);
+      }
+    } catch (err: any) {
+      console.warn('Suppliers push failed:', err?.response?.data || err?.message || err);
+    }
+
+    // 2) PULL — забираем все три типа
+    const pullList: { type: 'suppliers' | 'supplies' | 'payments'; url: string; upsert: (row: any) => Promise<void> }[] = [
+      { type: 'suppliers', url: '/suppliers/pull/suppliers', upsert: (r) => this.upsertSupplierRow(r) },
+      { type: 'supplies', url: '/suppliers/pull/supplies', upsert: (r) => this.upsertSupplyRow(r) },
+      { type: 'payments', url: '/suppliers/pull/payments', upsert: (r) => this.upsertPaymentRow(r) },
+    ];
+    const lastSyncAt = await this.getLastSyncTimestamp();
+
+    for (const p of pullList) {
+      try {
+        let cursor = 0;
+        let hasMore = true;
+        while (hasMore) {
+          const resp = await api.get(p.url, {
+            params: {
+              lastSyncAt: lastSyncAt ? new Date(lastSyncAt).toISOString() : undefined,
+              limit: 200,
+              cursor,
+            },
+            headers,
+          });
+          const { rows = [], hasMore: more = false, nextCursor } = resp.data || {};
+          for (const row of rows) {
+            await p.upsert(row);
+          }
+          hasMore = !!more;
+          cursor = nextCursor || cursor;
+          if (rows.length === 0) break;
+        }
+        console.log(`📥 ${p.type} pull complete`);
+      } catch (err: any) {
+        console.warn(`${p.type} pull failed:`, err?.response?.data || err?.message || err);
+      }
+    }
+  }
+
+  private async upsertSupplierRow(s: any): Promise<void> {
+    const db = await getDatabaseInstance();
+    const existing = await getFirstWithRetry<any>(
+      db, 'SELECT id FROM suppliers WHERE serverId = ? OR uuid = ?', [s.id, s.uuid]
+    );
+    if (existing) {
+      await runWithRetry(db, `
+        UPDATE suppliers SET serverId = ?, name = ?, phone = ?, address = ?, notes = ?,
+          isDeleted = ?, needsSync = 0, updatedAt = ?
+        WHERE id = ?
+      `, [s.id, s.name, s.phone || null, s.address || null, s.notes || null, s.isDeleted ? 1 : 0, Date.now(), existing.id]);
+    } else {
+      await runWithRetry(db, `
+        INSERT INTO suppliers (serverId, uuid, name, phone, address, notes, isDeleted, needsSync, createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+      `, [s.id, s.uuid || null, s.name, s.phone || null, s.address || null, s.notes || null, s.isDeleted ? 1 : 0, Date.now(), Date.now()]);
+    }
+  }
+
+  private async upsertSupplyRow(s: any): Promise<void> {
+    const db = await getDatabaseInstance();
+    const existing = await getFirstWithRetry<any>(
+      db, 'SELECT id FROM supplies WHERE serverId = ? OR uuid = ?', [s.id, s.uuid]
+    );
+    if (existing) {
+      await runWithRetry(db, `
+        UPDATE supplies SET serverId = ?, supplierServerId = ?, supplierUuid = ?, lines = ?,
+          totalAmount = ?, paidAmount = ?, note = ?, date = ?, isDeleted = ?, needsSync = 0, updatedAt = ?
+        WHERE id = ?
+      `, [
+        s.id, s.supplierId ?? null, s.supplierUuid ?? null, s.lines || '[]',
+        s.totalAmount || 0, s.paidAmount || 0, s.note || null,
+        Number(s.date), s.isDeleted ? 1 : 0, Date.now(), existing.id,
+      ]);
+    } else {
+      await runWithRetry(db, `
+        INSERT INTO supplies (serverId, uuid, supplierServerId, supplierUuid, lines, totalAmount,
+          paidAmount, note, date, isDeleted, needsSync, createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+      `, [
+        s.id, s.uuid || null, s.supplierId ?? null, s.supplierUuid ?? null, s.lines || '[]',
+        s.totalAmount || 0, s.paidAmount || 0, s.note || null, Number(s.date),
+        s.isDeleted ? 1 : 0, Date.now(), Date.now(),
+      ]);
+    }
+  }
+
+  private async upsertPaymentRow(p: any): Promise<void> {
+    const db = await getDatabaseInstance();
+    const existing = await getFirstWithRetry<any>(
+      db, 'SELECT id FROM supplier_payments WHERE serverId = ? OR uuid = ?', [p.id, p.uuid]
+    );
+    if (existing) {
+      await runWithRetry(db, `
+        UPDATE supplier_payments SET serverId = ?, supplierServerId = ?, supplierUuid = ?, supplyUuid = ?,
+          allocations = ?, amount = ?, note = ?, date = ?, isDeleted = ?, needsSync = 0, updatedAt = ?
+        WHERE id = ?
+      `, [
+        p.id, p.supplierId ?? null, p.supplierUuid ?? null, p.supplyUuid ?? null,
+        p.allocations ?? '[]', p.amount, p.note || null, Number(p.date),
+        p.isDeleted ? 1 : 0, Date.now(), existing.id,
+      ]);
+    } else {
+      await runWithRetry(db, `
+        INSERT INTO supplier_payments (serverId, uuid, supplierServerId, supplierUuid, supplyUuid,
+          allocations, amount, note, date, isDeleted, needsSync, createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+      `, [
+        p.id, p.uuid || null, p.supplierId ?? null, p.supplierUuid ?? null, p.supplyUuid ?? null,
+        p.allocations ?? '[]', p.amount, p.note || null, Number(p.date),
+        p.isDeleted ? 1 : 0, Date.now(), Date.now(),
+      ]);
     }
   }
 }

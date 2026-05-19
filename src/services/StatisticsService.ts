@@ -292,8 +292,13 @@ export class StatisticsService {
     };
   }
 
-  static formatCurrency(amount: number): string {
-    return `${amount.toFixed(2)} сомонӣ`;
+  // Делегируем форматирование общему utils-форматтеру, который читает активную
+  // валюту аккаунта. Опциональный аргумент currencyCode позволяет явно указать
+  // валюту (например, для исторических транзакций со своим currency).
+  static formatCurrency(amount: number, currencyCode?: string | null): string {
+    const { formatCurrency } = require('../utils/formatters');
+    const { getActiveCurrencyCode } = require('../utils/currencyState');
+    return formatCurrency(amount, currencyCode || getActiveCurrencyCode());
   }
 
   static formatPercentage(percentage: number): string {

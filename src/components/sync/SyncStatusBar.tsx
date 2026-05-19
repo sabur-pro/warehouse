@@ -9,6 +9,8 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { getThemeColors } from '../../../constants/theme';
 import { IncompleteDataAlert } from './IncompleteDataAlert';
 import { SYNC_INTERVAL_KEY, DEFAULT_SYNC_INTERVAL } from '../../screens/SettingsScreen';
+import { HardwareIndicatorsCompact } from '../../../components/HardwareIndicatorsCompact';
+import { useShowHardwareIndicators } from '../../utils/hardwareIndicatorsSettings';
 
 // Создаём локальный контекст для refresh
 interface SyncRefreshContextType {
@@ -98,6 +100,7 @@ export const SyncStatusBar: React.FC<SyncStatusBarProps> = ({ onSyncComplete }) 
   } = useAutoSync({ syncInterval });
   const [isConnected, setIsConnected] = useState<boolean | null>(true);
   const syncContext = useContext(SyncRefreshContext);
+  const showHardwareIndicators = useShowHardwareIndicators();
 
   // Отслеживаем интернет соединение
   useEffect(() => {
@@ -105,24 +108,12 @@ export const SyncStatusBar: React.FC<SyncStatusBarProps> = ({ onSyncComplete }) 
       // Используем isConnected, но также проверяем isInternetReachable для надёжности
       // На iOS isConnected может быть true, но isInternetReachable - false
       const connected = state.isConnected === true && state.isInternetReachable !== false;
-      console.log('📡 Network state changed:', {
-        isConnected: state.isConnected,
-        isInternetReachable: state.isInternetReachable,
-        type: state.type,
-        resolved: connected,
-      });
       setIsConnected(connected);
     });
 
     // Получить начальное состояние
     NetInfo.fetch().then((state: NetInfoState) => {
       const connected = state.isConnected === true && state.isInternetReachable !== false;
-      console.log('📡 Initial network state:', {
-        isConnected: state.isConnected,
-        isInternetReachable: state.isInternetReachable,
-        type: state.type,
-        resolved: connected,
-      });
       setIsConnected(connected);
     });
 
@@ -218,6 +209,10 @@ export const SyncStatusBar: React.FC<SyncStatusBarProps> = ({ onSyncComplete }) 
             {getStatusText()}
           </Text>
         </View>
+
+        {/* Индикаторы оборудования (сканер + принтер) — справа от статуса, слева
+            от кнопки «Синхр.». Скрываются тоглом в Настройках. */}
+        {showHardwareIndicators && <HardwareIndicatorsCompact />}
 
         {/* Кнопка синхронизации */}
         <TouchableOpacity

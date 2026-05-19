@@ -19,6 +19,8 @@ import { getItemById, getTransactionsBySaleId } from '../database/database';
 import { GroupedTransaction } from './TransactionsList';
 import { useAuth } from '../src/contexts/AuthContext';
 import { useTheme } from '../src/contexts/ThemeContext';
+import { useCurrency } from '../src/contexts/CurrencyContext';
+import { formatCurrency as fmtCur } from '../src/utils/formatters';
 import { getThemeColors } from '../constants/theme';
 import SyncService from '../src/services/SyncService';
 
@@ -85,8 +87,24 @@ interface PriceUpdateInfo {
   newRecommendedPrice?: number;
 }
 
+interface ReceiptLine {
+  itemUuid?: string;
+  itemName?: string;
+  itemImageUri?: string | null;
+  quantity?: number;
+  unitPrice?: number;
+  boxIndex?: number;
+  size?: number | string;
+  sizeType?: string;
+}
+
+interface ReceiptInfo {
+  line?: ReceiptLine;
+}
+
 interface TransactionDetails {
-  type: 'sale' | 'create' | 'update' | 'delete' | 'wholesale' | 'price_update' | 'admin_approved_delete' | 'admin_approved_update' | 'admin_approved_sale_deletion';
+  type: 'sale' | 'create' | 'update' | 'delete' | 'wholesale' | 'price_update' | 'receipt' | 'admin_approved_delete' | 'admin_approved_update' | 'admin_approved_sale_deletion';
+  line?: ReceiptLine;
   sale?: SaleInfo;
   wholesale?: WholesaleInfo;
   initialSizes?: CreateInfo['initialSizes'];
@@ -142,6 +160,18 @@ interface TransactionDetailsModalProps {
 const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ groupedTransaction, visible, onClose, onTransactionDeleted }) => {
   const { isAssistant, isAdmin } = useAuth();
   const { isDark } = useTheme();
+  // Валюту берём из самой транзакции — фиксируется в момент продажи, поэтому
+  // история отображается корректно даже после смены валюты аккаунта.
+  // Если транзакция старая и currency=null — падаем на текущую валюту аккаунта.
+  const { currencyCode: activeCurrencyCode } = useCurrency();
+  const txCurrency = (groupedTransaction?.transactions?.[0]?.currency) || activeCurrencyCode;
+  // Короткий ярлык валюты транзакции — подставляется вместо
+  // хардкода "сомонӣ"/"сом" в JSX-выражениях и template-литералах ниже.
+  const currencyShort = React.useMemo(() => {
+    const { getCurrency } = require('../src/config/currencies');
+    return getCurrency(txCurrency).shortLabel as string;
+  }, [txCurrency]);
+  const fc = (n: number) => fmtCur(n, txCurrency);
   const colors = getThemeColors(isDark);
   const transactions = groupedTransaction.transactions;
   const mainTransaction = transactions[0];
@@ -511,8 +541,8 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
                 )}
                 {details.paymentInfo.method === 'mixed' && (
                   <>
-                    <DetailRow label="Наличными" value={`${(details.paymentInfo.cashAmount || 0).toLocaleString()} сом`} />
-                    <DetailRow label="Картой" value={`${(details.paymentInfo.cardAmount || 0).toLocaleString()} сом`} />
+                    <DetailRow label="Наличными" value={`${(details.paymentInfo.cashAmount || 0).toLocaleString()} ${currencyShort}`} />
+                    <DetailRow label="Картой" value={`${(details.paymentInfo.cardAmount || 0).toLocaleString()} ${currencyShort}`} />
                   </>
                 )}
               </>
@@ -522,7 +552,7 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
             {!isGrouped && details.discount && (
               <DetailRow
                 label="Скидка"
-                value={details.discount.mode === 'percent' ? `${details.discount.value}%` : `${details.discount.value} сом`}
+                value={details.discount.mode === 'percent' ? `${details.discount.value}%` : `${details.discount.value} ${currencyShort}`}
                 valueColor="#F59E0B"
               />
             )}
@@ -531,7 +561,7 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
             {(details.sale as any).appliedDiscount > 0 && (
               <DetailRow
                 label="Скидка на товар"
-                value={`-${(details.sale as any).appliedDiscount.toLocaleString()} сом`}
+                value={`-${(details.sale as any).appliedDiscount.toLocaleString()} ${currencyShort}`}
                 valueColor="#EF4444"
               />
             )}
@@ -540,7 +570,7 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
             {(details.sale as any).actualSaleAmount !== undefined && (details.sale as any).appliedDiscount > 0 && (
               <DetailRow
                 label="Итого со скидкой"
-                value={`${(details.sale as any).actualSaleAmount.toLocaleString()} сом`}
+                value={`${(details.sale as any).actualSaleAmount.toLocaleString()} ${currencyShort}`}
                 valueColor="#10b981"
               />
             )}
@@ -549,27 +579,27 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
 
             {isAssistant() ? (
               <>
-                <DetailRow label="Рекомендуемая цена" value={`${details.sale.salePrice.toFixed(2)} сомонӣ`} />
+                <DetailRow label="Рекомендуемая цена" value={`${details.sale.salePrice.toFixed(2)} ${currencyShort}`} />
                 <DetailRow
                   label="Цена продажи"
                   value={`${(details.sale as any).actualSaleAmount !== undefined
                     ? ((details.sale as any).actualSaleAmount / details.sale.quantity).toFixed(2)
-                    : details.sale.salePrice.toFixed(2)} сомонӣ`}
+                    : details.sale.salePrice.toFixed(2)} ${currencyShort}`}
                 />
               </>
             ) : (
               <>
-                <DetailRow label="Рекомендуемая цена" value={`${details.sale.salePrice.toFixed(2)} сомонӣ`} />
+                <DetailRow label="Рекомендуемая цена" value={`${details.sale.salePrice.toFixed(2)} ${currencyShort}`} />
                 <DetailRow
                   label="Цена продажи"
                   value={`${(details.sale as any).actualSaleAmount !== undefined
                     ? ((details.sale as any).actualSaleAmount / details.sale.quantity).toFixed(2)
-                    : details.sale.salePrice.toFixed(2)} сомонӣ`}
+                    : details.sale.salePrice.toFixed(2)} ${currencyShort}`}
                 />
-                <DetailRow label="Себестоимость пары" value={`${details.sale.costPrice.toFixed(2)} сомонӣ`} />
+                <DetailRow label="Себестоимость пары" value={`${details.sale.costPrice.toFixed(2)} ${currencyShort}`} />
                 <DetailRow
                   label="Прибыль"
-                  value={`${details.sale.profit.toFixed(2)} сомонӣ`}
+                  value={`${details.sale.profit.toFixed(2)} ${currencyShort}`}
                   valueColor={details.sale.profit > 0 ? '#10b981' : '#ef4444'}
                 />
               </>
@@ -598,12 +628,12 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
           {isAdmin() && (
             <View style={styles.row}>
               <Text style={[styles.label, { color: colors.text.muted }]}>Общая себестоимость:</Text>
-              <Text style={[styles.value, { color: colors.text.normal }]}>{details.wholesale.totalCostPrice.toFixed(2)} сомонӣ</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{details.wholesale.totalCostPrice.toFixed(2)} {currencyShort}</Text>
             </View>
           )}
           <View style={styles.row}>
             <Text style={[styles.label, { color: colors.text.muted }]}>Общая цена продажи:</Text>
-            <Text style={[styles.value, { color: colors.text.normal }]}>{details.wholesale.totalSalePrice.toFixed(2)} сомонӣ</Text>
+            <Text style={[styles.value, { color: colors.text.normal }]}>{details.wholesale.totalSalePrice.toFixed(2)} {currencyShort}</Text>
           </View>
           {isAdmin() && (
             <View style={styles.row}>
@@ -612,7 +642,7 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
                 styles.value,
                 { color: details.wholesale.totalProfit > 0 ? '#10b981' : '#ef4444' }
               ]}>
-                {details.wholesale.totalProfit.toFixed(2)} сомонӣ
+                {details.wholesale.totalProfit.toFixed(2)} {currencyShort}
               </Text>
             </View>
           )}
@@ -630,12 +660,12 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
                 {isAdmin() && (
                   <View style={styles.row}>
                     <Text style={[styles.label, { color: colors.text.muted }]}>Себестоимость:</Text>
-                    <Text style={[styles.value, { color: colors.text.normal }]}>{box.costPrice.toFixed(2)} сомонӣ</Text>
+                    <Text style={[styles.value, { color: colors.text.normal }]}>{box.costPrice.toFixed(2)} {currencyShort}</Text>
                   </View>
                 )}
                 <View style={styles.row}>
                   <Text style={[styles.label, { color: colors.text.muted }]}>Цена продажи:</Text>
-                  <Text style={[styles.value, { color: colors.text.normal }]}>{box.salePrice.toFixed(2)} сомонӣ</Text>
+                  <Text style={[styles.value, { color: colors.text.normal }]}>{box.salePrice.toFixed(2)} {currencyShort}</Text>
                 </View>
                 {isAdmin() && (
                   <View style={styles.row}>
@@ -644,7 +674,7 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
                       styles.value,
                       { color: box.profit > 0 ? '#10b981' : '#ef4444' }
                     ]}>
-                      {box.profit.toFixed(2)} сомонӣ
+                      {box.profit.toFixed(2)} {currencyShort}
                     </Text>
                   </View>
                 )}
@@ -675,11 +705,11 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
               <Text style={[styles.subsectionTitle, { color: colors.text.normal, marginTop: 8, marginBottom: 8 }]}>Себестоимость:</Text>
               <View style={styles.row}>
                 <Text style={[styles.label, { color: colors.text.muted }]}>Была общая стоимость:</Text>
-                <Text style={[styles.value, { color: colors.text.normal }]}>{details.oldTotalValue?.toFixed(2) || '0.00'} сомонӣ</Text>
+                <Text style={[styles.value, { color: colors.text.normal }]}>{details.oldTotalValue?.toFixed(2) || '0.00'} {currencyShort}</Text>
               </View>
               <View style={styles.row}>
                 <Text style={[styles.label, { color: colors.text.muted }]}>Стала общая стоимость:</Text>
-                <Text style={[styles.value, { color: colors.text.normal }]}>{details.newTotalValue?.toFixed(2) || '0.00'} сомонӣ</Text>
+                <Text style={[styles.value, { color: colors.text.normal }]}>{details.newTotalValue?.toFixed(2) || '0.00'} {currencyShort}</Text>
               </View>
               <View style={styles.row}>
                 <Text style={[styles.label, { color: colors.text.muted }]}>Разница:</Text>
@@ -687,7 +717,7 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
                   styles.value,
                   { color: costDiff > 0 ? '#10b981' : costDiff < 0 ? '#ef4444' : colors.text.muted, fontWeight: 'bold' }
                 ]}>
-                  {costDiff > 0 ? '+' : ''}{costDiff.toFixed(2)} сомонӣ
+                  {costDiff > 0 ? '+' : ''}{costDiff.toFixed(2)} {currencyShort}
                 </Text>
               </View>
             </>
@@ -698,11 +728,11 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
               <Text style={[styles.subsectionTitle, { color: colors.text.normal, marginTop: 12, marginBottom: 8 }]}>Рекомендованная цена продажи:</Text>
               <View style={styles.row}>
                 <Text style={[styles.label, { color: colors.text.muted }]}>Была:</Text>
-                <Text style={[styles.value, { color: colors.text.normal }]}>{details.oldRecommendedPrice?.toFixed(2) || '0.00'} сомонӣ</Text>
+                <Text style={[styles.value, { color: colors.text.normal }]}>{details.oldRecommendedPrice?.toFixed(2) || '0.00'} {currencyShort}</Text>
               </View>
               <View style={styles.row}>
                 <Text style={[styles.label, { color: colors.text.muted }]}>Стала:</Text>
-                <Text style={[styles.value, { color: colors.text.normal }]}>{details.newRecommendedPrice?.toFixed(2) || '0.00'} сомонӣ</Text>
+                <Text style={[styles.value, { color: colors.text.normal }]}>{details.newRecommendedPrice?.toFixed(2) || '0.00'} {currencyShort}</Text>
               </View>
               <View style={styles.row}>
                 <Text style={[styles.label, { color: colors.text.muted }]}>Разница:</Text>
@@ -710,7 +740,7 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
                   styles.value,
                   { color: recommendedDiff > 0 ? '#10b981' : recommendedDiff < 0 ? '#ef4444' : colors.text.muted, fontWeight: 'bold' }
                 ]}>
-                  {recommendedDiff > 0 ? '+' : ''}{recommendedDiff.toFixed(2)} сомонӣ
+                  {recommendedDiff > 0 ? '+' : ''}{recommendedDiff.toFixed(2)} {currencyShort}
                 </Text>
               </View>
             </>
@@ -753,26 +783,26 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
             <>
               <View style={styles.row}>
                 <Text style={[styles.label, { color: colors.text.muted }]}>Рекомендуемая цена:</Text>
-                <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.recommendedSellingPrice?.toFixed(2) || '0.00'} сомонӣ</Text>
+                <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.recommendedSellingPrice?.toFixed(2) || '0.00'} {currencyShort}</Text>
               </View>
               <View style={styles.row}>
                 <Text style={[styles.label, { color: colors.text.muted }]}>Цена продажи:</Text>
-                <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.salePrice.toFixed(2)} сомонӣ</Text>
+                <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.salePrice.toFixed(2)} {currencyShort}</Text>
               </View>
             </>
           ) : (
             <>
               <View style={styles.row}>
                 <Text style={[styles.label, { color: colors.text.muted }]}>Себестоимость пары:</Text>
-                <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.costPrice.toFixed(2)} сомонӣ</Text>
+                <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.costPrice.toFixed(2)} {currencyShort}</Text>
               </View>
               <View style={styles.row}>
                 <Text style={[styles.label, { color: colors.text.muted }]}>Рекомендуемая цена:</Text>
-                <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.recommendedSellingPrice?.toFixed(2) || '0.00'} сомонӣ</Text>
+                <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.recommendedSellingPrice?.toFixed(2) || '0.00'} {currencyShort}</Text>
               </View>
               <View style={styles.row}>
                 <Text style={[styles.label, { color: colors.text.muted }]}>Цена продажи:</Text>
-                <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.salePrice.toFixed(2)} сомонӣ</Text>
+                <Text style={[styles.value, { color: colors.text.normal }]}>{details.sale.salePrice.toFixed(2)} {currencyShort}</Text>
               </View>
               <View style={styles.row}>
                 <Text style={[styles.label, { color: colors.text.muted }]}>Прибыль:</Text>
@@ -780,7 +810,7 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
                   styles.value,
                   { color: details.sale.profit > 0 ? '#10b981' : '#ef4444' }
                 ]}>
-                  {details.sale.profit.toFixed(2)} сомонӣ
+                  {details.sale.profit.toFixed(2)} {currencyShort}
                 </Text>
               </View>
             </>
@@ -802,12 +832,12 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
               {isAdmin() ? (
                 <View style={styles.row}>
                   <Text style={[styles.label, { color: colors.text.muted }]}>Новая общая стоимость:</Text>
-                  <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalValueAfter?.toFixed(2)} сомонӣ</Text>
+                  <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalValueAfter?.toFixed(2)} {currencyShort}</Text>
                 </View>
               ) : (
                 <View style={styles.row}>
                   <Text style={[styles.label, { color: colors.text.muted }]}>Новая рекомендованная стоимость:</Text>
-                  <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalRecommendedValueAfter?.toFixed(2) || '0.00'} сомонӣ</Text>
+                  <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalRecommendedValueAfter?.toFixed(2) || '0.00'} {currencyShort}</Text>
                 </View>
               )}
               <Text style={[styles.subsectionTitle, { color: colors.text.normal }]}>Изменения:</Text>
@@ -842,12 +872,12 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
           {isAdmin() ? (
             <View style={styles.row}>
               <Text style={[styles.label, { color: colors.text.muted }]}>Общая стоимость:</Text>
-              <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalValue?.toFixed(2)} сомонӣ</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalValue?.toFixed(2)} {currencyShort}</Text>
             </View>
           ) : (
             <View style={styles.row}>
               <Text style={[styles.label, { color: colors.text.muted }]}>Общая рекомендованная стоимость:</Text>
-              <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalRecommendedValue?.toFixed(2) || '0.00'} сомонӣ</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalRecommendedValue?.toFixed(2) || '0.00'} {currencyShort}</Text>
             </View>
           )}
           <Text style={[styles.subsectionTitle, { color: colors.text.normal }]}>Размеры:</Text>
@@ -878,12 +908,12 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
           {isAdmin() ? (
             <View style={styles.row}>
               <Text style={[styles.label, { color: colors.text.muted }]}>Общая стоимость:</Text>
-              <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalValue?.toFixed(2)} сомонӣ</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalValue?.toFixed(2)} {currencyShort}</Text>
             </View>
           ) : (
             <View style={styles.row}>
               <Text style={[styles.label, { color: colors.text.muted }]}>Общая рекомендованная стоимость:</Text>
-              <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalRecommendedValue?.toFixed(2) || '0.00'} сомонӣ</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{details.totalRecommendedValue?.toFixed(2) || '0.00'} {currencyShort}</Text>
             </View>
           )}
           <Text style={[styles.subsectionTitle, { color: colors.text.normal }]}>Размеры:</Text>
@@ -897,6 +927,34 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
       )}
     </View>
   );
+
+  const renderReceiptDetails = (details: TransactionDetails) => {
+    const line = details.line || {};
+    const quantity = line.quantity ?? 0;
+    const unitPrice = line.unitPrice ?? 0;
+    const total = quantity * unitPrice;
+    return (
+      <View>
+        <Text style={[styles.sectionTitle, { color: colors.text.normal }]}>Детали прихода:</Text>
+        {line.size !== undefined && line.size !== null && line.size !== '' && (
+          <DetailRow label="Размер" value={String(line.size)} />
+        )}
+        {line.sizeType && (
+          <DetailRow label="Размерный ряд" value={line.sizeType} />
+        )}
+        {typeof line.boxIndex === 'number' && (
+          <DetailRow label="Коробка" value={`№${line.boxIndex + 1}`} />
+        )}
+        <DetailRow label="Количество" value={`${quantity} шт.`} />
+        <DetailRow label="Цена закупки" value={`${unitPrice.toFixed(2)} ${currencyShort}`} />
+        <DetailRow
+          label="Сумма прихода"
+          value={`${total.toFixed(2)} ${currencyShort}`}
+          valueColor={isDark ? colors.primary.gold : '#0ea5e9'}
+        />
+      </View>
+    );
+  };
 
   const renderAdminApprovedDeleteDetails = (details: any) => {
     const deletedItem = details.deletedItem || {};
@@ -1038,7 +1096,7 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
             </View>
             <View style={styles.row}>
               <Text style={[styles.label, { color: colors.text.muted }]}>Цена продажи:</Text>
-              <Text style={[styles.value, { color: colors.text.normal }]}>{saleInfo.salePrice} сом</Text>
+              <Text style={[styles.value, { color: colors.text.normal }]}>{saleInfo.salePrice} {currencyShort}</Text>
             </View>
           </>
         )}
@@ -1306,8 +1364,8 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
                         )}
                         {firstTxDetails.paymentInfo.method === 'mixed' && (
                           <>
-                            <DetailRow label="Наличными" value={`${(firstTxDetails.paymentInfo.cashAmount || 0).toLocaleString()} сом`} />
-                            <DetailRow label="Картой" value={`${(firstTxDetails.paymentInfo.cardAmount || 0).toLocaleString()} сом`} />
+                            <DetailRow label="Наличными" value={`${(firstTxDetails.paymentInfo.cashAmount || 0).toLocaleString()} ${currencyShort}`} />
+                            <DetailRow label="Картой" value={`${(firstTxDetails.paymentInfo.cardAmount || 0).toLocaleString()} ${currencyShort}`} />
                           </>
                         )}
                       </>
@@ -1318,8 +1376,8 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
                       <DetailRow
                         label="Скидка"
                         value={firstTxDetails.discount.mode === 'percent'
-                          ? `${firstTxDetails.discount.value}%${totalAppliedDiscount > 0 ? ` (−${totalAppliedDiscount.toLocaleString()} сом)` : ''}`
-                          : `${firstTxDetails.discount.value} сом${totalAppliedDiscount > 0 ? ` (−${totalAppliedDiscount.toLocaleString()} сом)` : ''}`}
+                          ? `${firstTxDetails.discount.value}%${totalAppliedDiscount > 0 ? ` (−${totalAppliedDiscount.toLocaleString()} ${currencyShort})` : ''}`
+                          : `${firstTxDetails.discount.value} ${currencyShort}${totalAppliedDiscount > 0 ? ` (−${totalAppliedDiscount.toLocaleString()} ${currencyShort})` : ''}`}
                         valueColor="#F59E0B"
                       />
                     )}
@@ -1395,6 +1453,11 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
       return renderPriceUpdateDetails(details);
     }
 
+    // Приход (от поставщика)
+    if (details.type === 'receipt' || mainTransaction.action === 'receipt') {
+      return renderReceiptDetails(details);
+    }
+
     switch (mainTransaction.action) {
       case 'sale':
         return renderSaleDetails(details);
@@ -1406,6 +1469,7 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
         return renderCreateDetails(details);
       case 'delete':
         return renderDeleteDetails(details);
+      // 'receipt' обработан раньше (если details.type === 'receipt' или action === 'receipt')
       default:
         return <Text style={styles.noData}>Неизвестный тип транзакции</Text>;
     }
@@ -1438,6 +1502,10 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
       return 'Возврат продажи';
     }
 
+    if (details?.type === 'receipt') {
+      return 'Приход';
+    }
+
     switch (mainTransaction.action) {
       case 'sale':
         return 'Продажа';
@@ -1455,6 +1523,8 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
         return details?.sale ? 'Продажа' : 'Обновление';
       case 'delete':
         return 'Удаление';
+      case 'receipt':
+        return 'Приход';
       default:
         return 'Действие';
     }
@@ -1545,7 +1615,7 @@ const TransactionDetailsModal: React.FC<TransactionDetailsModalProps> = ({ group
                   <Text style={[styles.itemName, { color: colors.text.normal }]}>{displayName}</Text>
                   <Text style={[styles.actionText, { color: colors.text.muted }]}>{getActionText()}</Text>
                   <Text style={[styles.timestamp, { color: colors.text.muted }]}>
-                    {new Date(mainTransaction.timestamp * 1000).toLocaleString('ru-RU')}
+                    {new Date(mainTransaction.timestamp > 1e12 ? mainTransaction.timestamp : mainTransaction.timestamp * 1000).toLocaleString('ru-RU')}
                   </Text>
                   {isMultiItem && (
                     <Text style={{ color: colors.text.muted, fontSize: 12, marginTop: 4 }}>

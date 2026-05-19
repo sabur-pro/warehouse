@@ -20,6 +20,8 @@ import { getThemeColors } from '../../constants/theme';
 import { useCatalogs } from '../contexts/CatalogsContext';
 import type { ProfileStackParamList } from '../types/navigation';
 import type { Catalog } from '../../database/types';
+import { CatalogIcon } from '../components/common/CatalogIcon';
+import { TEMPLATE_GROUPS } from '../config/catalogTemplates';
 
 type Nav = NativeStackNavigationProp<ProfileStackParamList, 'Catalogs'>;
 
@@ -131,7 +133,9 @@ const CatalogsScreen: React.FC = () => {
               key={cat.id}
               style={[styles.catalogCard, { backgroundColor: colors.background.card, borderColor: colors.border.light }]}
             >
-              <Text style={styles.catalogIcon}>{cat.icon || '📦'}</Text>
+              <View style={styles.catalogIconWrap}>
+                <CatalogIcon value={cat.icon} size={28} color={accent} />
+              </View>
               <TouchableOpacity
                 style={{ flex: 1, marginLeft: 12 }}
                 onPress={() => navigation.navigate('CatalogEdit', { catalogId: cat.id })}
@@ -166,8 +170,42 @@ const CatalogsScreen: React.FC = () => {
                 <MaterialIcons name="close" size={24} color={colors.text.normal} />
               </TouchableOpacity>
             </View>
-            <ScrollView style={{ maxHeight: 480 }}>
-              {templates.map((tpl) => (
+            <ScrollView style={{ maxHeight: 540 }}>
+              {TEMPLATE_GROUPS.map((group) => {
+                const items = templates.filter((t) => t.group === group.id);
+                if (items.length === 0) return null;
+                return (
+                  <View key={group.id}>
+                    <Text style={[styles.groupHeader, { color: colors.text.muted }]}>{group.label}</Text>
+                    {items.map((tpl) => (
+                      <TouchableOpacity
+                        key={tpl.id}
+                        style={[styles.templateRow, { borderBottomColor: colors.border.light }]}
+                        onPress={() => onApplyTemplate(tpl.id)}
+                        disabled={busy}
+                        activeOpacity={0.7}
+                      >
+                        <View style={styles.templateIconCol}>
+                          <CatalogIcon value={tpl.catalogs[0]?.icon} size={26} color={accent} />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.templateRowTitle, { color: colors.text.normal }]}>{tpl.name}</Text>
+                          {tpl.description ? (
+                            <Text style={[styles.templateRowDesc, { color: colors.text.muted }]} numberOfLines={2}>
+                              {tpl.description}
+                            </Text>
+                          ) : null}
+                          <Text style={[styles.templateRowCatalogs, { color: colors.text.muted }]} numberOfLines={1}>
+                            {tpl.catalogs.map((c) => c.name).join(' · ')}
+                          </Text>
+                        </View>
+                        <MaterialIcons name="chevron-right" size={22} color={colors.text.muted} />
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                );
+              })}
+              {templates.filter((t) => !t.group).map((tpl) => (
                 <TouchableOpacity
                   key={tpl.id}
                   style={[styles.templateRow, { borderBottomColor: colors.border.light }]}
@@ -175,6 +213,9 @@ const CatalogsScreen: React.FC = () => {
                   disabled={busy}
                   activeOpacity={0.7}
                 >
+                  <View style={styles.templateIconCol}>
+                    <CatalogIcon value={tpl.catalogs[0]?.icon} size={26} color={accent} />
+                  </View>
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.templateRowTitle, { color: colors.text.normal }]}>{tpl.name}</Text>
                     {tpl.description ? (
@@ -183,7 +224,7 @@ const CatalogsScreen: React.FC = () => {
                       </Text>
                     ) : null}
                     <Text style={[styles.templateRowCatalogs, { color: colors.text.muted }]} numberOfLines={1}>
-                      {tpl.catalogs.map((c) => c.name).join(', ')}
+                      {tpl.catalogs.map((c) => c.name).join(' · ')}
                     </Text>
                   </View>
                   <MaterialIcons name="chevron-right" size={22} color={colors.text.muted} />
@@ -229,6 +270,16 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   catalogIcon: { fontSize: 28 },
+  catalogIconWrap: { width: 40, alignItems: 'center', justifyContent: 'center' },
+  groupHeader: {
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    marginTop: 14,
+    marginBottom: 6,
+    paddingHorizontal: 4,
+  },
   catalogName: { fontSize: 16, fontWeight: '600' },
   catalogMeta: { fontSize: 12, marginTop: 2 },
   deleteBtn: { padding: 6, marginLeft: 6 },
@@ -241,6 +292,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 14,
     borderBottomWidth: 1,
+  },
+  templateIconCol: {
+    width: 36,
+    alignItems: 'center',
+    marginRight: 8,
   },
   templateRowTitle: { fontSize: 16, fontWeight: '600', marginBottom: 2 },
   templateRowDesc: { fontSize: 12, marginBottom: 2 },

@@ -1,6 +1,6 @@
 // src/contexts/CartContext.tsx
 import React, { createContext, useContext, useState, ReactNode, useCallback, useMemo } from 'react';
-import { Item, SizeQuantity } from '../../database/types';
+import { Item, SizeQuantity, PriceUnit, isWeightPriceUnit } from '../../database/types';
 
 // Тип для элемента корзины
 export interface CartItem {
@@ -9,10 +9,16 @@ export interface CartItem {
     boxIndex: number;     // индекс коробки
     sizeIndex: number;    // индекс размера в коробке
     size: number | string;// размер
-    quantity: number;     // количество в корзине
-    price: number;        // цена за единицу
+    // Для штучных товаров: целое количество (шт.).
+    // Для весовых (priceUnit ∈ kg/100g): дробное значение в единицах priceUnit
+    //   (например, 0.878 при priceUnit='kg' означает 878 г).
+    quantity: number;
+    price: number;        // цена за единицу priceUnit (за шт/кг/100г)
     recommendedPrice?: number; // рекомендуемая цена продажи
-    maxQuantity: number;  // максимальное доступное количество
+    maxQuantity: number;  // максимальное доступное количество (в тех же единицах)
+    // Единица цены товара на момент добавления в корзину. Нужна чтобы
+    // отрисовать вес в граммах вместо "× N шт." и не тащить весь Item.
+    priceUnit?: PriceUnit;
 }
 
 interface CartContextType {
@@ -56,6 +62,9 @@ export const CartProvider: React.FC<CartProviderProps> = ({ children }) => {
         recommendedPrice?: number,
         maxQuantity?: number
     ) => {
+        const priceUnit = (item.priceUnit as PriceUnit | undefined) || 'pair';
+        const isWeight = isWeightPriceUnit(priceUnit);
+
         setCartItems(prev => {
             // Проверяем, есть ли уже такой товар с таким же размером и коробкой
             const existingIndex = prev.findIndex(
@@ -63,11 +72,19 @@ export const CartProvider: React.FC<CartProviderProps> = ({ children }) => {
             );
 
             if (existingIndex !== -1) {
-                // Обновляем количество существующего элемента
                 const updated = [...prev];
                 const existing = updated[existingIndex];
-                const newQuantity = Math.min(existing.quantity + quantity, existing.maxQuantity);
-                updated[existingIndex] = { ...existing, quantity: newQuantity };
+                if (isWeight) {
+                    // Для весовых товаров addToCart означает "перезаписать вес",
+                    // а не "плюс ещё столько же" — иначе UX становится непредсказуемым
+                    // (нажал "добавить" дважды → удвоился вес).
+                    const newQuantity = Math.min(quantity, existing.maxQuantity);
+                    updated[existingIndex] = { ...existing, quantity: newQuantity, price, recommendedPrice, priceUnit };
+                } else {
+                    // Штучный режим — старое поведение, прибавляем.
+                    const newQuantity = Math.min(existing.quantity + quantity, existing.maxQuantity);
+                    updated[existingIndex] = { ...existing, quantity: newQuantity };
+                }
                 return updated;
             }
 
@@ -82,6 +99,7 @@ export const CartProvider: React.FC<CartProviderProps> = ({ children }) => {
                 price,
                 recommendedPrice,
                 maxQuantity: maxQuantity || quantity,
+                priceUnit,
             };
 
             setNextId(prevId => prevId + 1);
@@ -97,8 +115,10 @@ export const CartProvider: React.FC<CartProviderProps> = ({ children }) => {
         setCartItems(prev => {
             return prev.map(ci => {
                 if (ci.id === cartItemId) {
-                    // Ограничиваем количество от 1 до maxQuantity
-                    const clampedQuantity = Math.max(1, Math.min(newQuantity, ci.maxQuantity));
+                    // Для весовых товаров минимум — любое положительное число (даже 0.001 кг),
+                    // потому что 1 как минимум означало бы "минимум 1 кг" — это слишком много.
+                    const minQty = isWeightPriceUnit(ci.priceUnit) ? 0.001 : 1;
+                    const clampedQuantity = Math.max(minQty, Math.min(newQuantity, ci.maxQuantity));
                     return { ...ci, quantity: clampedQuantity };
                 }
                 return ci;

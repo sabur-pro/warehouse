@@ -12,6 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useStatistics, PeriodType } from '../hooks/useStatistics';
 import { useTheme } from '../contexts/ThemeContext';
+import { useCurrency } from '../contexts/CurrencyContext';
 import { getThemeColors } from '../../constants/theme';
 import StatCard from '../components/common/StatCard';
 import CombinedStatCard from '../components/common/CombinedStatCard';
@@ -27,6 +28,7 @@ import { useSyncRefresh } from '../components/sync/SyncStatusBar';
 const StatisticsScreen: React.FC = () => {
   const { isDark } = useTheme();
   const colors = getThemeColors(isDark);
+  const { label: currencyLabel } = useCurrency();
   const [selectedPeriod, setSelectedPeriod] = useState<PeriodType>('daily');
   const [customDate, setCustomDate] = useState<Date>(new Date());
 
@@ -142,7 +144,7 @@ const StatisticsScreen: React.FC = () => {
               title="Общая стоимость"
               value={`${statistics.totalValue.toFixed(2)}`}
               color="#10b981"
-              subtitle="сомонӣ"
+              subtitle={currencyLabel}
             />
 
             <CombinedStatCard
@@ -187,13 +189,13 @@ const StatisticsScreen: React.FC = () => {
                   icon: 'shopping-cart',
                   title: 'Продажи',
                   value: `${statistics.periodStats.sales.toFixed(2)}`,
-                  subtitle: 'сомонӣ',
+                  subtitle: currencyLabel,
                 },
                 {
                   icon: 'trending-up',
                   title: 'Прибыль',
                   value: `${statistics.periodStats.profit.toFixed(2)}`,
-                  subtitle: 'сомонӣ',
+                  subtitle: currencyLabel,
                 },
               ]}
               color="#3b82f6"
@@ -243,7 +245,7 @@ const StatisticsScreen: React.FC = () => {
                     icon: 'local-offer',
                     title: 'Скидки',
                     value: `${statistics.periodStats.totalDiscount.toFixed(2)}`,
-                    subtitle: 'сомонӣ',
+                    subtitle: currencyLabel,
                   },
                   {
                     icon: 'percent',
@@ -303,14 +305,14 @@ const StatisticsScreen: React.FC = () => {
                 value={statistics.periodStats.sales}
                 maxValue={statistics.totalSales > 0 ? statistics.totalSales : statistics.periodStats.sales}
                 color="#3b82f6"
-                unit="сомонӣ"
+                unit={currencyLabel}
               />
               <ProgressBar
                 label="Прибыль"
                 value={statistics.periodStats.profit}
                 maxValue={statistics.totalProfit > 0 ? statistics.totalProfit : statistics.periodStats.profit}
                 color="#10b981"
-                unit="сомонӣ"
+                unit={currencyLabel}
               />
               <ProgressBar
                 label="Рентабельность"

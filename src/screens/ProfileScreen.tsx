@@ -27,7 +27,7 @@ import { ProfileStackParamList } from '../types/navigation';
 
 export default function ProfileScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<ProfileStackParamList>>();
-  const { user, signOut, isAdmin } = useAuth();
+  const { user, signOut, isAdmin, isAssistant } = useAuth();
   const { isDark, toggleTheme } = useTheme();
   const colors = getThemeColors(isDark);
   const insets = useSafeAreaInsets();
@@ -346,6 +346,26 @@ export default function ProfileScreen() {
               <MaterialIcons name="people" size={24} color={isDark ? colors.primary.gold : colors.primary.blue} />
               <Text style={[styles.quickActionText, { color: colors.text.normal }]}>Клиенты</Text>
             </TouchableOpacity>
+            {/* Приход — только ассистент (создаёт), админ только смотрит сводку */}
+            {isAssistant() && (
+              <TouchableOpacity
+                style={[styles.quickAction, { backgroundColor: colors.background.card }]}
+                onPress={() => navigation.navigate('Receipt')}
+              >
+                <MaterialIcons name="local-shipping" size={24} color={isDark ? '#34d399' : '#10b981'} />
+                <Text style={[styles.quickActionText, { color: colors.text.normal }]}>Приход</Text>
+              </TouchableOpacity>
+            )}
+            {/* Поставщики — только админ (видит долги, оплаты) */}
+            {isAdmin() && (
+              <TouchableOpacity
+                style={[styles.quickAction, { backgroundColor: colors.background.card }]}
+                onPress={() => navigation.navigate('Suppliers')}
+              >
+                <MaterialIcons name="business" size={24} color={isDark ? '#a78bfa' : '#8b5cf6'} />
+                <Text style={[styles.quickActionText, { color: colors.text.normal }]}>Поставщики</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
               style={[styles.quickAction, { backgroundColor: colors.background.card }]}
               onPress={() => navigation.navigate('Settings')}

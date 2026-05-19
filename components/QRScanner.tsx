@@ -25,27 +25,39 @@ export const QRScanner: React.FC<QRScannerProps> = ({ visible, onClose, onScan }
 
   const handleBarCodeScanned = ({ data }: { data: string }) => {
     if (scanned) return;
-    
+
     setScanned(true);
-    console.log('QR code scanned:', data);
-    
-    // Проверяем, что это наш QR-код
+    console.log('📷 QRScanner: raw data length=', data?.length, 'preview=', data?.slice(0, 200));
+
+    // Проверяем, что это наш QR-код.
+    // ВАЖНО: itemId в QR может быть 0 (заглушка для новых товаров до того как им присвоится локальный id) —
+    //   проверять на truthy itemId нельзя, иначе скан отбрасывается. Идентифицируем по type + наличию uuid/itemId.
     try {
       const parsedData = JSON.parse(data);
-      if (parsedData.itemId && parsedData.type === 'warehouse_item') {
+      const isWarehouseQR = parsedData?.type === 'warehouse_item';
+      const hasIdentifier =
+        typeof parsedData?.itemUuid === 'string' && parsedData.itemUuid.length > 0
+        || (typeof parsedData?.itemId === 'number' && parsedData.itemId > 0);
+
+      console.log('📷 QRScanner: parsed type=', parsedData?.type, 'itemUuid=', parsedData?.itemUuid?.slice?.(0, 8), 'itemId=', parsedData?.itemId);
+
+      if (isWarehouseQR && hasIdentifier) {
         onScan(data);
         onClose();
-      } else {
-        Alert.alert(
-          'Неизвестный QR-код',
-          'Этот QR-код не относится к системе складского учета',
-          [
-            { text: 'Сканировать снова', onPress: () => setScanned(false) },
-            { text: 'Закрыть', onPress: onClose }
-          ]
-        );
+        return;
       }
+
+      console.warn('📷 QRScanner: rejected — isWarehouseQR=', isWarehouseQR, 'hasIdentifier=', hasIdentifier);
+      Alert.alert(
+        'Неизвестный QR-код',
+        'Этот QR-код не относится к системе складского учёта или повреждён.',
+        [
+          { text: 'Сканировать снова', onPress: () => setScanned(false) },
+          { text: 'Закрыть', onPress: onClose }
+        ]
+      );
     } catch (error) {
+      console.warn('📷 QRScanner: JSON parse failed', error);
       Alert.alert(
         'Ошибка',
         'Не удалось распознать QR-код',

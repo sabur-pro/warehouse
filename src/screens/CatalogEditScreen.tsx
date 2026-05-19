@@ -1,5 +1,5 @@
 // src/screens/CatalogEditScreen.tsx
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -19,6 +19,8 @@ import { useTheme } from '../contexts/ThemeContext';
 import { getThemeColors } from '../../constants/theme';
 import { useCatalogs } from '../contexts/CatalogsContext';
 import type { ProfileStackParamList } from '../types/navigation';
+import { CatalogIcon } from '../components/common/CatalogIcon';
+import { CATALOG_ICON_CATEGORIES } from '../config/catalogIconPresets';
 
 type Nav = NativeStackNavigationProp<ProfileStackParamList, 'CatalogEdit'>;
 type Route = RouteProp<ProfileStackParamList, 'CatalogEdit'>;
@@ -29,7 +31,7 @@ interface DraftSizeType {
   sizesText: string; // запятая-разделитель
 }
 
-const ICON_PRESETS = ['📦', '👟', '👕', '🥛', '🍞', '🌾', '🥕', '🍎', '🌿', '👜', '🪢', '⌚', '🕶'];
+const DEFAULT_ICON = 'mci:package-variant-closed';
 
 const CatalogEditScreen: React.FC = () => {
   const navigation = useNavigation<Nav>();
@@ -48,7 +50,7 @@ const CatalogEditScreen: React.FC = () => {
   );
 
   const [name, setName] = useState(initial?.name ?? '');
-  const [icon, setIcon] = useState<string>(initial?.icon ?? '📦');
+  const [icon, setIcon] = useState<string>(initial?.icon ?? DEFAULT_ICON);
   const [sizeTypes, setSizeTypes] = useState<DraftSizeType[]>(
     () =>
       initial?.sizeTypes.map((st) => ({
@@ -59,19 +61,32 @@ const CatalogEditScreen: React.FC = () => {
   );
   const [saving, setSaving] = useState(false);
 
+  // Однократная гидратация формы из загруженного каталога.
+  // ВАЖНО: не делать `setName(initial.name)` при каждом изменении ссылки `initial`,
+  // потому что CatalogsContext обновляет массив catalogs при любой фоновой синхронизации,
+  // `useMemo` пересчитывает `initial` (Array.find → новый объект-референс при том же id),
+  // и пока пользователь печатает в поле "Название", useEffect затирал ввод
+  // (а на Android это ещё и роняло фокус → выбрасывало клавиатуру).
+  const hydratedRef = useRef(false);
   useEffect(() => {
-    if (initial) {
-      setName(initial.name);
-      setIcon(initial.icon ?? '📦');
-      setSizeTypes(
-        initial.sizeTypes.map((st) => ({
-          id: st.id,
-          name: st.name,
-          sizesText: st.sizes.map((s) => String(s)).join(', '),
-        })),
-      );
+    if (hydratedRef.current) return;
+    if (isNew) {
+      // Для нового каталога стартовое состояние уже выставили в useState — больше нечего делать.
+      hydratedRef.current = true;
+      return;
     }
-  }, [initial]);
+    if (!initial) return; // ждём пока catalogs загрузятся
+    setName(initial.name);
+    setIcon(initial.icon ?? DEFAULT_ICON);
+    setSizeTypes(
+      initial.sizeTypes.map((st) => ({
+        id: st.id,
+        name: st.name,
+        sizesText: st.sizes.map((s) => String(s)).join(', '),
+      })),
+    );
+    hydratedRef.current = true;
+  }, [initial, isNew]);
 
   const addSizeType = () => setSizeTypes((prev) => [...prev, { name: '', sizesText: '' }]);
   const removeSizeType = (idx: number) =>
@@ -165,22 +180,39 @@ const CatalogEditScreen: React.FC = () => {
             placeholderTextColor={colors.text.muted}
           />
 
-          <Text style={[styles.label, { color: colors.text.muted, marginTop: 16 }]}>Иконка</Text>
-          <View style={styles.iconRow}>
-            {ICON_PRESETS.map((emoji) => (
-              <TouchableOpacity
-                key={emoji}
-                style={[
-                  styles.iconBtn,
-                  { backgroundColor: colors.background.card, borderColor: colors.border.light },
-                  icon === emoji && { borderColor: accent, borderWidth: 2 },
-                ]}
-                onPress={() => setIcon(emoji)}
-              >
-                <Text style={{ fontSize: 22 }}>{emoji}</Text>
-              </TouchableOpacity>
-            ))}
+          <View style={styles.iconHeaderRow}>
+            <Text style={[styles.label, { color: colors.text.muted }]}>Иконка</Text>
+            <View style={[styles.iconPreview, { backgroundColor: colors.background.card, borderColor: accent }]}>
+              <CatalogIcon value={icon} size={24} color={accent} />
+            </View>
           </View>
+          {CATALOG_ICON_CATEGORIES.map((cat) => (
+            <View key={cat.id} style={{ marginBottom: 6 }}>
+              <Text style={[styles.iconCategory, { color: colors.text.muted }]}>{cat.label}</Text>
+              <View style={styles.iconRow}>
+                {cat.icons.map((preset) => {
+                  const isSelected = icon === preset.value;
+                  return (
+                    <TouchableOpacity
+                      key={preset.value}
+                      style={[
+                        styles.iconBtn,
+                        { backgroundColor: colors.background.card, borderColor: colors.border.light },
+                        isSelected && { borderColor: accent, borderWidth: 2, backgroundColor: isDark ? 'rgba(212,175,55,0.12)' : 'rgba(42,171,238,0.10)' },
+                      ]}
+                      onPress={() => setIcon(preset.value)}
+                    >
+                      <CatalogIcon
+                        value={preset.value}
+                        size={22}
+                        color={isSelected ? accent : colors.text.normal}
+                      />
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+          ))}
 
           <View style={[styles.sectionHeaderRow]}>
             <Text style={[styles.sectionTitle, { color: colors.text.normal }]}>Размерные ряды</Text>
@@ -257,6 +289,29 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   iconRow: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 4 },
+  iconHeaderRow: {
+    marginTop: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  iconPreview: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconCategory: {
+    fontSize: 11,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginTop: 8,
+    marginBottom: 4,
+    marginLeft: 4,
+  },
   iconBtn: {
     width: 44,
     height: 44,

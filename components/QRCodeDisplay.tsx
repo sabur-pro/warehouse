@@ -1,6 +1,6 @@
 // components/QRCodeDisplay.tsx
 import React, { useRef, useState } from 'react';
-import { View, Text, TouchableOpacity, Alert, ScrollView } from 'react-native';
+import { View, Text, TouchableOpacity, Alert, ScrollView, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import QRCode from 'react-native-qrcode-svg';
 import * as Sharing from 'expo-sharing';
@@ -8,21 +8,39 @@ import * as FileSystem from 'expo-file-system';
 import * as Print from 'expo-print';
 import { QRCodeInfo, parseQRCodes } from '../utils/qrCodeUtils';
 import { useTheme } from '../src/contexts/ThemeContext';
+import { useCurrency } from '../src/contexts/CurrencyContext';
 import { getThemeColors } from '../constants/theme';
+import { PrinterService } from '../src/services/PrinterService';
+import { useNavigation } from '@react-navigation/native';
 
 interface QRCodeDisplayProps {
   qrCodes: string | null;
   itemName: string;
   itemCode: string;
   qrCodeType: string;
+  // Цена для печати на термоэтикетке (опционально). На скачивание PDF не влияет.
+  price?: number | string;
 }
 
-export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ qrCodes, itemName, itemCode, qrCodeType }) => {
+function formatPriceTextForLabel(price: number | string | undefined, asciiLabel: string): string {
+  if (price === undefined || price === null || price === '') return '';
+  const num = typeof price === 'number' ? price : parseFloat(String(price));
+  if (!Number.isFinite(num) || num <= 0) return '';
+  const fixed = Number.isInteger(num) ? num.toString() : num.toFixed(2);
+  // ASCII код валюты (ISO 4217) — гарантированно печатается на любом термопринтере
+  return `${fixed} ${asciiLabel}`;
+}
+
+export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ qrCodes, itemName, itemCode, qrCodeType, price }) => {
   const qrRefs = useRef<{ [key: string]: any }>({});
   const parsedQRCodes = parseQRCodes(qrCodes);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [printingAll, setPrintingAll] = useState(false);
+  const [printingId, setPrintingId] = useState<string | null>(null);
   const { isDark } = useTheme();
   const colors = getThemeColors(isDark);
+  const { asciiLabel } = useCurrency();
+  const navigation = useNavigation<any>();
 
   if (!qrCodes || parsedQRCodes.length === 0) {
     return null;
@@ -252,6 +270,77 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ qrCodes, itemName,
     }
   };
 
+  // Печать одного QR на термопринтер. Если принтер не выбран — предлагаем
+  // открыть настройки. Иначе зовём PrinterService.printQRCode.
+  const handlePrintQR = async (qrCode: QRCodeInfo, index: number) => {
+    try {
+      const saved = await PrinterService.getSavedPrinter();
+      if (!saved) {
+        Alert.alert(
+          'Принтер не выбран',
+          'Сначала выберите принтер в Настройках → Принтер этикеток.',
+          [
+            { text: 'Отмена', style: 'cancel' },
+            {
+              text: 'Открыть настройки',
+              onPress: () => navigation.navigate('Profile', { screen: 'PrinterSettings' }),
+            },
+          ],
+        );
+        return;
+      }
+      setPrintingId(qrCode.id);
+      await PrinterService.printQRCode({
+        data: qrCode.data,
+        name: itemName,
+        label: getQRLabelForPrint(qrCode, index),
+        price: formatPriceTextForLabel(price, asciiLabel),
+        copies: 1,
+      });
+    } catch (e: any) {
+      Alert.alert('Ошибка печати QR', e?.message || String(e));
+    } finally {
+      setPrintingId(null);
+    }
+  };
+
+  // Печать всех QR-кодов товара. Каждый QR — отдельная этикетка. После
+  // завершения показываем итог.
+  const handlePrintAll = async () => {
+    try {
+      const saved = await PrinterService.getSavedPrinter();
+      if (!saved) {
+        Alert.alert(
+          'Принтер не выбран',
+          'Сначала выберите принтер в Настройках → Принтер этикеток.',
+          [
+            { text: 'Отмена', style: 'cancel' },
+            {
+              text: 'Открыть настройки',
+              onPress: () => navigation.navigate('Profile', { screen: 'PrinterSettings' }),
+            },
+          ],
+        );
+        return;
+      }
+      setPrintingAll(true);
+      const priceText = formatPriceTextForLabel(price, asciiLabel);
+      const batch = parsedQRCodes.map((qr, i) => ({
+        data: qr.data,
+        name: itemName,
+        label: getQRLabelForPrint(qr, i),
+        price: priceText,
+        copies: 1,
+      }));
+      await PrinterService.printQRBatch(batch);
+      Alert.alert('Готово', `Отправлено на печать: ${batch.length} QR-код(ов).`);
+    } catch (e: any) {
+      Alert.alert('Ошибка печати', e?.message || String(e));
+    } finally {
+      setPrintingAll(false);
+    }
+  };
+
   const getQRLabel = (qrCode: QRCodeInfo, index: number) => {
     if (qrCodeType === 'per_box') {
       return `Коробка ${(qrCode.boxIndex ?? 0) + 1}`;
@@ -260,6 +349,21 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ qrCodes, itemName,
         return `Размер ${qrCode.size} - №${qrCode.itemIndex} (Коробка ${(qrCode.boxIndex ?? 0) + 1})`;
       }
       return `Размер ${qrCode.size} (Коробка ${(qrCode.boxIndex ?? 0) + 1})`;
+    }
+    return `QR #${index + 1}`;
+  };
+
+  // Latin-вариант подписи для термопринтера. Используется ИСКЛЮЧИТЕЛЬНО при
+  // печати — встроенный шрифт XP-366B надёжно рендерит только ASCII.
+  // В PDF-экспорт и в превью на экране уходит обычный кириллический label.
+  const getQRLabelForPrint = (qrCode: QRCodeInfo, index: number) => {
+    if (qrCodeType === 'per_box') {
+      return `Box ${(qrCode.boxIndex ?? 0) + 1}`;
+    } else if (qrCodeType === 'per_item') {
+      if (qrCode.itemIndex !== undefined) {
+        return `Size ${qrCode.size} #${qrCode.itemIndex} (Box ${(qrCode.boxIndex ?? 0) + 1})`;
+      }
+      return `Size ${qrCode.size} (Box ${(qrCode.boxIndex ?? 0) + 1})`;
     }
     return `QR #${index + 1}`;
   };
@@ -296,17 +400,35 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ qrCodes, itemName,
           </View>
           <View className="flex-row items-center">
             {isExpanded && parsedQRCodes.length > 1 && (
-              <TouchableOpacity
-                onPress={(e) => {
-                  e.stopPropagation();
-                  handleDownloadAll();
-                }}
-                style={{ backgroundColor: downloadBtnBg }}
-                className="px-3 py-1 rounded-full flex-row items-center mr-2"
-              >
-                <Ionicons name="download-outline" size={14} color="white" />
-                <Text className="text-white text-xs font-semibold ml-1">Скачать все</Text>
-              </TouchableOpacity>
+              <>
+                <TouchableOpacity
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    handleDownloadAll();
+                  }}
+                  style={{ backgroundColor: downloadBtnBg }}
+                  className="px-3 py-1 rounded-full flex-row items-center mr-2"
+                >
+                  <Ionicons name="download-outline" size={14} color="white" />
+                  <Text className="text-white text-xs font-semibold ml-1">Скачать все</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    handlePrintAll();
+                  }}
+                  disabled={printingAll}
+                  style={{ backgroundColor: isDark ? '#a78bfa' : '#8b5cf6', opacity: printingAll ? 0.6 : 1 }}
+                  className="px-3 py-1 rounded-full flex-row items-center mr-2"
+                >
+                  {printingAll ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Ionicons name="print-outline" size={14} color="white" />
+                  )}
+                  <Text className="text-white text-xs font-semibold ml-1">Печать всех</Text>
+                </TouchableOpacity>
+              </>
             )}
             <Ionicons
               name={isExpanded ? "chevron-up" : "chevron-down"}
@@ -351,14 +473,32 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ qrCodes, itemName,
                       color="#000000"
                     />
                   </View>
-                  <TouchableOpacity
-                    onPress={() => handleDownloadQR(qrCode, index)}
-                    style={{ backgroundColor: downloadBtnBg }}
-                    className="mt-3 px-4 py-2 rounded-full flex-row items-center"
-                  >
-                    <Ionicons name="download-outline" size={16} color="white" />
-                    <Text className="text-white text-xs font-semibold ml-1">Скачать</Text>
-                  </TouchableOpacity>
+                  <View className="flex-row mt-3" style={{ gap: 6 }}>
+                    <TouchableOpacity
+                      onPress={() => handleDownloadQR(qrCode, index)}
+                      style={{ backgroundColor: downloadBtnBg }}
+                      className="px-3 py-2 rounded-full flex-row items-center flex-1 justify-center"
+                    >
+                      <Ionicons name="download-outline" size={14} color="white" />
+                      <Text className="text-white text-xs font-semibold ml-1">PDF</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => handlePrintQR(qrCode, index)}
+                      disabled={printingId === qrCode.id}
+                      style={{
+                        backgroundColor: isDark ? '#a78bfa' : '#8b5cf6',
+                        opacity: printingId === qrCode.id ? 0.6 : 1,
+                      }}
+                      className="px-3 py-2 rounded-full flex-row items-center flex-1 justify-center"
+                    >
+                      {printingId === qrCode.id ? (
+                        <ActivityIndicator size="small" color="#fff" />
+                      ) : (
+                        <Ionicons name="print-outline" size={14} color="white" />
+                      )}
+                      <Text className="text-white text-xs font-semibold ml-1">Печать</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               ))}
             </View>

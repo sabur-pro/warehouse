@@ -16,6 +16,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useCurrency } from '../contexts/CurrencyContext';
+import { formatCurrency as fmtCur } from '../utils/formatters';
 import { getThemeColors } from '../../constants/theme';
 import { getTransactionsByClient, updateClient } from '../../database/database';
 import { Client, Transaction } from '../../database/types';
@@ -31,6 +33,7 @@ export default function ClientDetailsScreen() {
     const { isDark } = useTheme();
     const colors = getThemeColors(isDark);
     const { isAdmin, isAssistant } = useAuth();
+    const { currencyCode } = useCurrency();
 
     const [client, setClient] = useState<Client>(initialClient);
     const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -188,7 +191,7 @@ export default function ClientDetailsScreen() {
                     <View style={styles.detailItem}>
                         <Text style={[styles.detailLabel, { color: colors.text.muted }]}>Цена:</Text>
                         <Text style={[styles.detailValue, { color: colors.primary.blue }]}>
-                            {displayPrice.toLocaleString()} с.
+                            {fmtCur(displayPrice, item.currency || currencyCode)}
                         </Text>
                     </View>
 
@@ -196,7 +199,7 @@ export default function ClientDetailsScreen() {
                         <View style={styles.detailItem}>
                             <Text style={[styles.detailLabel, { color: colors.text.muted }]}>Прибыль:</Text>
                             <Text style={[styles.detailValue, { color: displayProfit >= 0 ? '#10B981' : '#EF4444' }]}>
-                                {displayProfit.toLocaleString()} с.
+                                {fmtCur(displayProfit, item.currency || currencyCode)}
                             </Text>
                         </View>
                     )}

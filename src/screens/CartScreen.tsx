@@ -20,11 +20,14 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { useCart, CartItem } from '../contexts/CartContext';
 import { useTheme } from '../contexts/ThemeContext';
+import { useCurrency } from '../contexts/CurrencyContext';
 import { getThemeColors } from '../../constants/theme';
-import { QRScanner } from '../../components/QRScanner';
+import { useScanLauncher } from '../hooks/useScanLauncher';
 import ItemDetailsModal from '../../components/ItemDetailsModal';
-import { getItemById, getItemsPage, processSaleTransaction, PaymentInfo } from '../../database/database';
-import { Item, SizeQuantity } from '../../database/types';
+import { getItemsPage, processSaleTransaction, PaymentInfo, healQRCodesForItem } from '../../database/database';
+import ItemLookupService from '../services/ItemLookupService';
+import { Item, SizeQuantity, isWeightPriceUnit } from '../../database/types';
+import { formatWeight, gramsPerPriceUnit, priceUnitLabel, sanitizePriceText, parsePriceText } from '../../utils/priceInput';
 import { Toast } from '../components/Toast';
 import CheckoutScreen, { SaleData } from './CheckoutScreen';
 
@@ -38,16 +41,25 @@ interface SwipeableCartItemProps {
     removeFromCart: (id: number) => void;
 }
 
-const SwipeableCartItem: React.FC<SwipeableCartItemProps> = ({
+interface SwipeableCartItemPropsExt extends SwipeableCartItemProps {
+    onEditWeight?: (cartItem: CartItem) => void;
+}
+
+const SwipeableCartItem: React.FC<SwipeableCartItemPropsExt> = ({
     item,
     isDark,
     colors,
     accentColor,
     updateQuantity,
     removeFromCart,
+    onEditWeight,
 }) => {
+    const { label: currencyShort, formatCurrency } = useCurrency();
     const displayPrice = item.recommendedPrice || item.price;
     const totalItemPrice = displayPrice * item.quantity;
+    const isWeight = isWeightPriceUnit(item.priceUnit);
+    const perUnitGrams = isWeight ? gramsPerPriceUnit(item.priceUnit) : 0;
+    const grams = isWeight ? item.quantity * perUnitGrams : 0;
 
     // Создаём анимированное значение для свайпа
     const translateX = useRef(new Animated.Value(0)).current;
@@ -176,32 +188,57 @@ const SwipeableCartItem: React.FC<SwipeableCartItemProps> = ({
                         </Text>
                     </View>
                     <Text style={[styles.priceText, { color: accentColor }]}>
-                        {displayPrice.toLocaleString()} сом × {item.quantity} = {totalItemPrice.toLocaleString()} сом
+                        {isWeight
+                            ? `${displayPrice.toFixed(2)} ${currencyShort}/${priceUnitLabel(item.priceUnit)} × ${formatWeight(grams)} = ${formatCurrency(totalItemPrice)}`
+                            : `${formatCurrency(displayPrice)} × ${item.quantity} = ${formatCurrency(totalItemPrice)}`}
                     </Text>
                 </TouchableOpacity>
 
-                <View style={styles.quantityControlsOnly}>
+                {isWeight ? (
+                    // Для весовых товаров +/- по 1 кг бесполезны — даём кнопку редактирования веса.
                     <TouchableOpacity
-                        style={[styles.quantityButton, { backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : '#f3f4f6' }]}
-                        onPress={handleDecreaseQuantity}
+                        style={{
+                            paddingHorizontal: 12,
+                            paddingVertical: 8,
+                            borderRadius: 16,
+                            backgroundColor: isDark ? 'rgba(212, 175, 55, 0.18)' : 'rgba(34, 197, 94, 0.12)',
+                            borderWidth: 1,
+                            borderColor: accentColor,
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                        }}
+                        onPress={() => onEditWeight?.(item)}
                         activeOpacity={0.7}
                     >
-                        <Ionicons name="remove" size={18} color={item.quantity <= 1 ? '#dc2626' : accentColor} />
+                        <Ionicons name="create-outline" size={16} color={accentColor} />
+                        <Text style={{ marginLeft: 6, color: accentColor, fontWeight: '700' }}>
+                            {formatWeight(grams)}
+                        </Text>
                     </TouchableOpacity>
+                ) : (
+                    <View style={styles.quantityControlsOnly}>
+                        <TouchableOpacity
+                            style={[styles.quantityButton, { backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : '#f3f4f6' }]}
+                            onPress={handleDecreaseQuantity}
+                            activeOpacity={0.7}
+                        >
+                            <Ionicons name="remove" size={18} color={item.quantity <= 1 ? '#dc2626' : accentColor} />
+                        </TouchableOpacity>
 
-                    <Text style={[styles.quantityText, { color: colors.text.normal }]}>
-                        {item.quantity}
-                    </Text>
+                        <Text style={[styles.quantityText, { color: colors.text.normal }]}>
+                            {item.quantity}
+                        </Text>
 
-                    <TouchableOpacity
-                        style={[styles.quantityButton, { backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : '#f3f4f6' }]}
-                        onPress={() => updateQuantity(item.id, item.quantity + 1)}
-                        disabled={item.quantity >= item.maxQuantity}
-                        activeOpacity={0.7}
-                    >
-                        <Ionicons name="add" size={18} color={item.quantity >= item.maxQuantity ? colors.text.muted : accentColor} />
-                    </TouchableOpacity>
-                </View>
+                        <TouchableOpacity
+                            style={[styles.quantityButton, { backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : '#f3f4f6' }]}
+                            onPress={() => updateQuantity(item.id, item.quantity + 1)}
+                            disabled={item.quantity >= item.maxQuantity}
+                            activeOpacity={0.7}
+                        >
+                            <Ionicons name="add" size={18} color={item.quantity >= item.maxQuantity ? colors.text.muted : accentColor} />
+                        </TouchableOpacity>
+                    </View>
+                )}
             </Animated.View>
         </View>
     );
@@ -211,12 +248,10 @@ const CartScreen: React.FC = () => {
     const { isDark } = useTheme();
     const colors = getThemeColors(isDark);
     const { cartItems, removeFromCart, updateQuantity, clearCart, getCartTotal, addToCart } = useCart();
+    const { label: currencyShort, formatCurrency } = useCurrency();
 
     const accentColor = isDark ? colors.primary.gold : colors.primary.blue;
     const totals = useMemo(() => getCartTotal(), [getCartTotal]);
-
-    // QR Scanner state
-    const [scannerVisible, setScannerVisible] = useState(false);
 
     // Checkout screen state
     const [checkoutVisible, setCheckoutVisible] = useState(false);
@@ -229,6 +264,10 @@ const CartScreen: React.FC = () => {
     const [toastVisible, setToastVisible] = useState(false);
     const [toastMessage, setToastMessage] = useState('');
     const [toastType, setToastType] = useState<'success' | 'error' | 'warning' | 'info'>('success');
+
+    // Стейт мини-модалки редактирования веса в корзине (для весовых товаров)
+    const [editWeightCart, setEditWeightCart] = useState<CartItem | null>(null);
+    const [editWeightText, setEditWeightText] = useState('');
 
     const showToast = (message: string, type: 'success' | 'error' | 'warning' | 'info' = 'success') => {
         setToastMessage(message);
@@ -305,15 +344,60 @@ const CartScreen: React.FC = () => {
     // Обработка сканирования QR-кода
     const handleQRScanned = useCallback(async (data: string) => {
         try {
-            const parsedData = JSON.parse(data);
-            const { itemId, itemUuid, itemName, boxIndex, size } = parsedData;
+            console.log('📷 ============ QR SCAN START ============');
+            console.log('📷 raw data length=', data?.length, 'preview=', data?.slice(0, 120));
 
-            // Получаем товар из БД (с поддержкой кросс-девайс поиска по uuid)
-            const item = await getItemById(itemId, itemName, itemUuid);
-
-            if (!item) {
-                Alert.alert('Ошибка', 'Товар не найден в базе данных. Возможно, он ещё не синхронизирован на это устройство.');
+            let parsedData: any;
+            try {
+                parsedData = JSON.parse(data);
+            } catch (parseErr) {
+                console.error('📷 QR: not valid JSON', parseErr);
+                Alert.alert('Ошибка', 'QR-код имеет неверный формат (не JSON).');
                 return;
+            }
+            const { itemId, itemUuid, itemName, boxIndex, size } = parsedData;
+            console.log('📷 QR parsed: itemId=', itemId, 'itemUuid=', itemUuid?.slice(0, 8), 'name=', itemName, 'box=', boxIndex, 'size=', size);
+
+            // Локальный поиск + серверный fallback по uuid (без поиска по name/code — это даёт ложные совпадения)
+            const lookup = await ItemLookupService.findForScan({ itemId, itemUuid, itemName });
+
+            if (!lookup.item) {
+                console.warn('📷 QR: item NOT FOUND. reason=', lookup.reason);
+                let msg = 'Товар не найден.';
+                switch (lookup.reason) {
+                    case 'no_uuid':
+                        msg = 'QR-код устаревшего формата (без UUID). Перевыпустите QR для этого товара.';
+                        break;
+                    case 'not_authenticated':
+                        msg = 'Локально товара нет, а серверный поиск недоступен — войдите в аккаунт.';
+                        break;
+                    case 'server_404':
+                        msg = 'Товар не найден ни локально, ни на сервере. Возможно, он удалён.';
+                        break;
+                    case 'server_error':
+                        msg = 'Ошибка сервера при поиске товара. Попробуйте ещё раз.';
+                        break;
+                    case 'network':
+                        msg = 'Локально товара нет, а сервер недоступен. Проверьте интернет.';
+                        break;
+                }
+                Alert.alert('Ошибка', msg);
+                return;
+            }
+
+            const item = lookup.item;
+            console.log('📷 QR: resolved via', lookup.source, '→ id=', item.id, 'uuid=', item.uuid?.slice(0, 8));
+
+            // Авто-починка старого QR: если в QR не было uuid (или он расходится с актуальным),
+            // переписываем qrCodes у товара с правильным uuid+id, чтобы при следующем скане
+            // сработал быстрый поиск по uuid и QR ушёл на сервер с needsSync=1.
+            try {
+                const healed = await healQRCodesForItem(item, itemUuid);
+                if (healed) {
+                    console.log('📷 QR: auto-healed legacy QR for item', item.id);
+                }
+            } catch (healErr) {
+                console.warn('📷 QR: heal failed (non-fatal)', healErr);
             }
 
             // Парсим boxSizeQuantities
@@ -357,6 +441,47 @@ const CartScreen: React.FC = () => {
             Alert.alert('Ошибка', 'Не удалось обработать QR-код');
         }
     }, [addToCart]);
+
+    // Сканирование штрих-кода в корзине: ищем товар по `code` локально → серверный fallback,
+    // и открываем карточку для добавления в корзину. Без специфики "размер/коробка" —
+    // штрих-код товара адресует ТОЛЬКО товар целиком, выбор размера сделает юзер вручную.
+    const handleBarcodeScanned = useCallback(async (code: string) => {
+        console.log('🛒 CartScreen.handleBarcodeScanned: code=', code);
+        const lookup = await ItemLookupService.findByBarcode(code);
+
+        if (lookup.item) {
+            console.log('🛒 barcode resolved via', lookup.source, '→ id=', lookup.item.id);
+            setSelectedItem(lookup.item);
+            setItemDetailsVisible(true);
+            return;
+        }
+
+        let msg = `Товар со штрих-кодом "${code}" не найден.`;
+        switch (lookup.reason) {
+            case 'no_code':
+                msg = 'Пустой штрих-код.';
+                break;
+            case 'not_authenticated':
+                msg = 'Локально товара нет, серверный поиск недоступен — войдите в аккаунт.';
+                break;
+            case 'server_404':
+                msg = `Штрих-код "${code}" не найден ни локально, ни на сервере.`;
+                break;
+            case 'server_error':
+                msg = 'Ошибка сервера при поиске товара.';
+                break;
+            case 'network':
+                msg = 'Локально товара нет, а сервер недоступен. Проверьте интернет.';
+                break;
+        }
+        Alert.alert('Не найдено', msg);
+    }, []);
+
+    // start() — открывает либо HID-оверлей, либо камеру, в зависимости от
+    // настроек сканера. Глобальной подписки на HID нет, чтобы случайные
+    // сканы не дёргали корзину.
+    const { start: startBarcodeScan, modals: barcodeScanModals } = useScanLauncher(handleBarcodeScanned);
+    const { start: startQRScan, modals: qrScanModals } = useScanLauncher(handleQRScanned, { cameraType: 'qr' });
 
     const handleItemUpdated = useCallback((updatedItem?: Item) => {
         // Обновляем selectedItem если он был изменён
@@ -402,6 +527,34 @@ const CartScreen: React.FC = () => {
         );
     };
 
+    const openEditWeight = useCallback((cartItem: CartItem) => {
+        const perUnit = gramsPerPriceUnit(cartItem.priceUnit);
+        const grams = perUnit > 0 ? Math.round(cartItem.quantity * perUnit) : 0;
+        setEditWeightText(grams > 0 ? String(grams) : '');
+        setEditWeightCart(cartItem);
+    }, []);
+
+    const confirmEditWeight = useCallback(() => {
+        if (!editWeightCart) return;
+        const perUnit = gramsPerPriceUnit(editWeightCart.priceUnit);
+        if (perUnit <= 0) return;
+        const grams = parsePriceText(editWeightText);
+        if (grams <= 0) {
+            Alert.alert('Введите вес', 'Укажите вес больше нуля (в граммах).');
+            return;
+        }
+        const newQty = grams / perUnit;
+        const maxQty = editWeightCart.maxQuantity;
+        if (newQty > maxQty + 1e-9) {
+            const maxGrams = Math.round(maxQty * perUnit);
+            Alert.alert('Превышен остаток', `На складе только ${formatWeight(maxGrams)}.`);
+            return;
+        }
+        updateQuantity(editWeightCart.id, newQty);
+        setEditWeightCart(null);
+        setEditWeightText('');
+    }, [editWeightCart, editWeightText, updateQuantity]);
+
     const renderCartItem = ({ item }: { item: CartItem }) => (
         <SwipeableCartItem
             item={item}
@@ -410,6 +563,7 @@ const CartScreen: React.FC = () => {
             accentColor={accentColor}
             updateQuantity={updateQuantity}
             removeFromCart={removeFromCart}
+            onEditWeight={openEditWeight}
         />
     );
 
@@ -541,16 +695,32 @@ const CartScreen: React.FC = () => {
                 </TouchableOpacity>
             )}
 
-            {/* Кнопка QR сканера - СЛЕВА */}
+            {/* Кнопка QR сканера - СЛЕВА. HID-сканер или камера по настройкам. */}
             <TouchableOpacity
                 style={[styles.scanButton, {
                     backgroundColor: accentColor,
                     shadowColor: accentColor,
                 }]}
-                onPress={() => setScannerVisible(true)}
+                onPress={startQRScan}
                 activeOpacity={0.8}
+                accessibilityLabel="Сканировать QR-код"
             >
                 <Ionicons name="scan" size={28} color="white" />
+            </TouchableOpacity>
+
+            {/* Кнопка сканера штрих-кода — справа от QR. Если в настройках
+                выбран внешний сканер, тап покажет «Ждём сканер…» и откроет
+                карточку по физическому скану; иначе откроется камера. */}
+            <TouchableOpacity
+                style={[styles.barcodeButton, {
+                    backgroundColor: isDark ? colors.primary.purple : colors.primary.gold,
+                    shadowColor: isDark ? colors.primary.purple : colors.primary.gold,
+                }]}
+                onPress={startBarcodeScan}
+                activeOpacity={0.8}
+                accessibilityLabel="Сканировать штрих-код"
+            >
+                <Ionicons name="barcode-outline" size={28} color="white" />
             </TouchableOpacity>
 
             {/* Меню троеточие - Modal */}
@@ -579,12 +749,11 @@ const CartScreen: React.FC = () => {
                 </Pressable>
             </Modal>
 
-            {/* QR Сканер */}
-            <QRScanner
-                visible={scannerVisible}
-                onClose={() => setScannerVisible(false)}
-                onScan={handleQRScanned}
-            />
+            {/* QR-сканер: камера + HID-оверлей через useScanLauncher */}
+            {qrScanModals}
+
+            {/* Камера + HID-оверлей штрихкода — оба из useScanLauncher */}
+            {barcodeScanModals}
 
             {/* Модалка деталей товара */}
             {selectedItem && (
@@ -678,6 +847,134 @@ const CartScreen: React.FC = () => {
                     }
                 }}
             />
+
+            {/* Мини-модалка редактирования веса для весовых товаров в корзине */}
+            {editWeightCart && (() => {
+                const perUnit = gramsPerPriceUnit(editWeightCart.priceUnit);
+                const stockGrams = perUnit > 0 ? Math.round(editWeightCart.maxQuantity * perUnit) : 0;
+                const enteredGrams = parsePriceText(editWeightText);
+                const computedTotal = perUnit > 0
+                    ? (enteredGrams / perUnit) * (editWeightCart.recommendedPrice || editWeightCart.price)
+                    : 0;
+                const isOverStock = enteredGrams > stockGrams + 1e-6;
+                const isEmpty = enteredGrams <= 0;
+                const unitPrice = editWeightCart.recommendedPrice || editWeightCart.price;
+                return (
+                    <Pressable
+                        style={{
+                            position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+                            backgroundColor: 'rgba(0,0,0,0.6)',
+                            justifyContent: 'center', alignItems: 'center',
+                            padding: 16, zIndex: 9999,
+                        }}
+                        onPress={() => { setEditWeightCart(null); setEditWeightText(''); }}
+                    >
+                        <Pressable
+                            style={{
+                                backgroundColor: colors.background.screen,
+                                borderRadius: 16,
+                                padding: 20,
+                                width: '100%',
+                                maxWidth: 360,
+                            }}
+                            onPress={(e) => e.stopPropagation()}
+                        >
+                            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+                                <Ionicons name="scale-outline" size={22} color={accentColor} />
+                                <Text style={{ marginLeft: 8, color: colors.text.normal, fontSize: 18, fontWeight: '700' }}>
+                                    Изменить вес
+                                </Text>
+                            </View>
+                            <Text style={{ color: colors.text.muted, marginBottom: 4 }} numberOfLines={1}>
+                                {editWeightCart.item.name}
+                            </Text>
+                            <Text style={{ color: colors.text.muted, marginBottom: 4 }}>
+                                Цена: <Text style={{ color: colors.text.normal, fontWeight: '600' }}>{formatCurrency(unitPrice)} за {priceUnitLabel(editWeightCart.priceUnit)}</Text>
+                            </Text>
+                            <Text style={{ color: colors.text.muted, marginBottom: 12 }}>
+                                Доступно на складе: <Text style={{ color: colors.text.normal, fontWeight: '600' }}>{formatWeight(stockGrams)}</Text>
+                            </Text>
+                            <Text style={{ color: colors.text.muted, marginBottom: 6, fontSize: 13 }}>Вес, г</Text>
+                            <TextInput
+                                style={{
+                                    borderWidth: 1.5,
+                                    borderColor: isOverStock ? '#ef4444' : accentColor,
+                                    backgroundColor: colors.background.card,
+                                    color: colors.text.normal,
+                                    borderRadius: 10,
+                                    paddingHorizontal: 14,
+                                    paddingVertical: 12,
+                                    fontSize: 18,
+                                    fontWeight: '600',
+                                    marginBottom: 12,
+                                }}
+                                value={editWeightText}
+                                onChangeText={(t) => setEditWeightText(sanitizePriceText(t, 0))}
+                                keyboardType="number-pad"
+                                placeholder="например, 878"
+                                placeholderTextColor={colors.text.muted}
+                                autoFocus
+                            />
+                            <View style={{
+                                backgroundColor: isDark ? 'rgba(34, 197, 94, 0.12)' : '#f0fdf4',
+                                borderColor: isDark ? 'rgba(34, 197, 94, 0.4)' : '#86efac',
+                                borderWidth: 1,
+                                borderRadius: 10,
+                                padding: 12,
+                                marginBottom: 12,
+                            }}>
+                                {isEmpty ? (
+                                    <Text style={{ color: colors.text.muted, fontStyle: 'italic' }}>
+                                        Введите вес чтобы увидеть сумму
+                                    </Text>
+                                ) : (
+                                    <Text style={{ color: colors.text.normal, fontSize: 15 }}>
+                                        {formatWeight(enteredGrams)} × {unitPrice.toFixed(2)} {currencyShort}/{priceUnitLabel(editWeightCart.priceUnit)} ={' '}
+                                        <Text style={{ color: isDark ? colors.primary.gold : '#16a34a', fontSize: 18, fontWeight: '800' }}>
+                                            {formatCurrency(computedTotal)}
+                                        </Text>
+                                    </Text>
+                                )}
+                                {isOverStock && (
+                                    <Text style={{ color: '#ef4444', fontSize: 12, marginTop: 4 }}>
+                                        Превышен остаток ({formatWeight(stockGrams)})
+                                    </Text>
+                                )}
+                            </View>
+                            <View style={{ flexDirection: 'row', gap: 10 }}>
+                                <TouchableOpacity
+                                    onPress={() => { setEditWeightCart(null); setEditWeightText(''); }}
+                                    style={{
+                                        flex: 1,
+                                        backgroundColor: colors.background.card,
+                                        paddingVertical: 12,
+                                        borderRadius: 10,
+                                        alignItems: 'center',
+                                        borderWidth: 1,
+                                        borderColor: colors.border.normal,
+                                    }}
+                                >
+                                    <Text style={{ color: colors.text.normal, fontWeight: '600' }}>Отмена</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                    onPress={confirmEditWeight}
+                                    disabled={isEmpty || isOverStock}
+                                    style={{
+                                        flex: 1.4,
+                                        backgroundColor: accentColor,
+                                        paddingVertical: 12,
+                                        borderRadius: 10,
+                                        alignItems: 'center',
+                                        opacity: (isEmpty || isOverStock) ? 0.5 : 1,
+                                    }}
+                                >
+                                    <Text style={{ color: '#fff', fontWeight: '700' }}>Сохранить</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </Pressable>
+                    </Pressable>
+                );
+            })()}
 
             {/* Toast уведомления */}
             <Toast
@@ -864,6 +1161,20 @@ const styles = StyleSheet.create({
         position: 'absolute',
         bottom: 24,
         left: 24,
+        width: 56,
+        height: 56,
+        borderRadius: 28,
+        alignItems: 'center',
+        justifyContent: 'center',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        elevation: 8,
+    },
+    barcodeButton: {
+        position: 'absolute',
+        bottom: 24,
+        left: 92, // правее кнопки QR
         width: 56,
         height: 56,
         borderRadius: 28,

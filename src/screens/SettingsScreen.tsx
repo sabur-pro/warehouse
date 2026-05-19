@@ -1,5 +1,5 @@
 // src/screens/SettingsScreen.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,10 @@ import {
   Modal,
   Platform,
   Linking,
+  BackHandler,
+  TextInput,
+  FlatList,
+  Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -27,8 +31,13 @@ import * as DocumentPicker from 'expo-document-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useCurrency } from '../contexts/CurrencyContext';
+import {
+  useShowHardwareIndicators,
+  setShowHardwareIndicators,
+} from '../utils/hardwareIndicatorsSettings';
 import { getThemeColors } from '../../constants/theme';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import LogService from '../services/LogService';
 import SyncService from '../services/SyncService';
 
@@ -46,10 +55,28 @@ const SYNC_INTERVAL_OPTIONS = [
 ];
 
 const SettingsScreen: React.FC = () => {
-  const navigation = useNavigation();
+  const navigation = useNavigation<any>();
   const { isDark } = useTheme();
   const { isAdmin } = useAuth();
+  const { currencyCode, currency, currencies, setCurrency } = useCurrency();
+  const showHardwareIndicators = useShowHardwareIndicators();
   const colors = getThemeColors(isDark);
+
+  // «Назад» из настроек всегда возвращает в Profile (ProfileMain).
+  // navigate с merge-семантикой: если ProfileMain уже в стеке — попается до
+  // него (стандартный кейс); если нет — пушится. Так же обрабатываем
+  // Android-аппаратную кнопку.
+  const handleBack = useCallback(() => {
+    navigation.navigate('ProfileMain');
+    return true;
+  }, [navigation]);
+
+  useFocusEffect(
+    useCallback(() => {
+      const sub = BackHandler.addEventListener('hardwareBackPress', handleBack);
+      return () => sub.remove();
+    }, [handleBack]),
+  );
 
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
@@ -60,6 +87,33 @@ const SettingsScreen: React.FC = () => {
   const [showStreamingExport, setShowStreamingExport] = useState(false);
   const [syncInterval, setSyncInterval] = useState(DEFAULT_SYNC_INTERVAL);
   const [showSyncIntervalPicker, setShowSyncIntervalPicker] = useState(false);
+  const [showCurrencyPicker, setShowCurrencyPicker] = useState(false);
+  const [currencySearch, setCurrencySearch] = useState('');
+
+  // Только админ может менять валюту аккаунта — для ассистента это поле read-only.
+  // Серверный PATCH /auth/me/currency также защищён ролью, но фронт скрывает
+  // переключение заранее, чтобы UX был согласован.
+  const canEditCurrency = isAdmin();
+
+  const filteredCurrencies = React.useMemo(() => {
+    const q = currencySearch.trim().toLowerCase();
+    if (!q) return currencies;
+    return currencies.filter(c =>
+      c.code.toLowerCase().includes(q) ||
+      c.name.toLowerCase().includes(q) ||
+      c.symbol.toLowerCase().includes(q)
+    );
+  }, [currencies, currencySearch]);
+
+  const handleSelectCurrency = async (code: string) => {
+    try {
+      await setCurrency(code);
+    } catch (e) {
+      console.warn('Failed to set currency:', e);
+    }
+    setShowCurrencyPicker(false);
+    setCurrencySearch('');
+  };
 
   // Загрузить сохранённый интервал при монтировании
   useEffect(() => {
@@ -501,7 +555,7 @@ const SettingsScreen: React.FC = () => {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background.screen }]}>
       <View style={[styles.header, { backgroundColor: colors.background.card, borderBottomColor: colors.border.light }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
+        <TouchableOpacity onPress={handleBack} style={styles.backButton}>
           <MaterialIcons name="arrow-back" size={24} color={colors.text.normal} />
         </TouchableOpacity>
         <Text style={[styles.headerTitle, { color: colors.text.normal }]}>Настройки</Text>
@@ -518,6 +572,85 @@ const SettingsScreen: React.FC = () => {
           onPress={() => (navigation as any).navigate('Catalogs')}
           color={isDark ? '#fbbf24' : '#f59e0b'}
         />
+
+        <SectionHeader title="Оборудование" />
+
+        <SettingItem
+          icon="print"
+          title="Принтер этикеток"
+          description="Подключение Bluetooth-принтера для печати штрихкодов (XPrinter)"
+          onPress={() => (navigation as any).navigate('PrinterSettings')}
+          color={isDark ? '#22d3ee' : '#06b6d4'}
+        />
+
+        <SettingItem
+          icon="qr-code-scanner"
+          title="Сканер штрихкодов"
+          description="Внешний HID-сканер (XB-6208RB / XB-D66 / XB-M82)"
+          onPress={() => (navigation as any).navigate('ScannerSettings')}
+          color={isDark ? '#34d399' : '#10b981'}
+        />
+
+        {/* Тогл «показывать индикаторы оборудования в нижней панели». Когда
+            включён — рядом с кнопкой «Синхр.» появляются две маленькие иконки
+            (сканер и принтер) с цветовым статусом. Тап по иконке открывает
+            соответствующий экран настроек. */}
+        <View
+          style={[
+            styles.settingItem,
+            { backgroundColor: colors.background.card, borderColor: colors.border.light },
+          ]}
+        >
+          <View style={[styles.iconContainer, { backgroundColor: 'rgba(99, 102, 241, 0.12)' }]}>
+            <MaterialIcons name="dashboard-customize" size={24} color={isDark ? '#818cf8' : '#6366f1'} />
+          </View>
+          <View style={styles.settingContent}>
+            <Text style={[styles.settingTitle, { color: colors.text.normal }]}>
+              Индикаторы в панели
+            </Text>
+            <Text style={[styles.settingDescription, { color: colors.text.muted }]}>
+              Показывать статус сканера и принтера рядом с кнопкой «Синхр.»
+            </Text>
+          </View>
+          <Switch
+            value={showHardwareIndicators}
+            onValueChange={(v) => setShowHardwareIndicators(v)}
+            trackColor={{
+              false: isDark ? '#374151' : '#d1d5db',
+              true: isDark ? '#d4af37' : '#3b82f6',
+            }}
+            thumbColor="#ffffff"
+          />
+        </View>
+
+        <SectionHeader title="Региональные настройки" />
+
+        <TouchableOpacity
+          style={[
+            styles.settingItem,
+            { backgroundColor: colors.background.card, borderColor: colors.border.light },
+            !canEditCurrency && { opacity: 0.7 },
+          ]}
+          onPress={() => {
+            if (!canEditCurrency) {
+              Alert.alert('Только для администратора', 'Валюту может менять только владелец аккаунта.');
+              return;
+            }
+            setShowCurrencyPicker(true);
+          }}
+          activeOpacity={0.7}
+        >
+          <View style={[styles.iconContainer, { backgroundColor: 'rgba(245, 158, 11, 0.12)' }]}>
+            <MaterialIcons name="payments" size={24} color={isDark ? '#fbbf24' : '#f59e0b'} />
+          </View>
+          <View style={styles.settingContent}>
+            <Text style={[styles.settingTitle, { color: colors.text.normal }]}>Валюта</Text>
+            <Text style={[styles.settingDescription, { color: colors.text.muted }]}>
+              {currency.name} ({currencyCode} · {currency.shortLabel})
+            </Text>
+          </View>
+          <MaterialIcons name="chevron-right" size={24} color={colors.text.muted} />
+        </TouchableOpacity>
 
         <SectionHeader title="Синхронизация" />
 
@@ -725,6 +858,75 @@ const SettingsScreen: React.FC = () => {
         </View>
       </Modal>
 
+      {/* Currency Picker Modal */}
+      <Modal visible={showCurrencyPicker} transparent animationType="fade" onRequestClose={() => setShowCurrencyPicker(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.currencyPickerContent, { backgroundColor: colors.background.card }]}>
+            <View style={styles.currencyPickerHeader}>
+              <Text style={[styles.intervalPickerTitle, { color: colors.text.normal, marginBottom: 0 }]}>Выбор валюты</Text>
+              <TouchableOpacity onPress={() => { setShowCurrencyPicker(false); setCurrencySearch(''); }}>
+                <MaterialIcons name="close" size={24} color={colors.text.muted} />
+              </TouchableOpacity>
+            </View>
+            <TextInput
+              style={[styles.currencySearchInput, {
+                color: colors.text.normal,
+                borderColor: colors.border.light,
+                backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.03)',
+              }]}
+              placeholder="Поиск (код, название, символ)..."
+              placeholderTextColor={colors.text.muted}
+              value={currencySearch}
+              onChangeText={setCurrencySearch}
+              autoCorrect={false}
+              autoCapitalize="characters"
+            />
+            <FlatList
+              data={filteredCurrencies}
+              keyExtractor={c => c.code}
+              keyboardShouldPersistTaps="handled"
+              style={styles.currencyList}
+              renderItem={({ item }) => {
+                const selected = item.code === currencyCode;
+                return (
+                  <TouchableOpacity
+                    style={[
+                      styles.currencyOption,
+                      { borderBottomColor: colors.border.light },
+                      selected && {
+                        backgroundColor: isDark ? 'rgba(212, 175, 55, 0.15)' : 'rgba(59, 130, 246, 0.08)'
+                      }
+                    ]}
+                    onPress={() => handleSelectCurrency(item.code)}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={[
+                        styles.currencyOptionTitle,
+                        { color: colors.text.normal },
+                        selected && { color: isDark ? '#d4af37' : '#3b82f6', fontWeight: '700' }
+                      ]}>
+                        {item.code} · {item.symbol}
+                      </Text>
+                      <Text style={[styles.currencyOptionSub, { color: colors.text.muted }]} numberOfLines={1}>
+                        {item.name}
+                      </Text>
+                    </View>
+                    {selected && (
+                      <MaterialIcons name="check" size={20} color={isDark ? '#d4af37' : '#3b82f6'} />
+                    )}
+                  </TouchableOpacity>
+                );
+              }}
+              ListEmptyComponent={
+                <Text style={{ textAlign: 'center', color: colors.text.muted, padding: 24 }}>
+                  Ничего не найдено
+                </Text>
+              }
+            />
+          </View>
+        </View>
+      </Modal>
+
       {/* Sync Interval Picker Modal */}
       <Modal visible={showSyncIntervalPicker} transparent animationType="fade">
         <TouchableOpacity
@@ -908,6 +1110,46 @@ const styles = StyleSheet.create({
   },
   intervalOptionText: {
     fontSize: 16,
+  },
+  currencyPickerContent: {
+    width: '90%',
+    maxWidth: 480,
+    maxHeight: '80%',
+    borderRadius: 16,
+    padding: 16,
+  },
+  currencyPickerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+    paddingBottom: 12,
+  },
+  currencySearchInput: {
+    height: 40,
+    borderRadius: 8,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+    fontSize: 14,
+  },
+  currencyList: {
+    maxHeight: 480,
+  },
+  currencyOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+  },
+  currencyOptionTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  currencyOptionSub: {
+    fontSize: 12,
+    marginTop: 2,
   },
 });
 

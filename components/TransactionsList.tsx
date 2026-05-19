@@ -35,8 +35,17 @@ export interface GroupedTransaction {
   itemName: string;
 }
 
+// Транзакции должны хранить timestamp в секундах. Но из-за бага (приход
+// раньше писался в Date.now() мс) у некоторых записей значение в мс.
+// Нормализуем при рендере: если число слишком большое для секунд — делим.
+// Год 5000 в секундах ≈ 9.55e10, поэтому всё что > 1e12 — это точно миллисекунды.
+const toMillis = (timestamp: number): number => {
+  if (!isFinite(timestamp) || timestamp <= 0) return 0;
+  return timestamp > 1e12 ? timestamp : timestamp * 1000;
+};
+
 const formatTimestamp = (timestamp: number): string => {
-  const date = new Date(timestamp * 1000);
+  const date = new Date(toMillis(timestamp));
   return date.toLocaleDateString('ru-RU', {
     year: 'numeric',
     month: 'long',
@@ -45,7 +54,7 @@ const formatTimestamp = (timestamp: number): string => {
 };
 
 const getDayKey = (timestamp: number): string => {
-  const date = new Date(timestamp * 1000);
+  const date = new Date(toMillis(timestamp));
   return date.toISOString().split('T')[0]; // YYYY-MM-DD
 };
 
@@ -79,6 +88,9 @@ const getActionIconAndColor = (action: Transaction['action']): { icon: keyof typ
       return { icon: 'shopping-cart', color: '#8b5cf6' }; // Same as sale
     case 'delete':
       return { icon: 'delete', color: '#ef4444' }; // Red for deletion
+    case 'receipt':
+      // Приход товара от поставщика — стрелка вниз в коробку, бирюзовый
+      return { icon: 'move-to-inbox', color: '#0ea5e9' };
     default:
       return { icon: 'history', color: '#6b7280' };
   }
@@ -96,6 +108,8 @@ const getActionText = (action: Transaction['action']): string => {
       return 'Продажа'; // Changed to Продажа
     case 'delete':
       return 'Удаление';
+    case 'receipt':
+      return 'Приход';
     default:
       return 'Действие';
   }
@@ -123,6 +137,14 @@ const parseDetailsType = (details: string | null | undefined): { text: string; d
       return { text: `Создание - ${parsed.initialSizes?.length || 0} размеров` };
     } else if (parsed.type === 'delete') {
       return { text: `Удаление - ${parsed.finalSizes?.length || 0} размеров` };
+    } else if (parsed.type === 'receipt') {
+      // Приход от поставщика. В details лежит line: { quantity, unitPrice, size, ... }
+      const line = parsed.line || {};
+      const qty = line.quantity || 0;
+      const sizeStr = line.size !== undefined && line.size !== null && line.size !== ''
+        ? ` (${line.size})`
+        : '';
+      return { text: `Приход — ${qty} шт.${sizeStr}` };
     }
     return { text: parsed.type ? `${parsed.type}` : 'Детали' };
   } catch {
@@ -161,7 +183,7 @@ const TransactionItem: React.FC<{
     actionText = getActionText(transaction.action);
   }
 
-  const formattedTime = new Date(transaction.timestamp * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  const formattedTime = new Date(toMillis(transaction.timestamp)).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
   const group: GroupedTransaction = {
     id: `single-${transaction.id}`,
     type: 'single',
@@ -217,7 +239,7 @@ const GroupedTransactionItem: React.FC<{
   }
 
   const { icon, color } = getActionIconAndColor(mainAction);
-  const formattedTime = new Date(mainTransaction.timestamp * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  const formattedTime = new Date(toMillis(mainTransaction.timestamp)).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 
   return (
     <TouchableOpacity onPress={() => onPress(group)} activeOpacity={0.7}>

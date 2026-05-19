@@ -44,12 +44,14 @@
       <key>NSAllowsLocalNetworking</key>
       <true/>
     </dict>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Bluetooth используется для подключения к принтеру этикеток (XPrinter).</string>
     <key>NSCameraUsageDescription</key>
-    <string>Norov использует камеру для сканирования QR-кодов товаров и фотографирования продукции при добавлении на склад. Например, вы можете отсканировать QR-код для быстрого поиска товара или сфотографировать новый товар для каталога.</string>
+    <string>Allow $(PRODUCT_NAME) to access your camera</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Allow $(PRODUCT_NAME) to access your microphone</string>
     <key>NSPhotoLibraryUsageDescription</key>
-    <string>Norov использует доступ к фотографиям для загрузки изображений товаров из вашей галереи. Например, вы можете выбрать готовое фото продукта для добавления в каталог склада.</string>
+    <string>Allow $(PRODUCT_NAME) to access your photos</string>
     <key>UILaunchStoryboardName</key>
     <string>SplashScreen</string>
     <key>UIRequiredDeviceCapabilities</key>

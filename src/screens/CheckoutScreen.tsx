@@ -18,6 +18,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../contexts/ThemeContext';
+import { useCurrency } from '../contexts/CurrencyContext';
 import { getThemeColors } from '../../constants/theme';
 import { useCart } from '../contexts/CartContext';
 import { getAllClients, addClient, searchClients } from '../../database/database';
@@ -46,6 +47,7 @@ interface CheckoutScreenProps {
 const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onConfirm }) => {
     const { theme, isDark } = useTheme();
     const colors = getThemeColors(isDark);
+    const { label: currencyShort, formatCurrency } = useCurrency();
     // Используем цвет из темы приложения
     const accentColor = isDark ? colors.primary.gold : colors.primary.blue;
 
@@ -302,7 +304,7 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
                                 Подытог
                             </Text>
                             <Text style={[styles.summaryValue, { color: colors.text.normal }]}>
-                                {cartTotals.totalRecommendedPrice.toLocaleString()} сом
+                                {formatCurrency(cartTotals.totalRecommendedPrice)}
                             </Text>
                         </View>
 
@@ -313,9 +315,9 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
                                     Скидка {discountMode === 'percent' ? `(${discountValue}%)` : ''}
                                 </Text>
                                 <Text style={[styles.summaryValue, { color: '#EF4444' }]}>
-                                    -{discountMode === 'percent'
-                                        ? Math.round(cartTotals.totalRecommendedPrice * parseFloat(discountValue) / 100).toLocaleString()
-                                        : parseFloat(discountValue).toLocaleString()} сом
+                                    -{formatCurrency(discountMode === 'percent'
+                                        ? Math.round(cartTotals.totalRecommendedPrice * parseFloat(discountValue) / 100)
+                                        : parseFloat(discountValue))}
                                 </Text>
                             </View>
                         )}
@@ -335,8 +337,8 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
                                             finalPrice = cartTotals.totalRecommendedPrice - parseFloat(discountValue);
                                         }
                                     }
-                                    return Math.max(0, finalPrice).toLocaleString();
-                                })()} сом
+                                    return formatCurrency(Math.max(0, finalPrice));
+                                })()}
                             </Text>
                         </View>
                     </View>
@@ -438,7 +440,7 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
                                         keyboardType="numeric"
                                     />
                                     <Text style={[styles.discountSuffix, { color: colors.text.muted }]}>
-                                        {discountMode === 'percent' ? '%' : 'сом'}
+                                        {discountMode === 'percent' ? '%' : currencyShort}
                                     </Text>
                                 </View>
 
@@ -446,7 +448,7 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
                                 {discountMode === 'percent' && discountValue && parseFloat(discountValue) > 0 && (
                                     <View style={[styles.discountCalculation, { backgroundColor: '#EF444410' }]}>
                                         <Text style={[styles.discountCalcText, { color: '#EF4444' }]}>
-                                            {discountValue}% от {cartTotals.totalRecommendedPrice.toLocaleString()} = {Math.round(cartTotals.totalRecommendedPrice * parseFloat(discountValue) / 100).toLocaleString()} сом
+                                            {discountValue}% от {formatCurrency(cartTotals.totalRecommendedPrice)} = {formatCurrency(Math.round(cartTotals.totalRecommendedPrice * parseFloat(discountValue) / 100))}
                                         </Text>
                                     </View>
                                 )}
@@ -690,7 +692,7 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
                                             onChangeText={(text) => setCashAmount(text.replace(/[^0-9]/g, ''))}
                                             keyboardType="numeric"
                                         />
-                                        <Text style={[styles.mixedPaymentSuffix, { color: colors.text.muted }]}>сом</Text>
+                                        <Text style={[styles.mixedPaymentSuffix, { color: colors.text.muted }]}>{currencyShort}</Text>
                                     </View>
                                 </View>
 
@@ -714,7 +716,7 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
                                             onChangeText={(text) => setCardAmount(text.replace(/[^0-9]/g, ''))}
                                             keyboardType="numeric"
                                         />
-                                        <Text style={[styles.mixedPaymentSuffix, { color: colors.text.muted }]}>сом</Text>
+                                        <Text style={[styles.mixedPaymentSuffix, { color: colors.text.muted }]}>{currencyShort}</Text>
                                     </View>
                                 </View>
 
@@ -742,10 +744,10 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
                                                     color: diff === 0 ? '#10B981' : diff > 0 ? '#F59E0B' : '#EF4444'
                                                 }]}>
                                                     {diff === 0
-                                                        ? `✓ Сумма совпадает: ${total.toLocaleString()} сом`
+                                                        ? `✓ Сумма совпадает: ${formatCurrency(total)}`
                                                         : diff > 0
-                                                            ? `Не хватает: ${diff.toLocaleString()} сом`
-                                                            : `Переплата: ${Math.abs(diff).toLocaleString()} сом`}
+                                                            ? `Не хватает: ${formatCurrency(diff)}`
+                                                            : `Переплата: ${formatCurrency(Math.abs(diff))}`}
                                                 </Text>
                                             </View>
                                         );
@@ -788,10 +790,10 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ visible, onClose, onCon
 
                             if (total < finalPrice) {
                                 isPaymentValid = false;
-                                buttonText = `Не хватает ${(finalPrice - total).toLocaleString()} сом`;
+                                buttonText = `Не хватает ${formatCurrency(finalPrice - total)}`;
                             } else if (total > finalPrice) {
                                 isPaymentValid = false;
-                                buttonText = `Переплата ${(total - finalPrice).toLocaleString()} сом`;
+                                buttonText = `Переплата ${formatCurrency(total - finalPrice)}`;
                             } else {
                                 buttonText = 'Оформить продажу';
                             }

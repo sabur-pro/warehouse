@@ -1,7 +1,8 @@
 // database/database.ts
 import * as SQLite from 'expo-sqlite';
 import * as FileSystem from 'expo-file-system';
-import { Item, Transaction, ItemType, Client } from './types';
+import { Item, Transaction, ItemType, Client, Supplier, Supply, SupplyLine, SupplierPayment, SizeQuantity } from './types';
+import { getActiveCurrencyCode } from '../src/utils/currencyState';
 
 const databaseName = 'warehouse.db';
 let databaseInstance: SQLite.SQLiteDatabase | null = null;
@@ -228,7 +229,7 @@ const computeChanges = (oldMap: { [size: string]: number }, newMap: { [size: str
 };
 
 // Helper для генерации UUID
-const generateUUID = () => {
+export const generateUUID = () => {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
     const r = Math.random() * 16 | 0;
     const v = c === 'x' ? r : (r & 0x3 | 0x8);
@@ -313,6 +314,7 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
             totalValue REAL NOT NULL DEFAULT 0,
             qrCodeType TEXT NOT NULL DEFAULT 'none',
             qrCodes TEXT,
+            priceUnit TEXT NOT NULL DEFAULT 'pair',
             uuid TEXT UNIQUE,
             createdAt INTEGER DEFAULT (strftime('%s', 'now'))
           );
@@ -368,6 +370,14 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
           console.log('Adding qrCodes column');
           await execWithRetry(databaseInstance!, 'ALTER TABLE items ADD COLUMN qrCodes TEXT;');
         }
+
+        // priceUnit: 'pair' | 'box' | 'kg' | '100g' | 'piece' — единица цены.
+        // Для весовых товаров ('kg' / '100g') quantity в boxSizeQuantities интерпретируется как вес.
+        if (!columnNames.includes('priceUnit')) {
+          console.log('Adding priceUnit column with default value "pair"');
+          await execWithRetry(databaseInstance!, 'ALTER TABLE items ADD COLUMN priceUnit TEXT NOT NULL DEFAULT \'pair\';');
+        }
+        await execWithRetry(databaseInstance!, `UPDATE items SET priceUnit = 'pair' WHERE priceUnit IS NULL OR priceUnit = '';`);
 
         const needMigration = columnNames.includes('boxSize') && !columnNames.includes('boxSizeQuantities');
 
@@ -649,7 +659,7 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
           // SQLite supports UPDATE with FROM/JOIN in newer versions, but safe way is subquery or row-by-row
           // Let's try to update using a correlated subquery which is standard SQL
           await execWithRetry(databaseInstance!, `
-            UPDATE transactions 
+            UPDATE transactions
             SET itemUuid = (SELECT uuid FROM items WHERE items.id = transactions.itemId)
             WHERE itemId IS NOT NULL AND itemUuid IS NULL;
           `);
@@ -657,6 +667,13 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
         } catch (backfillErr) {
           console.error('Failed to backfill itemUuid (ignored):', backfillErr);
         }
+      }
+
+      // ISO 4217 валюта операции. Старые записи остаются NULL — UI считает их
+      // выполненными в текущей валюте аккаунта.
+      if (!transColumnNames.includes('currency')) {
+        console.log('Adding currency column to transactions');
+        await execWithRetry(databaseInstance!, 'ALTER TABLE transactions ADD COLUMN currency TEXT;');
       }
 
       // Создать таблицу pending_actions
@@ -708,9 +725,24 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
 
         // Вставить начальную запись
         await execWithRetry(databaseInstance!, `
-          INSERT INTO sync_state (id, lastSyncAt, deviceId) 
+          INSERT INTO sync_state (id, lastSyncAt, deviceId)
           VALUES (1, 0, NULL);
         `);
+      }
+
+      // Добавить колонку qrUuidHealApplied (флаг разовой починки QR/UUID после деплоя фикса)
+      try {
+        const syncStateCols = await getAllWithRetry<{ name: string }>(
+          databaseInstance!,
+          "PRAGMA table_info(sync_state);",
+          []
+        );
+        const hasHealFlag = syncStateCols.some(c => c.name === 'qrUuidHealApplied');
+        if (!hasHealFlag) {
+          await execWithRetry(databaseInstance!, 'ALTER TABLE sync_state ADD COLUMN qrUuidHealApplied INTEGER DEFAULT 0;');
+        }
+      } catch (e) {
+        console.warn('Failed to ensure qrUuidHealApplied column (ignored):', e);
       }
 
       // Создать таблицу push_token
@@ -779,15 +811,19 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
       try {
         console.log('🔄 Checking items for UUID and QR code migration...');
 
-        // Step 1: Generate UUIDs for items that don't have them
-        const itemsWithoutUuid = await getAllWithRetry<{ id: number }>(
+        // Step 1: Generate UUIDs ТОЛЬКО для items, которых ещё нет на сервере (serverId IS NULL).
+        // Если у товара есть serverId — uuid должен прийти с сервера (через upsertItem на следующем pull).
+        // Локальная генерация uuid для синкнутых товаров приводит к тому, что разные устройства
+        // получают разные uuid'ы для одного и того же товара → QR с этих устройств не находятся
+        // нигде кроме источника. Admin вообще не пушит, поэтому такой uuid останется только локально.
+        const itemsWithoutUuid = await getAllWithRetry<{ id: number; serverId: number | null }>(
           databaseInstance!,
-          'SELECT id FROM items WHERE uuid IS NULL OR uuid = ""',
+          'SELECT id, serverId FROM items WHERE (uuid IS NULL OR uuid = "") AND serverId IS NULL',
           []
         );
 
         if (itemsWithoutUuid.length > 0) {
-          console.log(`📝 Generating UUIDs for ${itemsWithoutUuid.length} items...`);
+          console.log(`📝 Generating UUIDs for ${itemsWithoutUuid.length} unsynced items...`);
           for (const item of itemsWithoutUuid) {
             const newUuid = generateUUID();
             await runWithRetry(
@@ -799,10 +835,21 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
           console.log(`✅ Generated UUIDs for ${itemsWithoutUuid.length} items`);
         }
 
-        // Step 2: Update QR codes to include itemUuid
+        const skippedSyncedNoUuid = await getFirstWithRetry<{ c: number }>(
+          databaseInstance!,
+          'SELECT COUNT(*) as c FROM items WHERE (uuid IS NULL OR uuid = "") AND serverId IS NOT NULL',
+          []
+        );
+        if (skippedSyncedNoUuid && skippedSyncedNoUuid.c > 0) {
+          console.log(`⏭️ Skipped UUID gen for ${skippedSyncedNoUuid.c} synced items — uuid придёт с сервера через pull`);
+        }
+
+        // Step 2: Update QR codes to include itemUuid.
+        // ВАЖНО: тоже только для unsynced items (serverId IS NULL). Для синкнутых qrCodes
+        // должен приходить с сервера, а не перезаписываться локально.
         const itemsWithQR = await getAllWithRetry<{ id: number; name: string; code: string; uuid: string; qrCodes: string; qrCodeType: string; numberOfBoxes: number; boxSizeQuantities: string }>(
           databaseInstance!,
-          'SELECT id, name, code, uuid, qrCodes, qrCodeType, numberOfBoxes, boxSizeQuantities FROM items WHERE qrCodes IS NOT NULL AND qrCodes != ""',
+          'SELECT id, name, code, uuid, qrCodes, qrCodeType, numberOfBoxes, boxSizeQuantities FROM items WHERE qrCodes IS NOT NULL AND qrCodes != "" AND serverId IS NULL',
           []
         );
 
@@ -814,24 +861,35 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
             const qrCodes = JSON.parse(item.qrCodes);
             if (!Array.isArray(qrCodes) || qrCodes.length === 0) continue;
 
-            // Check if first QR code already has itemUuid
-            const firstQRData = JSON.parse(qrCodes[0].data || '{}');
-            if (firstQRData.itemUuid) {
-              // Already migrated
-              continue;
-            }
+            // Решаем, нужно ли чинить QR этого товара. Чиним если хоть в одном QR:
+            //  - нет itemUuid (старый формат)
+            //  - itemUuid не совпадает с актуальным item.uuid (поздний рассинхрон)
+            //  - itemId === 0 или не совпадает с актуальным item.id (битый формат AddItemButton)
+            const needsHeal = qrCodes.some((qr: any) => {
+              try {
+                const d = JSON.parse(qr.data || '{}');
+                return !d.itemUuid || d.itemUuid !== item.uuid || !d.itemId || d.itemId !== item.id;
+              } catch {
+                return true;
+              }
+            });
+            if (!needsHeal) continue;
 
-            // Regenerate QR codes with UUID
+            // Regenerate QR data — переписываем itemUuid + itemId, остальное (boxIndex/size/type) сохраняем
             const updatedQRCodes = qrCodes.map((qr: any) => {
               try {
                 const data = JSON.parse(qr.data || '{}');
                 data.itemUuid = item.uuid;
+                data.itemId = item.id;
                 return { ...qr, data: JSON.stringify(data) };
               } catch {
                 return qr;
               }
             });
 
+            // needsSync НЕ ставим — миграция меняет ТОЛЬКО структуру qrCodes, без логических
+            // изменений. На admin-устройстве push items вообще нет, оно зависнет в "не синхронизировано".
+            // Когда юзер реально отсканирует QR или отредактирует товар — там нормально проставится.
             await runWithRetry(
               databaseInstance!,
               'UPDATE items SET qrCodes = ? WHERE id = ?',
@@ -850,6 +908,32 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
         }
       } catch (qrMigrationErr) {
         console.warn('QR code UUID migration failed (ignored, will retry on next init):', qrMigrationErr);
+      }
+
+      // Разовая починка после деплоя фикса:
+      // Если у нас есть синкнутые товары (serverId IS NOT NULL), на которых раньше могла отработать
+      // старая (поломанная) UUID-миграция — сбросить lastSyncAt, чтобы СЛЕДУЮЩИЙ pull был полным
+      // и upsertItem перезаписал uuid'ы серверными значениями. Делаем ОДИН раз, флаг хранится в sync_state.
+      try {
+        const healState = await getFirstWithRetry<{ qrUuidHealApplied: number }>(
+          databaseInstance!,
+          'SELECT qrUuidHealApplied FROM sync_state WHERE id = 1',
+          []
+        );
+        if (!healState || healState.qrUuidHealApplied !== 1) {
+          const syncedCount = await getFirstWithRetry<{ c: number }>(
+            databaseInstance!,
+            'SELECT COUNT(*) as c FROM items WHERE serverId IS NOT NULL',
+            []
+          );
+          if (syncedCount && syncedCount.c > 0) {
+            await runWithRetry(databaseInstance!, 'UPDATE sync_state SET lastSyncAt = NULL WHERE id = 1', []);
+            console.log(`🩺 One-time heal: reset lastSyncAt for ${syncedCount.c} synced items — next pull will refresh uuid/qrCodes from server`);
+          }
+          await runWithRetry(databaseInstance!, 'UPDATE sync_state SET qrUuidHealApplied = 1 WHERE id = 1', []);
+        }
+      } catch (healErr) {
+        console.warn('🩺 One-time heal failed (will retry on next init):', healErr);
       }
 
       // ========================================
@@ -885,6 +969,145 @@ export const initDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
           await execWithRetry(databaseInstance!, 'CREATE UNIQUE INDEX IF NOT EXISTS idx_catalogs_uuid ON catalogs(uuid);');
         } catch (idxErr) {
           console.warn('Failed to create catalogs indices (ignored):', idxErr);
+        }
+      }
+
+      // ========================================
+      // ITEM_ATTRIBUTES TABLE (доп. параметры товара: цвет, материал, ...)
+      // ========================================
+      const itemAttributesTableInfo = await getFirstWithRetry<{ name: string }>(
+        databaseInstance!,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='item_attributes';"
+      );
+
+      if (!itemAttributesTableInfo) {
+        console.log('Creating item_attributes table');
+        await execWithRetry(databaseInstance!, `
+          CREATE TABLE item_attributes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            serverId INTEGER,
+            uuid TEXT UNIQUE,
+            itemUuid TEXT NOT NULL,
+            name TEXT NOT NULL,
+            value TEXT NOT NULL,
+            attrType TEXT NOT NULL DEFAULT 'text',
+            unit TEXT,
+            sortOrder INTEGER DEFAULT 0,
+            version INTEGER DEFAULT 1,
+            isDeleted INTEGER DEFAULT 0,
+            needsSync INTEGER DEFAULT 1,
+            createdAt INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+            updatedAt INTEGER DEFAULT (strftime('%s', 'now') * 1000)
+          );
+        `);
+        try {
+          await execWithRetry(databaseInstance!, 'CREATE INDEX IF NOT EXISTS idx_item_attributes_itemUuid ON item_attributes(itemUuid);');
+          await execWithRetry(databaseInstance!, 'CREATE INDEX IF NOT EXISTS idx_item_attributes_isDeleted ON item_attributes(isDeleted);');
+          await execWithRetry(databaseInstance!, 'CREATE UNIQUE INDEX IF NOT EXISTS idx_item_attributes_uuid ON item_attributes(uuid);');
+        } catch (idxErr) {
+          console.warn('Failed to create item_attributes indices (ignored):', idxErr);
+        }
+      }
+
+      // ========================================
+      // SUPPLIERS / SUPPLIES / SUPPLIER_PAYMENTS
+      // ========================================
+      const suppliersTableInfo = await getFirstWithRetry<{ name: string }>(
+        databaseInstance!,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='suppliers';"
+      );
+      if (!suppliersTableInfo) {
+        console.log('Creating suppliers table');
+        await execWithRetry(databaseInstance!, `
+          CREATE TABLE suppliers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            serverId INTEGER,
+            uuid TEXT UNIQUE,
+            name TEXT NOT NULL,
+            phone TEXT,
+            address TEXT,
+            notes TEXT,
+            isDeleted INTEGER DEFAULT 0,
+            needsSync INTEGER DEFAULT 1,
+            createdAt INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+            updatedAt INTEGER DEFAULT (strftime('%s', 'now') * 1000)
+          );
+        `);
+        try {
+          await execWithRetry(databaseInstance!, 'CREATE INDEX IF NOT EXISTS idx_suppliers_isDeleted ON suppliers(isDeleted);');
+          await execWithRetry(databaseInstance!, 'CREATE UNIQUE INDEX IF NOT EXISTS idx_suppliers_uuid ON suppliers(uuid);');
+        } catch (e) { console.warn('idx suppliers failed (ignored):', e); }
+      }
+
+      const suppliesTableInfo = await getFirstWithRetry<{ name: string }>(
+        databaseInstance!,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='supplies';"
+      );
+      if (!suppliesTableInfo) {
+        console.log('Creating supplies table');
+        await execWithRetry(databaseInstance!, `
+          CREATE TABLE supplies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            serverId INTEGER,
+            uuid TEXT UNIQUE,
+            supplierServerId INTEGER,
+            supplierUuid TEXT,
+            lines TEXT NOT NULL DEFAULT '[]',
+            totalAmount REAL NOT NULL DEFAULT 0,
+            paidAmount REAL NOT NULL DEFAULT 0,
+            note TEXT,
+            date INTEGER NOT NULL,
+            isDeleted INTEGER DEFAULT 0,
+            needsSync INTEGER DEFAULT 1,
+            createdAt INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+            updatedAt INTEGER DEFAULT (strftime('%s', 'now') * 1000)
+          );
+        `);
+        try {
+          await execWithRetry(databaseInstance!, 'CREATE INDEX IF NOT EXISTS idx_supplies_isDeleted ON supplies(isDeleted);');
+          await execWithRetry(databaseInstance!, 'CREATE INDEX IF NOT EXISTS idx_supplies_supplierUuid ON supplies(supplierUuid);');
+          await execWithRetry(databaseInstance!, 'CREATE UNIQUE INDEX IF NOT EXISTS idx_supplies_uuid ON supplies(uuid);');
+        } catch (e) { console.warn('idx supplies failed (ignored):', e); }
+      }
+
+      const supplierPaymentsTableInfo = await getFirstWithRetry<{ name: string }>(
+        databaseInstance!,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='supplier_payments';"
+      );
+      if (!supplierPaymentsTableInfo) {
+        console.log('Creating supplier_payments table');
+        await execWithRetry(databaseInstance!, `
+          CREATE TABLE supplier_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            serverId INTEGER,
+            uuid TEXT UNIQUE,
+            supplierServerId INTEGER,
+            supplierUuid TEXT,
+            supplyUuid TEXT,
+            allocations TEXT NOT NULL DEFAULT '[]',
+            amount REAL NOT NULL,
+            note TEXT,
+            date INTEGER NOT NULL,
+            isDeleted INTEGER DEFAULT 0,
+            needsSync INTEGER DEFAULT 1,
+            createdAt INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+            updatedAt INTEGER DEFAULT (strftime('%s', 'now') * 1000)
+          );
+        `);
+        try {
+          await execWithRetry(databaseInstance!, 'CREATE INDEX IF NOT EXISTS idx_supplier_payments_isDeleted ON supplier_payments(isDeleted);');
+          await execWithRetry(databaseInstance!, 'CREATE INDEX IF NOT EXISTS idx_supplier_payments_supplierUuid ON supplier_payments(supplierUuid);');
+          await execWithRetry(databaseInstance!, 'CREATE UNIQUE INDEX IF NOT EXISTS idx_supplier_payments_uuid ON supplier_payments(uuid);');
+        } catch (e) { console.warn('idx supplier_payments failed (ignored):', e); }
+      } else {
+        // Миграция: добавляем allocations в уже созданную таблицу
+        const allocCol = await getFirstWithRetry<{ count: number }>(
+          databaseInstance!,
+          "SELECT count(*) as count FROM pragma_table_info('supplier_payments') WHERE name='allocations';"
+        );
+        if (allocCol && allocCol.count === 0) {
+          console.log('Migrating supplier_payments: adding allocations column');
+          await execWithRetry(databaseInstance!, "ALTER TABLE supplier_payments ADD COLUMN allocations TEXT NOT NULL DEFAULT '[]';");
         }
       }
 
@@ -953,8 +1176,8 @@ export const addItem = async (item: Omit<Item, 'id' | 'createdAt'>): Promise<voi
       txnActive = true;
 
       const result = await runWithRetry(db, `
-        INSERT INTO items (name, code, warehouse, numberOfBoxes, boxSizeQuantities, sizeType, itemType, row, position, side, imageUri, totalQuantity, totalValue, qrCodeType, qrCodes, needsSync, imageNeedsUpload, uuid)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+        INSERT INTO items (name, code, warehouse, numberOfBoxes, boxSizeQuantities, sizeType, itemType, row, position, side, imageUri, totalQuantity, totalValue, qrCodeType, qrCodes, priceUnit, needsSync, imageNeedsUpload, uuid)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
       `, [
         item.name,
         item.code,
@@ -971,9 +1194,11 @@ export const addItem = async (item: Omit<Item, 'id' | 'createdAt'>): Promise<voi
         totalValue,
         item.qrCodeType || 'none',
         item.qrCodes || null,
+        item.priceUnit || 'pair',
         finalImageUri ? 1 : 0, // imageNeedsUpload если есть изображение
-        generateUUID(), // Generates UUID
+        item.uuid || generateUUID(), // Используем переданный uuid (если QR уже сгенерён с ним), иначе создаём новый
       ]);
+      console.log('🆔 addItem: uuid=', item.uuid || '(generated)', 'newRowId=', result.lastInsertRowId);
 
       const newId = result.lastInsertRowId || 0;
 
@@ -986,14 +1211,15 @@ export const addItem = async (item: Omit<Item, 'id' | 'createdAt'>): Promise<voi
       const details = JSON.stringify({ type: 'create', initialSizes: sizes, total: totalQuantity, totalValue, totalRecommendedValue });
 
       await runWithRetry(db, `
-        INSERT INTO transactions (action, itemId, itemName, timestamp, details, needsSync)
-        VALUES (?, ?, ?, ?, ?, 1)
+        INSERT INTO transactions (action, itemId, itemName, timestamp, details, needsSync, currency)
+        VALUES (?, ?, ?, ?, ?, 1, ?)
       `, [
         'create' as const,
         newId,
         item.name,
         Math.floor(Date.now() / 1000),
         details,
+        getActiveCurrencyCode(),
       ]);
 
       await execWithRetry(db, 'COMMIT;');
@@ -1098,57 +1324,84 @@ export const getItems = async (): Promise<Item[]> => {
 };
 
 /**
- * Get single item by ID (tries uuid first, then local id, then serverId, then by name)
- * @param id - local item id
- * @param itemName - optional item name for fallback search
- * @param itemUuid - optional UUID for cross-device identification (highest priority)
+ * Поиск товара ТОЛЬКО по строгим идентификаторам.
+ * Поиск по name/code НАМЕРЕННО убран — имена и коды могут совпадать у разных товаров,
+ * fallback по ним даст ложное совпадение. Если ничего не нашли локально — пусть зовущий
+ * код сходит на сервер по uuid.
+ *
+ * @param id        локальный SQLite id (или 0 если в QR его не было)
+ * @param itemName  передаётся только для логов (не для поиска)
+ * @param itemUuid  UUID товара — главный источник истины
  */
 export const getItemById = async (id: number, itemName?: string, itemUuid?: string): Promise<Item | null> => {
   return withLock(async () => {
     try {
       const db = await getDatabaseInstance();
-      console.log('🔍 getItemById: searching for id=', id, 'name=', itemName, 'uuid=', itemUuid);
+      console.log('🔍 getItemById: in id=', id, 'uuid=', itemUuid?.slice(0, 8), 'name=', itemName);
 
-      // First try by UUID (highest priority for cross-device sync)
       let result: Item | null = null;
+
+      // 1. UUID — единственный надёжный кросс-девайс ключ
       if (itemUuid) {
-        console.log('🔍 getItemById: trying uuid...');
-        result = await getFirstWithRetry<Item>(db, 'SELECT * FROM items WHERE uuid = ? AND isDeleted = 0', [itemUuid]);
+        result = await getFirstWithRetry<Item>(
+          db,
+          'SELECT * FROM items WHERE uuid = ? AND isDeleted = 0',
+          [itemUuid]
+        );
         if (result) {
-          console.log('🔍 getItemById: found by uuid!');
+          console.log('🔍 getItemById: HIT by uuid → local id=', result.id);
           return result;
         }
+        console.log('🔍 getItemById: miss by uuid');
+      } else {
+        console.log('🔍 getItemById: no uuid in QR, skipping uuid lookup');
       }
 
-      // Then try by local id
-      result = await getFirstWithRetry<Item>(db, 'SELECT * FROM items WHERE id = ?', [id]);
-
-      // If not found, try by serverId
-      if (!result) {
-        console.log('🔍 getItemById: trying serverId...');
-        result = await getFirstWithRetry<Item>(db, 'SELECT * FROM items WHERE serverId = ?', [id]);
-      }
-
-      // If still not found and we have a name, try by name
-      if (!result && itemName) {
-        console.log('🔍 getItemById: trying by name...');
-        result = await getFirstWithRetry<Item>(db, 'SELECT * FROM items WHERE name = ? AND isDeleted = 0', [itemName]);
-      }
-
-      if (!result) {
-        // Debug: show what IDs exist
-        const allItems = await getAllWithRetry<{ id: number, serverId: number | null, name: string, uuid: string }>(
+      // 2. Локальный id (только если валидный — у старых битых QR id=0)
+      if (id && id > 0) {
+        result = await getFirstWithRetry<Item>(
           db,
-          'SELECT id, serverId, name, uuid FROM items LIMIT 10',
-          []
+          'SELECT * FROM items WHERE id = ? AND isDeleted = 0',
+          [id]
         );
-        console.log('🔍 getItemById: NOT FOUND. First 10 items in DB:', allItems.map(i => `id=${i.id}, serverId=${i.serverId}, uuid=${i.uuid?.slice(0, 8)}...`).join('; '));
+        if (result) {
+          console.log('🔍 getItemById: HIT by local id=', result.id, 'uuid=', result.uuid?.slice(0, 8));
+          return result;
+        }
+        console.log('🔍 getItemById: miss by local id=', id);
+
+        // 3. serverId (товар уже синкнут с сервера, в QR положили id с другого устройства)
+        result = await getFirstWithRetry<Item>(
+          db,
+          'SELECT * FROM items WHERE serverId = ? AND isDeleted = 0',
+          [id]
+        );
+        if (result) {
+          console.log('🔍 getItemById: HIT by serverId=', id, 'local id=', result.id);
+          return result;
+        }
+        console.log('🔍 getItemById: miss by serverId');
+      } else {
+        console.log('🔍 getItemById: id<=0, skipping id/serverId lookup (legacy QR)');
       }
 
-      console.log('🔍 getItemById: result=', result ? `found (id=${result.id}, serverId=${result.serverId}, uuid=${result.uuid?.slice(0, 8)}...)` : 'NOT FOUND');
-      return result || null;
+      // 4. Поиск по имени НАМЕРЕННО НЕ ДЕЛАЕМ — слишком велик риск ложного совпадения.
+      //    Зовущий код должен попробовать серверный fallback по uuid.
+
+      // Диагностика: какие первые 10 товаров есть в локальной БД
+      const sample = await getAllWithRetry<{ id: number, serverId: number | null, name: string, uuid: string | null }>(
+        db,
+        'SELECT id, serverId, name, uuid FROM items WHERE isDeleted = 0 LIMIT 10',
+        []
+      );
+      console.log(
+        '🔍 getItemById: NOT FOUND locally. Sample of items in DB:',
+        sample.map(i => `id=${i.id}/srv=${i.serverId}/uuid=${i.uuid?.slice(0, 8) ?? 'null'}/${i.name}`).join(' | ') || '(empty)'
+      );
+
+      return null;
     } catch (error) {
-      console.error('Error fetching item by id:', error);
+      console.error('🔍 getItemById: error', error);
       return null;
     }
   });
@@ -1331,8 +1584,8 @@ export const updateItemQuantity = async (id: number, boxSizeQuantities: string, 
 
       if (details) {
         await runWithRetry(db, `
-          INSERT INTO transactions (action, itemId, itemName, timestamp, details, needsSync, uuid)
-          VALUES (?, ?, ?, ?, ?, 1, ?)
+          INSERT INTO transactions (action, itemId, itemName, timestamp, details, needsSync, uuid, currency)
+          VALUES (?, ?, ?, ?, ?, 1, ?, ?)
         `, [
           'update' as const,
           id,
@@ -1340,6 +1593,7 @@ export const updateItemQuantity = async (id: number, boxSizeQuantities: string, 
           Math.floor(Date.now() / 1000),
           details,
           generateUUID(),
+          getActiveCurrencyCode(),
         ]);
       }
 
@@ -1397,8 +1651,8 @@ export const deleteItem = async (id: number): Promise<void> => {
       }
 
       await runWithRetry(db, `
-        INSERT INTO transactions (action, itemId, itemName, timestamp, details, needsSync, uuid)
-        VALUES (?, ?, ?, ?, ?, 1, ?)
+        INSERT INTO transactions (action, itemId, itemName, timestamp, details, needsSync, uuid, currency)
+        VALUES (?, ?, ?, ?, ?, 1, ?, ?)
       `, [
         'delete' as const,
         id,
@@ -1406,6 +1660,7 @@ export const deleteItem = async (id: number): Promise<void> => {
         Math.floor(Date.now() / 1000),
         details,
         generateUUID(),
+        getActiveCurrencyCode(),
       ]);
 
       await execWithRetry(db, 'COMMIT;');
@@ -1552,8 +1807,8 @@ export const processSaleTransaction = async (
 
       // Создаём транзакцию продажи
       await runWithRetry(db, `
-        INSERT INTO transactions (action, itemId, itemName, itemImageUri, timestamp, details, needsSync, uuid, itemUuid)
-        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+        INSERT INTO transactions (action, itemId, itemName, itemImageUri, timestamp, details, needsSync, uuid, itemUuid, currency)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
       `, [
         'sale',
         itemId,
@@ -1563,6 +1818,7 @@ export const processSaleTransaction = async (
         JSON.stringify(saleDetails),
         generateUUID(),
         item.uuid || null,
+        getActiveCurrencyCode(),
       ]);
 
       await execWithRetry(db, 'COMMIT;');
@@ -1588,8 +1844,8 @@ export const addTransaction = async (transaction: Omit<Transaction, 'id'>): Prom
     const db = await getDatabaseInstance();
     try {
       await runWithRetry(db, `
-        INSERT INTO transactions (action, itemId, itemName, itemImageUri, timestamp, details, needsSync, uuid, itemUuid)
-        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+        INSERT INTO transactions (action, itemId, itemName, itemImageUri, timestamp, details, needsSync, uuid, itemUuid, currency)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
       `, [
         transaction.action,
         transaction.itemId,
@@ -1599,6 +1855,7 @@ export const addTransaction = async (transaction: Omit<Transaction, 'id'>): Prom
         transaction.details,
         generateUUID(),
         transaction.itemUuid || null,
+        transaction.currency || getActiveCurrencyCode(),
       ]);
       console.log('Transaction added successfully');
     } catch (error) {
@@ -1715,8 +1972,8 @@ export const insertTransactionImport = async (transaction: Omit<Transaction, 'id
     const db = await getDatabaseInstance();
     try {
       await runWithRetry(db, `
-        INSERT INTO transactions (action, itemId, itemName, timestamp, details, uuid, itemUuid)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO transactions (action, itemId, itemName, timestamp, details, uuid, itemUuid, currency)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         transaction.action,
         transaction.itemId,
@@ -1725,6 +1982,7 @@ export const insertTransactionImport = async (transaction: Omit<Transaction, 'id
         transaction.details,
         transaction.uuid || generateUUID(),
         transaction.itemUuid || null,
+        transaction.currency || null,
       ]);
       console.log('Imported transaction inserted successfully');
     } catch (error) {
@@ -1823,6 +2081,26 @@ export const clearDatabase = async (): Promise<void> => {
       await execWithRetry(db, 'DELETE FROM items;');
       await execWithRetry(db, 'DELETE FROM transactions;');
       await execWithRetry(db, 'DELETE FROM pending_actions;');
+      // Все справочники аккаунта — должны исчезнуть на logout, иначе после входа
+      // под другим аккаунтом останутся чужие клиенты/поставщики, а свои не подтянутся
+      // если у sync_state сброшен lastSyncAt (full pull присылает только свои, но
+      // не удаляет старые локальные строки).
+      const optionalTables = [
+        'clients',
+        'suppliers',
+        'supplies',
+        'supplier_payments',
+        'item_attributes',
+        'catalogs',
+      ];
+      for (const t of optionalTables) {
+        try {
+          await execWithRetry(db, `DELETE FROM ${t};`);
+        } catch (e) {
+          // Таблицы могло ещё не быть (например, старая БД до миграции) — игнорируем.
+          console.warn(`clearDatabase: skip DELETE FROM ${t} (ignored):`, e);
+        }
+      }
       await execWithRetry(db, 'UPDATE sync_state SET lastSyncAt = 0, lastItemVersion = 0, lastTransactionId = 0, lastPendingActionId = 0, deviceId = NULL, pendingChangesCount = 0 WHERE id = 1;');
 
       for (const item of itemsWithImages) {
@@ -1927,8 +2205,8 @@ export const updateItem = async (item: Item): Promise<void> => {
     const db = await getDatabaseInstance();
 
     await runWithRetry(db, `
-      UPDATE items 
-      SET name = ?, code = ?, warehouse = ?, numberOfBoxes = ?, row = ?, position = ?, side = ?, imageUri = ?, needsSync = 1
+      UPDATE items
+      SET name = ?, code = ?, warehouse = ?, numberOfBoxes = ?, row = ?, position = ?, side = ?, imageUri = ?, priceUnit = ?, needsSync = 1
       WHERE id = ?
     `, [
       item.name,
@@ -1939,8 +2217,168 @@ export const updateItem = async (item: Item): Promise<void> => {
       item.position,
       item.side,
       item.imageUri,
+      item.priceUnit || 'pair',
       item.id
     ]);
+  });
+};
+
+/**
+ * Поиск товара по штрих-коду (поле `code`) в локальной БД.
+ * Возвращает свежайший актуальный товар (не удалённый).
+ * Если в БД оказались дубли по code — берём самый свежий (по id DESC).
+ */
+export const getItemByCode = async (code: string): Promise<Item | null> => {
+  if (!code) return null;
+  return withLock(async () => {
+    try {
+      const db = await getDatabaseInstance();
+      console.log('🔍 getItemByCode: code=', code);
+      const result = await getFirstWithRetry<Item>(
+        db,
+        'SELECT * FROM items WHERE code = ? AND isDeleted = 0 ORDER BY id DESC LIMIT 1',
+        [code]
+      );
+      console.log('🔍 getItemByCode:', result ? `HIT id=${result.id} uuid=${result.uuid?.slice(0, 8)}` : 'NOT FOUND');
+      return result || null;
+    } catch (err) {
+      console.error('🔍 getItemByCode: error', err);
+      return null;
+    }
+  });
+};
+
+/**
+ * Вставляет (или обновляет) товар на основании ответа сервера — используется когда товар
+ * нашли на сервере по uuid, а локально его не было (свежее устройство, не успевший синк).
+ * Идентификация — по uuid. После вставки следующие сканы пойдут по быстрой ветке.
+ *
+ * Принимает серверный объект как из prisma (id = serverId, image_url и т.п.).
+ */
+export const upsertItemFromServer = async (server: any): Promise<Item | null> => {
+  return withLock(async () => {
+    if (!server || !server.uuid) {
+      console.warn('🌐 upsertItemFromServer: missing uuid, skip');
+      return null;
+    }
+    try {
+      const db = await getDatabaseInstance();
+
+      // Уже есть локально? Тогда обновим серверные поля и вернём как есть.
+      const existing = await getFirstWithRetry<Item>(
+        db,
+        'SELECT * FROM items WHERE uuid = ?',
+        [server.uuid]
+      );
+      if (existing) {
+        await runWithRetry(
+          db,
+          `UPDATE items SET serverId = ?, qrCodes = ?, qrCodeType = ?, isDeleted = 0 WHERE uuid = ?`,
+          [server.id, server.qrCodes ?? null, server.qrCodeType ?? 'none', server.uuid]
+        );
+        const refreshed = await getFirstWithRetry<Item>(db, 'SELECT * FROM items WHERE uuid = ?', [server.uuid]);
+        console.log('🌐 upsertItemFromServer: existing local row updated, id=', refreshed?.id);
+        return refreshed || null;
+      }
+
+      // Иначе вставляем новую строку. needsSync=0 — мы только что взяли с сервера.
+      const result = await runWithRetry(db, `
+        INSERT INTO items (name, code, warehouse, numberOfBoxes, boxSizeQuantities, sizeType, itemType, row, position, side, imageUri, serverImageUrl, totalQuantity, totalValue, qrCodeType, qrCodes, priceUnit, needsSync, imageNeedsUpload, uuid, serverId, isDeleted)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 0)
+      `, [
+        server.name,
+        server.code,
+        server.warehouse,
+        server.numberOfBoxes,
+        server.boxSizeQuantities,
+        server.sizeType,
+        server.itemType || 'обувь',
+        server.row ?? null,
+        server.position ?? null,
+        server.side ?? null,
+        null, // imageUri — локальный путь, у нас его нет
+        server.imageUrl ?? null,
+        server.totalQuantity ?? 0,
+        server.totalValue ?? 0,
+        server.qrCodeType || 'none',
+        server.qrCodes ?? null,
+        server.priceUnit || 'pair',
+        server.uuid,
+        server.id,
+      ]);
+      console.log('🌐 upsertItemFromServer: inserted local row id=', result.lastInsertRowId, 'serverId=', server.id, 'uuid=', server.uuid?.slice(0, 8));
+
+      const inserted = await getFirstWithRetry<Item>(db, 'SELECT * FROM items WHERE uuid = ?', [server.uuid]);
+      return inserted || null;
+    } catch (err) {
+      console.error('🌐 upsertItemFromServer: error', err);
+      return null;
+    }
+  });
+};
+
+/**
+ * Авто-починка QR-кодов товара после скана.
+ * Если в отсканированном QR нет itemUuid (или он не совпадает с актуальным),
+ * это значит QR старый (созданный до фикса) — переписываем все QR-коды
+ * этого товара так, чтобы в data сидел корректный itemUuid + корректный itemId.
+ * Помечаем needsSync=1 чтобы апдейт ушёл на сервер.
+ *
+ * Возвращает true если что-то поменяли — полезно для логов.
+ */
+export const healQRCodesForItem = async (item: Item, scannedItemUuid: string | undefined | null): Promise<boolean> => {
+  return withLock(async () => {
+    try {
+      if (!item.uuid) {
+        console.warn('🩹 healQRCodes: item has no uuid yet, skip', item.id);
+        return false;
+      }
+      if (scannedItemUuid && scannedItemUuid === item.uuid) {
+        return false; // QR уже корректный
+      }
+      if (!item.qrCodes) {
+        return false;
+      }
+
+      const db = await getDatabaseInstance();
+      let parsed: any[];
+      try {
+        parsed = JSON.parse(item.qrCodes);
+      } catch (e) {
+        console.warn('🩹 healQRCodes: failed to parse qrCodes for item', item.id, e);
+        return false;
+      }
+      if (!Array.isArray(parsed) || parsed.length === 0) return false;
+
+      let changed = false;
+      const updated = parsed.map((qr: any) => {
+        try {
+          const data = JSON.parse(qr.data || '{}');
+          if (data.itemUuid !== item.uuid || data.itemId !== item.id) {
+            data.itemUuid = item.uuid;
+            data.itemId = item.id;
+            changed = true;
+            return { ...qr, data: JSON.stringify(data) };
+          }
+          return qr;
+        } catch {
+          return qr;
+        }
+      });
+
+      if (!changed) return false;
+
+      await runWithRetry(
+        db,
+        'UPDATE items SET qrCodes = ?, needsSync = 1 WHERE id = ?',
+        [JSON.stringify(updated), item.id]
+      );
+      console.log('🩹 healQRCodes: rewrote', updated.length, 'QR entries for item', item.id, 'uuid=', item.uuid?.slice(0, 8));
+      return true;
+    } catch (err) {
+      console.warn('🩹 healQRCodes: error', err);
+      return false;
+    }
   });
 };
 
@@ -2606,6 +3044,427 @@ export const upsertClientFromServer = async (client: any): Promise<void> => {
         Date.now()
       ]);
     }
+  });
+};
+
+// ========================================
+// SUPPLIER / SUPPLY / SUPPLIER_PAYMENT CRUD
+// ========================================
+
+export const getAllSuppliers = async (): Promise<Supplier[]> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const rows = await getAllWithRetry<any>(db, 'SELECT * FROM suppliers WHERE isDeleted = 0 ORDER BY name ASC');
+    return rows as Supplier[];
+  });
+};
+
+export const getSupplierByUuid = async (uuid: string): Promise<Supplier | null> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const row = await getFirstWithRetry<any>(db, 'SELECT * FROM suppliers WHERE uuid = ?', [uuid]);
+    return row as Supplier | null;
+  });
+};
+
+export const getSupplierById = async (id: number): Promise<Supplier | null> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const row = await getFirstWithRetry<any>(db, 'SELECT * FROM suppliers WHERE id = ?', [id]);
+    return row as Supplier | null;
+  });
+};
+
+export const addSupplier = async (
+  supplier: Omit<Supplier, 'id' | 'createdAt' | 'updatedAt' | 'uuid'> & { uuid?: string }
+): Promise<{ id: number; uuid: string }> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const now = Date.now();
+    const uuid = supplier.uuid || generateUUID();
+    const result = await runWithRetry(db, `
+      INSERT INTO suppliers (name, phone, address, notes, uuid, needsSync, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+    `, [
+      supplier.name,
+      supplier.phone || null,
+      supplier.address || null,
+      supplier.notes || null,
+      uuid,
+      now,
+      now,
+    ]);
+    return { id: result.lastInsertRowId || 0, uuid };
+  });
+};
+
+export const updateSupplier = async (id: number, supplier: Partial<Supplier>): Promise<void> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const now = Date.now();
+    const updates: string[] = [];
+    const params: any[] = [];
+    if (supplier.name !== undefined) { updates.push('name = ?'); params.push(supplier.name); }
+    if (supplier.phone !== undefined) { updates.push('phone = ?'); params.push(supplier.phone); }
+    if (supplier.address !== undefined) { updates.push('address = ?'); params.push(supplier.address); }
+    if (supplier.notes !== undefined) { updates.push('notes = ?'); params.push(supplier.notes); }
+    updates.push('needsSync = 1');
+    updates.push('updatedAt = ?');
+    params.push(now, id);
+    await runWithRetry(db, `UPDATE suppliers SET ${updates.join(', ')} WHERE id = ?`, params);
+  });
+};
+
+export const deleteSupplier = async (id: number): Promise<void> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    await runWithRetry(
+      db,
+      'UPDATE suppliers SET isDeleted = 1, needsSync = 1, updatedAt = ? WHERE id = ?',
+      [Date.now(), id]
+    );
+  });
+};
+
+export const getSuppliersNeedingSync = async (): Promise<Supplier[]> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const rows = await getAllWithRetry<any>(db, 'SELECT * FROM suppliers WHERE needsSync = 1');
+    return rows as Supplier[];
+  });
+};
+
+export const markSupplierSynced = async (localId: number, serverId: number): Promise<void> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    await runWithRetry(db, 'UPDATE suppliers SET serverId = ?, needsSync = 0 WHERE id = ?', [serverId, localId]);
+  });
+};
+
+export const upsertSupplierFromServer = async (s: any): Promise<void> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const existing = await getFirstWithRetry<any>(
+      db,
+      'SELECT id FROM suppliers WHERE serverId = ? OR uuid = ?',
+      [s.id, s.uuid]
+    );
+    if (existing) {
+      await runWithRetry(db, `
+        UPDATE suppliers SET serverId = ?, name = ?, phone = ?, address = ?, notes = ?,
+          isDeleted = ?, needsSync = 0, updatedAt = ?
+        WHERE id = ?
+      `, [s.id, s.name, s.phone || null, s.address || null, s.notes || null, s.isDeleted ? 1 : 0, Date.now(), existing.id]);
+    } else {
+      await runWithRetry(db, `
+        INSERT INTO suppliers (serverId, uuid, name, phone, address, notes, isDeleted, needsSync, createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+      `, [s.id, s.uuid || null, s.name, s.phone || null, s.address || null, s.notes || null, s.isDeleted ? 1 : 0, Date.now(), Date.now()]);
+    }
+  });
+};
+
+// ----- SUPPLIES -----
+
+export const addSupply = async (
+  supply: Omit<Supply, 'id' | 'createdAt' | 'updatedAt' | 'uuid'> & { uuid?: string }
+): Promise<{ id: number; uuid: string }> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const now = Date.now();
+    const uuid = supply.uuid || generateUUID();
+    const result = await runWithRetry(db, `
+      INSERT INTO supplies (
+        uuid, supplierServerId, supplierUuid, lines, totalAmount, paidAmount, note, date,
+        needsSync, createdAt, updatedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+    `, [
+      uuid,
+      supply.supplierServerId ?? null,
+      supply.supplierUuid ?? null,
+      supply.lines,
+      supply.totalAmount,
+      supply.paidAmount,
+      supply.note ?? null,
+      supply.date,
+      now,
+      now,
+    ]);
+    return { id: result.lastInsertRowId || 0, uuid };
+  });
+};
+
+export const getSuppliesBySupplier = async (supplierUuid: string): Promise<Supply[]> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const rows = await getAllWithRetry<any>(
+      db,
+      'SELECT * FROM supplies WHERE supplierUuid = ? AND isDeleted = 0 ORDER BY date DESC',
+      [supplierUuid]
+    );
+    return rows as Supply[];
+  });
+};
+
+export const getAllSupplies = async (): Promise<Supply[]> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const rows = await getAllWithRetry<any>(db, 'SELECT * FROM supplies WHERE isDeleted = 0 ORDER BY date DESC');
+    return rows as Supply[];
+  });
+};
+
+export const deleteSupply = async (id: number): Promise<void> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    await runWithRetry(
+      db,
+      'UPDATE supplies SET isDeleted = 1, needsSync = 1, updatedAt = ? WHERE id = ?',
+      [Date.now(), id]
+    );
+  });
+};
+
+export const getSuppliesNeedingSync = async (): Promise<Supply[]> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const rows = await getAllWithRetry<any>(db, 'SELECT * FROM supplies WHERE needsSync = 1');
+    return rows as Supply[];
+  });
+};
+
+export const markSupplySynced = async (localId: number, serverId: number): Promise<void> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    await runWithRetry(db, 'UPDATE supplies SET serverId = ?, needsSync = 0 WHERE id = ?', [serverId, localId]);
+  });
+};
+
+export const upsertSupplyFromServer = async (s: any): Promise<void> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const existing = await getFirstWithRetry<any>(
+      db,
+      'SELECT id FROM supplies WHERE serverId = ? OR uuid = ?',
+      [s.id, s.uuid]
+    );
+    if (existing) {
+      await runWithRetry(db, `
+        UPDATE supplies SET serverId = ?, supplierServerId = ?, supplierUuid = ?, lines = ?,
+          totalAmount = ?, paidAmount = ?, note = ?, date = ?, isDeleted = ?, needsSync = 0, updatedAt = ?
+        WHERE id = ?
+      `, [
+        s.id, s.supplierId ?? null, s.supplierUuid ?? null, s.lines || '[]',
+        s.totalAmount || 0, s.paidAmount || 0, s.note || null,
+        Number(s.date), s.isDeleted ? 1 : 0, Date.now(), existing.id,
+      ]);
+    } else {
+      await runWithRetry(db, `
+        INSERT INTO supplies (
+          serverId, uuid, supplierServerId, supplierUuid, lines, totalAmount, paidAmount, note, date,
+          isDeleted, needsSync, createdAt, updatedAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+      `, [
+        s.id, s.uuid || null, s.supplierId ?? null, s.supplierUuid ?? null, s.lines || '[]',
+        s.totalAmount || 0, s.paidAmount || 0, s.note || null, Number(s.date),
+        s.isDeleted ? 1 : 0, Date.now(), Date.now(),
+      ]);
+    }
+  });
+};
+
+// ----- SUPPLIER PAYMENTS -----
+
+export const addSupplierPayment = async (
+  pay: Omit<SupplierPayment, 'id' | 'createdAt' | 'updatedAt' | 'uuid'> & { uuid?: string }
+): Promise<{ id: number; uuid: string }> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const now = Date.now();
+    const uuid = pay.uuid || generateUUID();
+    const result = await runWithRetry(db, `
+      INSERT INTO supplier_payments (
+        uuid, supplierServerId, supplierUuid, supplyUuid, allocations, amount, note, date,
+        needsSync, createdAt, updatedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+    `, [
+      uuid, pay.supplierServerId ?? null, pay.supplierUuid ?? null, pay.supplyUuid ?? null,
+      pay.allocations ?? '[]',
+      pay.amount, pay.note ?? null, pay.date, now, now,
+    ]);
+    return { id: result.lastInsertRowId || 0, uuid };
+  });
+};
+
+export const getSupplierPaymentsBySupplier = async (supplierUuid: string): Promise<SupplierPayment[]> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const rows = await getAllWithRetry<any>(
+      db,
+      'SELECT * FROM supplier_payments WHERE supplierUuid = ? AND isDeleted = 0 ORDER BY date DESC',
+      [supplierUuid]
+    );
+    return rows as SupplierPayment[];
+  });
+};
+
+export const getSupplierPaymentsNeedingSync = async (): Promise<SupplierPayment[]> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const rows = await getAllWithRetry<any>(db, 'SELECT * FROM supplier_payments WHERE needsSync = 1');
+    return rows as SupplierPayment[];
+  });
+};
+
+export const markSupplierPaymentSynced = async (localId: number, serverId: number): Promise<void> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    await runWithRetry(db, 'UPDATE supplier_payments SET serverId = ?, needsSync = 0 WHERE id = ?', [serverId, localId]);
+  });
+};
+
+export const deleteSupplierPayment = async (id: number): Promise<void> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    await runWithRetry(
+      db,
+      'UPDATE supplier_payments SET isDeleted = 1, needsSync = 1, updatedAt = ? WHERE id = ?',
+      [Date.now(), id]
+    );
+  });
+};
+
+export const upsertSupplierPaymentFromServer = async (p: any): Promise<void> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const existing = await getFirstWithRetry<any>(
+      db,
+      'SELECT id FROM supplier_payments WHERE serverId = ? OR uuid = ?',
+      [p.id, p.uuid]
+    );
+    if (existing) {
+      await runWithRetry(db, `
+        UPDATE supplier_payments SET serverId = ?, supplierServerId = ?, supplierUuid = ?, supplyUuid = ?,
+          allocations = ?, amount = ?, note = ?, date = ?, isDeleted = ?, needsSync = 0, updatedAt = ?
+        WHERE id = ?
+      `, [
+        p.id, p.supplierId ?? null, p.supplierUuid ?? null, p.supplyUuid ?? null,
+        p.allocations ?? '[]', p.amount, p.note || null, Number(p.date),
+        p.isDeleted ? 1 : 0, Date.now(), existing.id,
+      ]);
+    } else {
+      await runWithRetry(db, `
+        INSERT INTO supplier_payments (
+          serverId, uuid, supplierServerId, supplierUuid, supplyUuid, allocations, amount, note, date,
+          isDeleted, needsSync, createdAt, updatedAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+      `, [
+        p.id, p.uuid || null, p.supplierId ?? null, p.supplierUuid ?? null, p.supplyUuid ?? null,
+        p.allocations ?? '[]', p.amount, p.note || null, Number(p.date),
+        p.isDeleted ? 1 : 0, Date.now(), Date.now(),
+      ]);
+    }
+  });
+};
+
+// ========================================
+// ПРИХОД ТОВАРА: применить поставку к товарам
+// ========================================
+// Вызывается после создания Supply: проходимся по позициям, увеличиваем количества
+// в Item.boxSizeQuantities и обновляем totalQuantity / totalValue.
+export const applySupplyToItems = async (lines: SupplyLine[]): Promise<void> => {
+  for (const line of lines) {
+    if (!line.itemUuid || !line.quantity || line.quantity <= 0) continue;
+
+    const item = await getItemByUuid(line.itemUuid);
+    if (!item) {
+      console.warn(`applySupplyToItems: item not found by uuid=${line.itemUuid}, name=${line.itemName}`);
+      continue;
+    }
+
+    let boxes: SizeQuantity[][] = [];
+    try {
+      boxes = JSON.parse(item.boxSizeQuantities || '[]');
+    } catch (e) {
+      console.warn('applySupplyToItems: failed to parse boxSizeQuantities for item', item.id, e);
+      continue;
+    }
+    if (!Array.isArray(boxes)) boxes = [];
+
+    const targetBoxIndex = typeof line.boxIndex === 'number' && boxes[line.boxIndex] ? line.boxIndex : 0;
+    if (!boxes[targetBoxIndex]) {
+      // если коробок нет — создаём первую
+      boxes[targetBoxIndex] = [];
+    }
+    const box = boxes[targetBoxIndex];
+
+    if (line.size !== undefined && line.size !== null && line.size !== '') {
+      const idx = box.findIndex(sq => String(sq.size) === String(line.size));
+      if (idx >= 0) {
+        box[idx].quantity = (box[idx].quantity || 0) + line.quantity;
+        // если цена прихода задана — обновим себестоимость (последняя цена)
+        if (line.unitPrice && line.unitPrice > 0) box[idx].price = line.unitPrice;
+      } else {
+        box.push({ size: line.size, quantity: line.quantity, price: line.unitPrice || 0 });
+      }
+    } else {
+      // размер не указан — увеличиваем первый существующий размер или создаём пустой
+      if (box.length > 0) {
+        box[0].quantity = (box[0].quantity || 0) + line.quantity;
+        if (line.unitPrice && line.unitPrice > 0) box[0].price = line.unitPrice;
+      } else {
+        box.push({ size: 0, quantity: line.quantity, price: line.unitPrice || 0 });
+      }
+    }
+
+    // пересчёт totalQuantity и totalValue
+    let totalQty = 0;
+    let totalVal = 0;
+    for (const b of boxes) {
+      for (const sq of b) {
+        totalQty += sq.quantity || 0;
+        totalVal += (sq.quantity || 0) * (sq.price || 0);
+      }
+    }
+    const numberOfBoxes = Math.max(1, boxes.length);
+
+    await updateItemQuantity(item.id, JSON.stringify(boxes), totalQty, totalVal);
+    // numberOfBoxes мог поменяться — обновим (в таблице items нет updatedAt, не трогаем его)
+    if (numberOfBoxes !== item.numberOfBoxes) {
+      await withLock(async () => {
+        const db = await getDatabaseInstance();
+        await runWithRetry(
+          db,
+          'UPDATE items SET numberOfBoxes = ?, needsSync = 1 WHERE id = ?',
+          [numberOfBoxes, item.id]
+        );
+      });
+    }
+
+    // запись в историю
+    // ВНИМАНИЕ: timestamp хранится в секундах (как у всех остальных транзакций).
+    // Раньше тут было Date.now() (мс), из-за чего в истории даты прихода
+    // отображались как «6 ноября 58327» — Date(seconds * 1000) умножал ещё раз.
+    await addTransaction({
+      action: 'receipt',
+      itemId: item.id,
+      itemName: item.name,
+      timestamp: Math.floor(Date.now() / 1000),
+      details: JSON.stringify({
+        type: 'receipt',
+        line,
+      }),
+      itemUuid: item.uuid,
+    });
+  }
+};
+
+// helper: найти item по uuid
+const getItemByUuid = async (uuid: string): Promise<Item | null> => {
+  return withLock(async () => {
+    const db = await getDatabaseInstance();
+    const row = await getFirstWithRetry<any>(db, 'SELECT * FROM items WHERE uuid = ? AND isDeleted = 0', [uuid]);
+    return row as Item | null;
   });
 };
 

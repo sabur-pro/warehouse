@@ -99,6 +99,31 @@ function ProfileNavigator() {
         component={CatalogEditScreen}
         options={{ headerShown: false }}
       />
+      <ProfileStack.Screen
+        name="Suppliers"
+        component={require('../screens/SuppliersScreen').default}
+        options={{ headerShown: false }}
+      />
+      <ProfileStack.Screen
+        name="SupplierDetails"
+        component={require('../screens/SupplierDetailsScreen').default}
+        options={{ headerShown: false }}
+      />
+      <ProfileStack.Screen
+        name="Receipt"
+        component={require('../screens/ReceiptScreen').default}
+        options={{ headerShown: false }}
+      />
+      <ProfileStack.Screen
+        name="PrinterSettings"
+        component={require('../screens/PrinterSettingsScreen').default}
+        options={{ headerShown: false }}
+      />
+      <ProfileStack.Screen
+        name="ScannerSettings"
+        component={require('../screens/ScannerSettingsScreen').default}
+        options={{ headerShown: false }}
+      />
     </ProfileStack.Navigator>
   );
 }
@@ -170,6 +195,12 @@ const CustomTabBar: React.FC<CustomTabBarProps> = ({ state, descriptors, navigat
             }
           ], [isFocused, isDark]);
 
+          // Бейдж выносим ИЗ iconContainer наружу: у iconContainer
+          // overflow: 'hidden' (нужен для borderRadius на Android), и любой
+          // абсолютно спозиционированный child с отрицательными отступами там обрезается.
+          const cartBadgeCount =
+            route.name === 'Cart' ? getCartTotal().totalItems : 0;
+
           return (
             <TouchableOpacity
               key={index}
@@ -177,32 +208,21 @@ const CustomTabBar: React.FC<CustomTabBarProps> = ({ state, descriptors, navigat
               style={styles.tabItem}
               activeOpacity={0.7}
             >
-              <View style={iconContainerStyle}>
-                <MaterialIcons
-                  name={getIconName(route.name)}
-                  size={24}
-                  color={isFocused ? focusedColor : unfocusedColor}
-                />
-                {/* Badge для корзины */}
-                {route.name === 'Cart' && getCartTotal().totalItems > 0 && (
-                  <View style={{
-                    position: 'absolute',
-                    top: -4,
-                    right: -8,
-                    backgroundColor: '#ef4444',
-                    borderRadius: 10,
-                    minWidth: 18,
-                    height: 18,
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    paddingHorizontal: 4,
-                  }}>
-                    <Text style={{
-                      color: '#fff',
-                      fontSize: 10,
-                      fontWeight: 'bold'
-                    }}>
-                      {getCartTotal().totalItems > 99 ? '99+' : getCartTotal().totalItems}
+              <View style={styles.iconWrapper}>
+                <View style={iconContainerStyle}>
+                  <MaterialIcons
+                    name={getIconName(route.name)}
+                    size={24}
+                    color={isFocused ? focusedColor : unfocusedColor}
+                  />
+                </View>
+                {cartBadgeCount > 0 && (
+                  <View
+                    style={[styles.cartBadge, { borderColor: colors.background.card }]}
+                    pointerEvents="none"
+                  >
+                    <Text style={styles.cartBadgeText} numberOfLines={1}>
+                      {cartBadgeCount > 99 ? '99+' : cartBadgeCount}
                     </Text>
                   </View>
                 )}
@@ -299,6 +319,33 @@ const styles = StyleSheet.create({
   },
   tabIconContainer: {
     padding: 10,
+  },
+  // Обёртка, которая держит бейдж как сиблинг иконки — без overflow:'hidden'.
+  iconWrapper: {
+    position: 'relative',
+  },
+  cartBadge: {
+    position: 'absolute',
+    top: -2,
+    right: -6,
+    backgroundColor: '#ef4444',
+    borderRadius: 10,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 5,
+    justifyContent: 'center',
+    alignItems: 'center',
+    // borderColor задаётся inline — берётся под цвет таб-бара чтобы бейдж
+    // выглядел "вырезанным" из иконки и не сливался с её активным фоном.
+    borderWidth: 1.5,
+  },
+  cartBadgeText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: 'bold',
+    lineHeight: 12,
+    textAlign: 'center',
+    includeFontPadding: false,
   },
   centerSpace: {
     flex: 1,

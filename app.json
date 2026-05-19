@@ -17,6 +17,14 @@
           "color": "#ffffff",
           "sounds": []
         }
+      ],
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "modes": [],
+          "bluetoothAlwaysPermission": "Bluetooth используется для подключения к принтеру этикеток (XPrinter)."
+        }
       ]
     ],
     "orientation": "default",
@@ -36,7 +44,10 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.umed1.sklad"
+      "bundleIdentifier": "com.umed1.sklad",
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "Bluetooth используется для подключения к принтеру этикеток (только Android — iOS не поддерживает Bluetooth Classic для принтеров XPrinter)."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -48,7 +59,12 @@
         "CAMERA",
         "READ_EXTERNAL_STORAGE",
         "WRITE_EXTERNAL_STORAGE",
-        "NOTIFICATIONS"
+        "NOTIFICATIONS",
+        "BLUETOOTH",
+        "BLUETOOTH_ADMIN",
+        "BLUETOOTH_SCAN",
+        "BLUETOOTH_CONNECT",
+        "ACCESS_FINE_LOCATION"
       ]
     },
     "extra": {

@@ -22,6 +22,8 @@ import { GroupedTransaction } from '../../../components/TransactionsList';
 import { useTheme } from '../../contexts/ThemeContext';
 import { getThemeColors } from '../../../constants/theme';
 import { useSyncRefresh } from '../sync/SyncStatusBar';
+import { getActiveCurrencyCode } from '../../utils/currencyState';
+import { getCurrency } from '../../config/currencies';
 
 const ITEM_LIMIT = 50;
 
@@ -66,7 +68,7 @@ const HistoryContentNew = forwardRef<HistoryContentNewRef>((_, ref) => {
 
     // Затем группируем по датам
     groupedTxs.forEach(tx => {
-      const date = new Date(tx.timestamp * 1000);
+      const date = new Date(toMillis(tx.timestamp));
       const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 
       if (!grouped[dateKey]) {
@@ -155,7 +157,7 @@ const HistoryContentNew = forwardRef<HistoryContentNewRef>((_, ref) => {
 
       // Сортируем: sale/wholesale первыми
       relatedTransactions.sort((a, b) => {
-        const priority = { wholesale: 0, sale: 1, update: 2, create: 3, delete: 4 };
+        const priority: Record<string, number> = { wholesale: 0, sale: 1, receipt: 2, update: 3, create: 4, delete: 5 };
         const aPriority = priority[a.action] ?? 5;
         const bPriority = priority[b.action] ?? 5;
         return aPriority - bPriority;
@@ -467,7 +469,7 @@ const HistoryContentNew = forwardRef<HistoryContentNewRef>((_, ref) => {
         color = iconData.color;
       }
     }
-    const formattedTime = new Date(item.transactions[0].timestamp * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    const formattedTime = new Date(toMillis(item.transactions[0].timestamp)).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 
     return (
       <TouchableOpacity onPress={() => handleTransactionPress(item)} activeOpacity={0.7}>
@@ -716,6 +718,14 @@ const getMonthName = (month: number): string => {
   return months[month];
 };
 
+// Транзакции должны хранить timestamp в секундах. Но из-за бага (приход
+// раньше писался в Date.now() мс) у части записей значение в мс.
+// Нормализуем при рендере: значения > 1e12 считаем миллисекундами.
+const toMillis = (timestamp: number): number => {
+  if (!isFinite(timestamp) || timestamp <= 0) return 0;
+  return timestamp > 1e12 ? timestamp : timestamp * 1000;
+};
+
 const getActionIconAndColor = (action: Transaction['action']): { icon: keyof typeof MaterialIcons.glyphMap; color: string } => {
   switch (action) {
     case 'sale':
@@ -728,6 +738,9 @@ const getActionIconAndColor = (action: Transaction['action']): { icon: keyof typ
       return { icon: 'shopping-cart', color: '#8b5cf6' };
     case 'delete':
       return { icon: 'delete', color: '#ef4444' };
+    case 'receipt':
+      // Приход от поставщика — стрелка вниз в коробку, голубой
+      return { icon: 'move-to-inbox', color: '#0ea5e9' };
     default:
       return { icon: 'history', color: '#6b7280' };
   }
@@ -745,6 +758,8 @@ const getActionText = (action: Transaction['action']): string => {
       return 'Обновление';
     case 'delete':
       return 'Удаление';
+    case 'receipt':
+      return 'Приход';
     default:
       return 'Действие';
   }
@@ -758,7 +773,8 @@ const parseDetailsType = (details: string | null | undefined): string => {
       const saleInfo = parsed.deletedTransaction?.details?.sale;
       return `Возврат - Размер ${saleInfo?.size || 'N/A'}, ${parsed.restoredQuantity || 1} шт.`;
     } else if (parsed.type === 'price_update') {
-      return `Обновление цены - было ${parsed.oldTotalValue?.toFixed(2) || '0'} сом., стало ${parsed.newTotalValue?.toFixed(2) || '0'} сом.`;
+      const lbl = getCurrency(getActiveCurrencyCode()).shortLabel;
+      return `Обновление цены - было ${parsed.oldTotalValue?.toFixed(2) || '0'} ${lbl}, стало ${parsed.newTotalValue?.toFixed(2) || '0'} ${lbl}`;
     } else if (parsed.type === 'update' && parsed.changes && parsed.changes.length > 0) {
       return `Обновление - ${parsed.changes.length} изменений`;
     } else if (parsed.type === 'sale') {
@@ -775,6 +791,14 @@ const parseDetailsType = (details: string | null | undefined): string => {
     } else if (parsed.type === 'admin_approved_update') {
       const changedFields = parsed.newData ? Object.keys(parsed.newData).length : 0;
       return `Обновление одобрено админом - ${changedFields} полей`;
+    } else if (parsed.type === 'receipt') {
+      // Приход от поставщика. details.line: { quantity, unitPrice, size, ... }
+      const line = parsed.line || {};
+      const qty = line.quantity || 0;
+      const sizeStr = line.size !== undefined && line.size !== null && line.size !== ''
+        ? ` (${line.size})`
+        : '';
+      return `Приход — ${qty} шт.${sizeStr}`;
     }
     return parsed.type ? `${parsed.type}` : 'Детали';
   } catch {

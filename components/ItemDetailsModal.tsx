@@ -1,19 +1,30 @@
 // components/ItemDetailsModal.tsx
 
 import { useState, useEffect } from 'react';
-import { Modal, View, ScrollView, Text, Image, TouchableOpacity, Alert, ActivityIndicator, TextInput, Pressable, Platform } from 'react-native';
+import { Modal, View, ScrollView, Text, Image, TouchableOpacity, Alert, ActivityIndicator, TextInput, Pressable, Platform, Switch } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
-import { Item, SizeQuantity } from '../database/types';
+import { Item, SizeQuantity, PriceUnit, isWeightPriceUnit } from '../database/types';
+import {
+  sanitizePriceText,
+  parsePriceText,
+  formatPriceForInput,
+  priceUnitLabel,
+  gramsToPriceUnits,
+  gramsPerPriceUnit,
+  formatWeight,
+} from '../utils/priceInput';
 import { useDatabase } from '../hooks/useDatabase';
 import { Picker } from '@react-native-picker/picker';
 import { compressImage, showCompressionDialog, getRecommendedProfile, formatFileSize } from '../utils/imageCompression';
 import * as FileSystem from 'expo-file-system';
 import { useAuth } from '../src/contexts/AuthContext';
 import { QRCodeDisplay } from './QRCodeDisplay';
+import { BarcodePreview } from './BarcodePreview';
 import { CreateQRModal } from './CreateQRModal';
 import { useTheme } from '../src/contexts/ThemeContext';
+import { useCurrency } from '../src/contexts/CurrencyContext';
 import { useCatalogs } from '../src/contexts/CatalogsContext';
 import { getThemeColors, colors as defaultColors } from '../constants/theme';
 import { createQRCodesForItem } from '../utils/qrCodeUtils';
@@ -24,6 +35,12 @@ import AuthService from '../src/services/AuthService';
 import { useCart } from '../src/contexts/CartContext';
 import { Toast } from '../src/components/Toast';
 import { useNavigation } from '@react-navigation/native';
+import ItemAttributesEditor, { DraftAttribute, COLOR_SWATCHES } from '../src/components/warehouse/ItemAttributesEditor';
+import { CATALOG_TEMPLATES } from '../src/config/catalogTemplates';
+import {
+  getAttributesForItem,
+  replaceAttributesForItem,
+} from '../src/services/ItemAttributeService';
 
 interface ItemDetailsModalProps {
   item: Item;
@@ -36,6 +53,7 @@ interface ItemDetailsModalProps {
 const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted }: ItemDetailsModalProps) => {
   const { user, isAdmin, isAssistant } = useAuth();
   const { isDark } = useTheme();
+  const { label: currencyShort } = useCurrency();
   const colors = getThemeColors(isDark);
   const { catalogs } = useCatalogs();
   const { addToCart, updateQuantity, removeFromCart, validateCartForItem, cartItems } = useCart();
@@ -44,6 +62,14 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
   const [isLoading, setIsLoading] = useState(false);
   const [boxSizeQuantities, setBoxSizeQuantities] = useState<SizeQuantity[][]>([]);
   const [showSaleModal, setShowSaleModal] = useState(false);
+  // Мини-модалка для ввода веса при добавлении весового товара в корзину.
+  // Открывается из размерной строки когда currentItem.priceUnit ∈ kg/100g.
+  const [weightModal, setWeightModal] = useState<null | {
+    boxIndex: number;
+    sizeIndex: number;
+    sizeQty: SizeQuantity;
+  }>(null);
+  const [weightGramsText, setWeightGramsText] = useState('');
   const [currentBoxIndex, setCurrentBoxIndex] = useState(0);
   const [currentSize, setCurrentSize] = useState<number | string>(0);
   const [salePrice, setSalePrice] = useState('');
@@ -54,6 +80,9 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
 
   // Состояния для QR-кодов
   const [showCreateQRModal, setShowCreateQRModal] = useState(false);
+
+  // Превью штрих-кода
+  const [showBarcodePreview, setShowBarcodePreview] = useState(false);
 
   // Toast для уведомлений
   const [toastVisible, setToastVisible] = useState(false);
@@ -67,6 +96,80 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
   };
 
   const { updateItemQuantity, deleteItem, addTransaction, updateItem, updateItemQRCodes } = useDatabase();
+
+  // Является ли товар "на вес" — определяет UI: для веса вместо +/- кнопок
+  // показываем "Ввести вес" и считаем сумму по введённым граммам.
+  const itemPriceUnit = (currentItem.priceUnit as PriceUnit | undefined) || 'pair';
+  const isWeightItem = isWeightPriceUnit(itemPriceUnit);
+
+  // Открыть мини-модалку ввода веса для конкретного размера + коробки.
+  // Если этот размер уже в корзине — подставляем текущий вес (в граммах),
+  // чтобы пользователь мог отредактировать, а не вводить с нуля.
+  const openWeightModalFor = (boxIndex: number, sizeQty: SizeQuantity) => {
+    const sizeIndex = boxSizeQuantities[boxIndex]?.findIndex(
+      sq => String(sq.size) === String(sizeQty.size)
+    ) ?? -1;
+    if (sizeIndex === -1) return;
+
+    const existing = cartItems.find(
+      ci => ci.item.id === currentItem.id && ci.boxIndex === boxIndex && ci.sizeIndex === sizeIndex
+    );
+    const perUnit = gramsPerPriceUnit(itemPriceUnit);
+    if (existing && perUnit > 0) {
+      // existing.quantity хранится в единицах priceUnit (kg → 0.878),
+      // обратно в граммы: quantity * perUnit.
+      const grams = Math.round(existing.quantity * perUnit);
+      setWeightGramsText(grams > 0 ? String(grams) : '');
+    } else {
+      setWeightGramsText('');
+    }
+    setWeightModal({ boxIndex, sizeIndex, sizeQty });
+  };
+
+  // Подтверждение веса из мини-модалки → добавление в корзину.
+  const confirmWeightAdd = () => {
+    if (!weightModal) return;
+    const grams = parsePriceText(weightGramsText);
+    if (grams <= 0) {
+      Alert.alert('Введите вес', 'Укажите вес больше нуля (в граммах).');
+      return;
+    }
+    const { boxIndex, sizeIndex, sizeQty } = weightModal;
+    // Количество в "единицах priceUnit" — то что хранится в CartItem.quantity
+    // и умножается на price (за priceUnit) чтобы получить сумму.
+    const quantityInPriceUnits = gramsToPriceUnits(grams, itemPriceUnit);
+    // Максимальный остаток в тех же единицах — sizeQty.quantity уже в priceUnit.
+    if (quantityInPriceUnits > (sizeQty.quantity || 0) + 1e-9) {
+      const stockGrams = Math.round((sizeQty.quantity || 0) * gramsPerPriceUnit(itemPriceUnit));
+      Alert.alert('Недостаточно на складе', `На складе только ${formatWeight(stockGrams)}.`);
+      return;
+    }
+
+    addToCart(
+      currentItem,
+      boxIndex,
+      sizeIndex,
+      sizeQty.size,
+      quantityInPriceUnits,
+      sizeQty.price || 0,
+      sizeQty.recommendedSellingPrice,
+      sizeQty.quantity,
+    );
+    setWeightModal(null);
+    setWeightGramsText('');
+  };
+
+  // Удалить из корзины из мини-модалки (если был там).
+  const removeWeightItem = () => {
+    if (!weightModal) return;
+    const { boxIndex, sizeIndex } = weightModal;
+    const existing = cartItems.find(
+      ci => ci.item.id === currentItem.id && ci.boxIndex === boxIndex && ci.sizeIndex === sizeIndex
+    );
+    if (existing) removeFromCart(existing.id);
+    setWeightModal(null);
+    setWeightGramsText('');
+  };
 
   // Функция добавления в корзину
   const handleAddToCart = (boxIndex: number, sizeQty: SizeQuantity) => {
@@ -144,10 +247,31 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
   const [editedPosition, setEditedPosition] = useState(item.position || '');
   const [editedSide, setEditedSide] = useState(item.side || '');
   const [editedImageUri, setEditedImageUri] = useState(item.imageUri);
-  const [priceMode, setPriceMode] = useState<'per_pair' | 'per_box'>('per_pair');
-  const [priceValue, setPriceValue] = useState(0);
-  const [recommendedSellingPrice, setRecommendedSellingPrice] = useState(0);
+  const [priceMode, setPriceMode] = useState<'per_pair' | 'per_box' | 'per_weight'>('per_pair');
+  const [weightUnit, setWeightUnit] = useState<'kg' | '100g' | 'piece'>('kg');
+  // Цены храним как строки чтобы поддержать дробный ввод ("11.", "0.5")
+  // и системную запятую с клавиатуры.
+  const [priceText, setPriceText] = useState('');
+  const [recommendedPriceText, setRecommendedPriceText] = useState('');
+  const priceValue = parsePriceText(priceText);
+  const recommendedSellingPrice = parsePriceText(recommendedPriceText);
+  // Тумблер "Разная цена для размеров" — в режиме редактирования.
+  // Авто-определяется при загрузке: если в текущем item цены среди размеров отличаются → true.
+  const [perSizePricing, setPerSizePricing] = useState(false);
   const [editedNumberOfBoxes, setEditedNumberOfBoxes] = useState(item.numberOfBoxes || 1);
+  const [extraAttributes, setExtraAttributes] = useState<DraftAttribute[]>([]);
+  const [savedAttributes, setSavedAttributes] = useState<DraftAttribute[]>([]);
+
+  // Подсказки атрибутов из шаблона активного каталога
+  const suggestedAttributes = (() => {
+    const itemType = currentItem.itemType || '';
+    if (!itemType) return [];
+    for (const tpl of CATALOG_TEMPLATES) {
+      const found = tpl.catalogs.find((c) => c.name.toLowerCase() === itemType.toLowerCase());
+      if (found?.suggestedAttributes) return found.suggestedAttributes;
+    }
+    return [];
+  })();
 
   // Размерные ряды берутся из активного каталога (динамически, через CatalogsContext)
   const getSizesFromType = (type: string) => {
@@ -175,7 +299,6 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
 
   useEffect(() => {
     if (visible) {
-      console.log('Modal opened for item id:', item.id);
       setCurrentItem(item);
       setEditedName(item.name || '');
       setEditedCode(item.code || '');
@@ -209,6 +332,31 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
         console.error('Error parsing box sizes:', error);
         setBoxSizeQuantities([]);
       }
+
+      // Загружаем доп. параметры товара
+      if (item.uuid) {
+        getAttributesForItem(item.uuid)
+          .then((rows) => {
+            const drafts: DraftAttribute[] = rows.map((r) => ({
+              id: r.id,
+              name: r.name,
+              value: r.value,
+              attrType: r.attrType,
+              unit: r.unit,
+              options: suggestedAttributes.find((s) => s.name.toLowerCase() === r.name.toLowerCase())?.options,
+            }));
+            setSavedAttributes(drafts);
+            setExtraAttributes(drafts);
+          })
+          .catch((e) => {
+            console.warn('Failed to load item attributes:', e);
+            setSavedAttributes([]);
+            setExtraAttributes([]);
+          });
+      } else {
+        setSavedAttributes([]);
+        setExtraAttributes([]);
+      }
     }
   }, [item, visible]);
 
@@ -219,11 +367,34 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
       boxSizeQuantities.flatMap(box => box.filter(sq => sq.quantity > 0).map(sq => (sq.price !== undefined && !isNaN(sq.price)) ? sq.price : 0)).forEach(p => allPrices.push(p));
       boxSizeQuantities.flatMap(box => box.filter(sq => sq.quantity > 0).map(sq => (sq.recommendedSellingPrice !== undefined && !isNaN(sq.recommendedSellingPrice)) ? sq.recommendedSellingPrice : 0)).forEach(p => allRecommendedPrices.push(p));
 
+      // Авто-определение perSizePricing: если у позиций с qty>0 разные цены/рек.цены — считаем что включён режим "разная цена".
+      const uniquePricesSet = new Set(allPrices.filter(p => p > 0));
+      const uniqueRecsSet = new Set(allRecommendedPrices.filter(p => p > 0));
+      if (uniquePricesSet.size > 1 || uniqueRecsSet.size > 1) {
+        setPerSizePricing(true);
+      } else {
+        setPerSizePricing(false);
+      }
+
+      // Определяем priceMode и значение цены.
+      // Если у item есть сохранённый priceUnit ('kg'/'100g'/'piece') — считаем
+      // что товар весовой, и подставляем priceMode='per_weight' + единицу.
+      const savedUnit = (currentItem.priceUnit as PriceUnit | undefined) || 'pair';
+      const isWeightItem = savedUnit === 'kg' || savedUnit === '100g' || savedUnit === 'piece';
+
       if (allPrices.length > 0) {
         const uniquePrices = [...new Set(allPrices)];
         if (uniquePrices.length === 1) {
-          setPriceMode('per_pair');
-          setPriceValue(uniquePrices[0]);
+          // Одинаковая цена по всем размерам
+          if (isWeightItem) {
+            setPriceMode('per_weight');
+            setWeightUnit(savedUnit as 'kg' | '100g' | 'piece');
+          } else if (savedUnit === 'box') {
+            setPriceMode('per_box');
+          } else {
+            setPriceMode('per_pair');
+          }
+          setPriceText(formatPriceForInput(uniquePrices[0]));
         } else {
           let boxTotals: number[] = boxSizeQuantities.map(box => box.reduce((sum, sq) => {
             const price = (sq.price !== undefined && !isNaN(sq.price)) ? sq.price : 0;
@@ -232,27 +403,32 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
           const uniqueBoxTotals = [...new Set(boxTotals)];
           if (uniqueBoxTotals.length === 1) {
             setPriceMode('per_box');
-            setPriceValue(uniqueBoxTotals[0]);
+            setPriceText(formatPriceForInput(uniqueBoxTotals[0]));
           } else {
             setPriceMode('per_pair');
-            setPriceValue(0);
+            setPriceText('');
           }
         }
       } else {
-        setPriceMode('per_pair');
-        setPriceValue(0);
+        if (isWeightItem) {
+          setPriceMode('per_weight');
+          setWeightUnit(savedUnit as 'kg' | '100g' | 'piece');
+        } else {
+          setPriceMode('per_pair');
+        }
+        setPriceText('');
       }
 
       // Устанавливаем рекомендуемую цену
       if (allRecommendedPrices.length > 0) {
         const uniqueRecommendedPrices = [...new Set(allRecommendedPrices)];
         if (uniqueRecommendedPrices.length === 1) {
-          setRecommendedSellingPrice(uniqueRecommendedPrices[0]);
+          setRecommendedPriceText(formatPriceForInput(uniqueRecommendedPrices[0]));
         } else {
-          setRecommendedSellingPrice(0);
+          setRecommendedPriceText('');
         }
       } else {
-        setRecommendedSellingPrice(0);
+        setRecommendedPriceText('');
       }
     }
   }, [isEditing]);
@@ -364,6 +540,26 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
     );
   };
 
+  // Установка цены для конкретного размера в режиме "разная цена для размеров"
+  const updateSizePrice = (
+    boxIndex: number,
+    size: number | string,
+    field: 'price' | 'recommendedSellingPrice',
+    value: number,
+  ) => {
+    setBoxSizeQuantities(prev =>
+      prev.map((box, idx) =>
+        idx === boxIndex
+          ? box.map(item =>
+            String(item.size) === String(size)
+              ? { ...item, [field]: Math.max(0, value) }
+              : item,
+          )
+          : box,
+      ),
+    );
+  };
+
   // Helper function to check if quantity changes are only additions (no decreases)
   // Returns true if all size quantities are either the same or increased (never decreased)
   const isOnlyAddingQuantity = (oldBoxes: SizeQuantity[][], newBoxes: SizeQuantity[][]): boolean => {
@@ -416,6 +612,16 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
   const handleSaveEdit = async () => {
     setIsLoading(true);
     try {
+      // priceUnit вычисляется по текущему выбранному режиму редактирования.
+      // Если режим — per_weight, сохраняем выбранную единицу веса (kg/100g/piece);
+      // если коробка — 'box', иначе legacy 'pair'.
+      const resolvedPriceUnit: PriceUnit =
+        priceMode === 'per_box'
+          ? 'box'
+          : priceMode === 'per_weight'
+            ? weightUnit
+            : 'pair';
+
       const updatedBasic: Item = {
         ...currentItem,
         name: editedName,
@@ -426,10 +632,13 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
         position: editedPosition,
         side: editedSide,
         imageUri: editedImageUri,
+        priceUnit: resolvedPriceUnit,
       };
 
       let newBoxSizeQuantities = boxSizeQuantities.map(box => box.map(sq => ({ ...sq })));
-      if (priceValue > 0 || recommendedSellingPrice > 0) {
+      if (perSizePricing) {
+        // В режиме "разная цена" значения уже в позициях — ничего не пересчитываем.
+      } else if (priceValue > 0 || recommendedSellingPrice > 0) {
         newBoxSizeQuantities.forEach((box) => {
           const totalInBox = box.reduce((sum, item) => sum + item.quantity, 0);
           let pricePerPair = 0;
@@ -648,6 +857,27 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
         finalItem.qrCodes = qrCodesString;
       }
 
+      // Сохраняем доп. параметры товара
+      if (currentItem.uuid) {
+        try {
+          const filledAttrs = extraAttributes.filter((a) => a.name.trim() && a.value.trim());
+          await replaceAttributesForItem(
+            currentItem.uuid,
+            filledAttrs.map((a, i) => ({
+              itemUuid: currentItem.uuid as string,
+              name: a.name.trim(),
+              value: a.value.trim(),
+              attrType: a.attrType,
+              unit: a.unit ?? null,
+              sortOrder: i,
+            })),
+          );
+          setSavedAttributes(filledAttrs);
+        } catch (e) {
+          console.warn('Failed to save item attributes:', e);
+        }
+      }
+
       setCurrentItem(finalItem);
       setBoxSizeQuantities(newBoxSizeQuantities);
       onItemUpdated(finalItem);
@@ -678,6 +908,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
       console.error('Error parsing box sizes on cancel:', error);
       setBoxSizeQuantities([]);
     }
+    setExtraAttributes(savedAttributes);
     setIsEditing(false);
   };
 
@@ -787,9 +1018,9 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
 
       setShowSaleModal(false);
       if (isAdmin()) {
-        Alert.alert('Успех', `Продано 1 пару за ${parsedSalePrice} сомонӣ. Прибыль: ${profit.toFixed(2)} сомонӣ`);
+        Alert.alert('Успех', `Продано 1 шт. за ${parsedSalePrice} ${currencyShort}. Прибыль: ${profit.toFixed(2)} ${currencyShort}`);
       } else {
-        Alert.alert('Успех', `Продано 1 пару за ${parsedSalePrice} сомонӣ`);
+        Alert.alert('Успех', `Продано 1 шт. за ${parsedSalePrice} ${currencyShort}`);
       }
     } catch (error) {
       console.error('Error confirming sale:', error);
@@ -930,9 +1161,9 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
       const totalSalePrice = wholesaleBoxes.reduce((sum, box) => sum + box.salePrice, 0);
       const totalProfit = wholesaleBoxes.reduce((sum, box) => sum + box.profit, 0);
       if (isAdmin()) {
-        Alert.alert('Успех', `Продано ${wholesaleBoxes.length} коробок за ${totalSalePrice.toFixed(2)} сомонӣ. Прибыль: ${totalProfit.toFixed(2)} сомонӣ`);
+        Alert.alert('Успех', `Продано ${wholesaleBoxes.length} коробок за ${totalSalePrice.toFixed(2)} ${currencyShort}. Прибыль: ${totalProfit.toFixed(2)} ${currencyShort}`);
       } else {
-        Alert.alert('Успех', `Продано ${wholesaleBoxes.length} коробок за ${totalSalePrice.toFixed(2)} сомонӣ`);
+        Alert.alert('Успех', `Продано ${wholesaleBoxes.length} коробок за ${totalSalePrice.toFixed(2)} ${currencyShort}`);
       }
     } catch (error) {
       console.error('Error confirming wholesale:', error);
@@ -1199,6 +1430,24 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                 minWidth: 150,
               }}>
                 <TouchableOpacity
+                  onPress={() => {
+                    setShowMenu(false);
+                    onClose();
+                    setTimeout(() => navigation.navigate('Profile', { screen: 'Receipt', params: { itemUuid: currentItem.uuid } }), 100);
+                  }}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    paddingHorizontal: 16,
+                    paddingVertical: 12,
+                    borderBottomWidth: 1,
+                    borderBottomColor: colors.border.light,
+                  }}
+                >
+                  <Ionicons name="archive-outline" size={18} color={isDark ? colors.primary.gold : '#10b981'} style={{ marginRight: 10 }} />
+                  <Text style={{ color: colors.text.normal, fontWeight: '500' }}>Приход</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
                   onPress={handleEditItem}
                   style={{
                     flexDirection: 'row',
@@ -1278,12 +1527,19 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                         <Picker
                           selectedValue={editedNumberOfBoxes}
                           onValueChange={setEditedNumberOfBoxes}
-                          style={{ color: colors.text.normal }}
+                          mode="dropdown"
+                          style={{ color: colors.text.normal, backgroundColor: colors.background.card }}
                           dropdownIconColor={colors.text.normal}
-                          itemStyle={{ color: colors.text.normal }}
+                          itemStyle={{ color: colors.text.normal, backgroundColor: colors.background.card }}
                         >
                           {Array.from({ length: 20 }, (_, i) => i + 1).map(num => (
-                            <Picker.Item key={num} label={num.toString()} value={num} color={isDark ? '#E5E5E5' : '#333333'} />
+                            <Picker.Item
+                              key={num}
+                              label={num.toString()}
+                              value={num}
+                              color={colors.text.normal}
+                              style={{ backgroundColor: colors.background.card, color: colors.text.normal }}
+                            />
                           ))}
                         </Picker>
                       </View>
@@ -1295,45 +1551,140 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                 <View className="mb-3">
                   <Text style={{ color: colors.text.normal }} className="font-semibold">Цена</Text>
                   <View style={{ backgroundColor: colors.background.card }} className="p-3 rounded-lg mt-1">
-                    <View className="mb-2">
-                      <Text style={{ color: colors.text.muted }} className="text-xs mb-1">Тип цены</Text>
-                      <View style={{ borderColor: colors.border.normal, backgroundColor: colors.background.card }} className="border rounded-lg">
-                        <Picker
-                          selectedValue={priceMode}
-                          onValueChange={(itemValue: 'per_pair' | 'per_box') => setPriceMode(itemValue)}
-                          style={{ color: colors.text.normal }}
-                          dropdownIconColor={colors.text.normal}
-                          itemStyle={{ color: colors.text.normal }}
-                        >
-                          <Picker.Item label="За пару" value="per_pair" color={isDark ? '#E5E5E5' : '#333333'} />
-                          <Picker.Item label="За коробку" value="per_box" color={isDark ? '#E5E5E5' : '#333333'} />
-                        </Picker>
+                    {/* Тумблер: разная цена для размеров */}
+                    <View style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      paddingVertical: 8,
+                      paddingHorizontal: 4,
+                      marginBottom: 8,
+                      borderBottomWidth: 1,
+                      borderBottomColor: colors.border.light,
+                    }}>
+                      <View style={{ flex: 1, marginRight: 12 }}>
+                        <Text style={{ color: colors.text.normal, fontWeight: '600', fontSize: 13 }}>
+                          Разная цена для размеров
+                        </Text>
+                        <Text style={{ color: colors.text.muted, fontSize: 11, marginTop: 2 }}>
+                          {perSizePricing
+                            ? 'Цена задаётся для каждого размера ниже'
+                            : 'Одна цена для всех размеров'}
+                        </Text>
                       </View>
-                    </View>
-                    <View className="mb-2">
-                      <Text style={{ color: colors.text.muted }} className="text-xs mb-1">{priceMode === 'per_pair' ? "Новая цена закупки за пару (сомонӣ)" : "Новая цена закупки за коробку (сомонӣ)"}</Text>
-                      <TextInput
-                        style={{ borderColor: colors.border.normal, backgroundColor: colors.background.screen, color: colors.text.normal }}
-                        className="border p-2 rounded"
-                        value={(priceValue !== undefined && priceValue !== null) ? priceValue.toString() : '0'}
-                        onChangeText={(text) => setPriceValue(parseFloat(text) || 0)}
-                        keyboardType="numeric"
-                        placeholder="0 (не изменять)"
-                        placeholderTextColor={colors.text.muted}
+                      <Switch
+                        value={perSizePricing}
+                        onValueChange={setPerSizePricing}
+                        disabled={isLoading}
+                        trackColor={{ false: '#767577', true: isDark ? colors.primary.gold : defaultColors.primary.blue }}
+                        thumbColor="#fff"
                       />
                     </View>
-                    <View className="mb-2">
-                      <Text style={{ color: colors.text.muted }} className="text-xs mb-1">{priceMode === 'per_pair' ? "Рекомендуемая цена продажи за пару (сомонӣ)" : "Рекомендуемая цена продажи за коробку (сомонӣ)"}</Text>
-                      <TextInput
-                        style={{ borderColor: colors.border.normal, backgroundColor: colors.background.screen, color: colors.text.normal }}
-                        className="border p-2 rounded"
-                        value={(recommendedSellingPrice !== undefined && recommendedSellingPrice !== null) ? recommendedSellingPrice.toString() : '0'}
-                        onChangeText={(text) => setRecommendedSellingPrice(parseFloat(text) || 0)}
-                        keyboardType="numeric"
-                        placeholder="0 (не изменять)"
-                        placeholderTextColor={colors.text.muted}
-                      />
-                    </View>
+
+                    {!perSizePricing && (
+                      <>
+                        <View className="mb-2">
+                          <Text style={{ color: colors.text.muted }} className="text-xs mb-1">Тип цены</Text>
+                          <View style={{ borderColor: colors.border.normal, backgroundColor: colors.background.card }} className="border rounded-lg">
+                            <Picker
+                              selectedValue={priceMode}
+                              onValueChange={(itemValue: 'per_pair' | 'per_box' | 'per_weight') => setPriceMode(itemValue)}
+                              mode="dropdown"
+                              style={{ color: colors.text.normal, backgroundColor: colors.background.card }}
+                              dropdownIconColor={colors.text.normal}
+                              itemStyle={{ color: colors.text.normal, backgroundColor: colors.background.card }}
+                            >
+                              <Picker.Item label="За штуку" value="per_pair" color={colors.text.normal} style={{ backgroundColor: colors.background.card, color: colors.text.normal }} />
+                              <Picker.Item label="За коробку" value="per_box" color={colors.text.normal} style={{ backgroundColor: colors.background.card, color: colors.text.normal }} />
+                              <Picker.Item label="На вес" value="per_weight" color={colors.text.normal} style={{ backgroundColor: colors.background.card, color: colors.text.normal }} />
+                            </Picker>
+                          </View>
+                        </View>
+                        {priceMode === 'per_weight' && (
+                          <View className="mb-2">
+                            <Text style={{ color: colors.text.muted }} className="text-xs mb-1">Цена за</Text>
+                            <View style={{ flexDirection: 'row', gap: 8 }}>
+                              {(['kg', '100g', 'piece'] as const).map((u) => {
+                                const selected = weightUnit === u;
+                                const label = u === 'kg' ? '1 кг' : u === '100g' ? '100 г' : 'штуку';
+                                return (
+                                  <TouchableOpacity
+                                    key={u}
+                                    style={{
+                                      flex: 1,
+                                      paddingVertical: 8,
+                                      paddingHorizontal: 4,
+                                      borderRadius: 8,
+                                      backgroundColor: selected ? (isDark ? 'rgba(212, 175, 55, 0.2)' : 'rgba(42, 171, 238, 0.12)') : colors.background.card,
+                                      borderWidth: 1,
+                                      borderColor: selected ? (isDark ? colors.primary.gold : defaultColors.primary.blue) : colors.border.normal,
+                                      alignItems: 'center',
+                                    }}
+                                    onPress={() => setWeightUnit(u)}
+                                  >
+                                    <Text style={{ fontSize: 12, fontWeight: '600', color: selected ? (isDark ? colors.primary.gold : defaultColors.primary.blue) : colors.text.muted }}>
+                                      {label}
+                                    </Text>
+                                  </TouchableOpacity>
+                                );
+                              })}
+                            </View>
+                          </View>
+                        )}
+                        <View className="mb-2">
+                          <Text style={{ color: colors.text.muted }} className="text-xs mb-1">
+                            {priceMode === 'per_box'
+                              ? `Новая цена закупки за коробку (${currencyShort})`
+                              : priceMode === 'per_weight'
+                                ? `Цена за ${priceUnitLabel(weightUnit)} (${currencyShort})`
+                                : `Новая цена закупки (${currencyShort})`}
+                          </Text>
+                          <TextInput
+                            style={{ borderColor: colors.border.normal, backgroundColor: colors.background.screen, color: colors.text.normal }}
+                            className="border p-2 rounded"
+                            value={priceText}
+                            onChangeText={(text) => setPriceText(sanitizePriceText(text))}
+                            keyboardType="decimal-pad"
+                            placeholder="0 (не изменять)"
+                            placeholderTextColor={colors.text.muted}
+                          />
+                        </View>
+                        <View className="mb-2">
+                          <Text style={{ color: colors.text.muted }} className="text-xs mb-1">
+                            {priceMode === 'per_box'
+                              ? `Рекомендуемая цена продажи за коробку (${currencyShort})`
+                              : priceMode === 'per_weight'
+                                ? `Рекомендуемая цена продажи за ${priceUnitLabel(weightUnit)} (${currencyShort})`
+                                : `Рекомендуемая цена продажи (${currencyShort})`}
+                          </Text>
+                          <TextInput
+                            style={{ borderColor: colors.border.normal, backgroundColor: colors.background.screen, color: colors.text.normal }}
+                            className="border p-2 rounded"
+                            value={recommendedPriceText}
+                            onChangeText={(text) => setRecommendedPriceText(sanitizePriceText(text))}
+                            keyboardType="decimal-pad"
+                            placeholder="0 (не изменять)"
+                            placeholderTextColor={colors.text.muted}
+                          />
+                        </View>
+                      </>
+                    )}
+                    {perSizePricing && (
+                      <Text style={{ color: colors.text.muted, fontSize: 12 }}>
+                        Цены задаются отдельно для каждого размера в блоке "Размеры по коробкам" ниже.
+                      </Text>
+                    )}
+                  </View>
+                </View>
+
+                <View className="mb-3">
+                  <Text style={{ color: colors.text.normal }} className="font-semibold">Доп. параметры</Text>
+                  <View style={{ backgroundColor: colors.background.card }} className="p-3 rounded-lg mt-1">
+                    <ItemAttributesEditor
+                      attributes={extraAttributes}
+                      onChange={setExtraAttributes}
+                      suggestions={suggestedAttributes}
+                    />
                   </View>
                 </View>
 
@@ -1344,20 +1695,27 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                       const totalInBox = box.reduce((sum, sq) => sum + (sq.quantity || 0), 0);
                       let displayPricePerPair = 0;
                       let displayRecommendedPricePerPair = 0;
-                      if (priceValue > 0 && totalInBox > 0) {
-                        displayPricePerPair = priceMode === 'per_box' ? priceValue / totalInBox : priceValue;
+                      let boxDisplayTotal = 0;
+                      let boxDisplayRecommendedTotal = 0;
+
+                      if (perSizePricing) {
+                        // Каждый размер со своей ценой — суммируем
+                        boxDisplayTotal = box.reduce((s, sq) => s + (sq.quantity || 0) * (sq.price || 0), 0);
+                        boxDisplayRecommendedTotal = box.reduce((s, sq) => s + (sq.quantity || 0) * (sq.recommendedSellingPrice || 0), 0);
                       } else {
-                        // Защита от undefined price в старых данных
-                        displayPricePerPair = box[0]?.price || 0;
+                        if (priceValue > 0 && totalInBox > 0) {
+                          displayPricePerPair = priceMode === 'per_box' ? priceValue / totalInBox : priceValue;
+                        } else {
+                          displayPricePerPair = box[0]?.price || 0;
+                        }
+                        if (recommendedSellingPrice > 0 && totalInBox > 0) {
+                          displayRecommendedPricePerPair = priceMode === 'per_box' ? recommendedSellingPrice / totalInBox : recommendedSellingPrice;
+                        } else {
+                          displayRecommendedPricePerPair = box[0]?.recommendedSellingPrice || 0;
+                        }
+                        boxDisplayTotal = totalInBox * displayPricePerPair;
+                        boxDisplayRecommendedTotal = totalInBox * displayRecommendedPricePerPair;
                       }
-                      if (recommendedSellingPrice > 0 && totalInBox > 0) {
-                        displayRecommendedPricePerPair = priceMode === 'per_box' ? recommendedSellingPrice / totalInBox : recommendedSellingPrice;
-                      } else {
-                        // Защита от undefined price в старых данных
-                        displayRecommendedPricePerPair = box[0]?.recommendedSellingPrice || 0;
-                      }
-                      const boxDisplayTotal = totalInBox * displayPricePerPair;
-                      const boxDisplayRecommendedTotal = totalInBox * displayRecommendedPricePerPair;
                       // Защита от NaN
                       const safeBoxTotal = isNaN(boxDisplayTotal) ? 0 : boxDisplayTotal;
                       const safeBoxRecommendedTotal = isNaN(boxDisplayRecommendedTotal) ? 0 : boxDisplayRecommendedTotal;
@@ -1390,12 +1748,61 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                                   </TouchableOpacity>
                                 </View>
                               </View>
-                              <Text style={{ color: colors.text.muted }} className="text-xs ml-4">Цена закупки: {safePricePerPair.toFixed(2)} сомонӣ</Text>
-                              <Text style={{ color: colors.text.muted }} className="text-xs ml-4">Рекомендуемая цена: {safeRecommendedPricePerPair.toFixed(2)} сомонӣ</Text>
+                              {perSizePricing ? (
+                                <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
+                                  <View style={{ flex: 1 }}>
+                                    <Text style={{ color: colors.text.muted, fontSize: 11, marginBottom: 4 }}>Цена закупки</Text>
+                                    <TextInput
+                                      style={{
+                                        borderWidth: 1,
+                                        borderColor: colors.border.normal,
+                                        borderRadius: 8,
+                                        paddingHorizontal: 8,
+                                        paddingVertical: 6,
+                                        fontSize: 13,
+                                        color: colors.text.normal,
+                                        backgroundColor: colors.background.screen,
+                                      }}
+                                      value={String(sizeQty.price || '')}
+                                      onChangeText={(t) => updateSizePrice(boxIndex, sizeQty.size, 'price', parsePriceText(sanitizePriceText(t)))}
+                                      keyboardType="decimal-pad"
+                                      placeholder="0"
+                                      placeholderTextColor={colors.text.muted}
+                                      editable={!isLoading}
+                                    />
+                                  </View>
+                                  <View style={{ flex: 1 }}>
+                                    <Text style={{ color: colors.text.muted, fontSize: 11, marginBottom: 4 }}>Рек. цена</Text>
+                                    <TextInput
+                                      style={{
+                                        borderWidth: 1,
+                                        borderColor: colors.border.normal,
+                                        borderRadius: 8,
+                                        paddingHorizontal: 8,
+                                        paddingVertical: 6,
+                                        fontSize: 13,
+                                        color: colors.text.normal,
+                                        backgroundColor: colors.background.screen,
+                                      }}
+                                      value={String(sizeQty.recommendedSellingPrice || '')}
+                                      onChangeText={(t) => updateSizePrice(boxIndex, sizeQty.size, 'recommendedSellingPrice', parsePriceText(sanitizePriceText(t)))}
+                                      keyboardType="decimal-pad"
+                                      placeholder="0"
+                                      placeholderTextColor={colors.text.muted}
+                                      editable={!isLoading}
+                                    />
+                                  </View>
+                                </View>
+                              ) : (
+                                <>
+                                  <Text style={{ color: colors.text.muted }} className="text-xs ml-4">Цена закупки: {safePricePerPair.toFixed(2)} {currencyShort}</Text>
+                                  <Text style={{ color: colors.text.muted }} className="text-xs ml-4">Рекомендуемая цена: {safeRecommendedPricePerPair.toFixed(2)} {currencyShort}</Text>
+                                </>
+                              )}
                             </View>
                           ))}
-                          <Text style={{ color: colors.text.normal }} className="font-medium mt-2">Стоимость закупки: {safeBoxTotal.toFixed(2)} сомонӣ</Text>
-                          <Text style={{ color: colors.text.normal }} className="font-medium mt-1">Рекомендуемая стоимость: {safeBoxRecommendedTotal.toFixed(2)} сомонӣ</Text>
+                          <Text style={{ color: colors.text.normal }} className="font-medium mt-2">Стоимость закупки: {safeBoxTotal.toFixed(2)} {currencyShort}</Text>
+                          <Text style={{ color: colors.text.normal }} className="font-medium mt-1">Рекомендуемая стоимость: {safeBoxRecommendedTotal.toFixed(2)} {currencyShort}</Text>
                         </View>
                       );
                     })}
@@ -1407,30 +1814,34 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                   <Text style={{ color: isDark ? colors.primary.gold : '#1e40af' }}>Всего товаров: <Text className="font-bold">{boxSizeQuantities.reduce((total, box) => total + box.reduce((sum, sq) => sum + sq.quantity, 0), 0)}</Text></Text>
                   <Text style={{ color: isDark ? colors.primary.gold : '#1e40af' }}>Общая стоимость закупки: <Text className="font-bold">{
                     boxSizeQuantities.reduce((grandTotal, box) => {
+                      if (perSizePricing) {
+                        return grandTotal + box.reduce((s, sq) => s + (sq.quantity || 0) * (sq.price || 0), 0);
+                      }
                       const totalInBox = box.reduce((sum, sq) => sum + sq.quantity, 0);
                       let displayPricePerPair = 0;
                       if (priceValue > 0 && totalInBox > 0) {
                         displayPricePerPair = priceMode === 'per_box' ? priceValue / totalInBox : priceValue;
                       } else {
-                        // Защита от undefined price в старых данных
                         displayPricePerPair = box[0]?.price || 0;
                       }
                       return grandTotal + totalInBox * displayPricePerPair;
                     }, 0).toFixed(2)
-                  }</Text> сомонӣ</Text>
+                  }</Text> {currencyShort}</Text>
                   <Text style={{ color: isDark ? colors.primary.gold : '#1e40af' }}>Общая рекомендуемая стоимость: <Text className="font-bold">{
                     boxSizeQuantities.reduce((grandTotal, box) => {
+                      if (perSizePricing) {
+                        return grandTotal + box.reduce((s, sq) => s + (sq.quantity || 0) * (sq.recommendedSellingPrice || 0), 0);
+                      }
                       const totalInBox = box.reduce((sum, sq) => sum + sq.quantity, 0);
                       let displayRecommendedPricePerPair = 0;
                       if (recommendedSellingPrice > 0 && totalInBox > 0) {
                         displayRecommendedPricePerPair = priceMode === 'per_box' ? recommendedSellingPrice / totalInBox : recommendedSellingPrice;
                       } else {
-                        // Защита от undefined price в старых данных
                         displayRecommendedPricePerPair = box[0]?.recommendedSellingPrice || 0;
                       }
                       return grandTotal + totalInBox * displayRecommendedPricePerPair;
                     }, 0).toFixed(2)
-                  }</Text> сомонӣ</Text>
+                  }</Text> {currencyShort}</Text>
                 </View>
 
                 <View className="mb-3">
@@ -1531,7 +1942,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                     <Text style={{ color: colors.text.muted }} className="mb-1">Количество коробок: {currentItem.numberOfBoxes || 0}</Text>
                     <Text style={{ color: colors.text.muted }} className="mb-1">Всего товаров: {currentItem.totalQuantity || 0}</Text>
                     {isAdmin() && (
-                      <Text style={{ color: colors.text.muted }}>Общая стоимость закупки: {(currentItem.totalValue !== undefined && currentItem.totalValue >= 0) ? currentItem.totalValue.toFixed(2) : '0.00'} сомонӣ</Text>
+                      <Text style={{ color: colors.text.muted }}>Общая стоимость закупки: {(currentItem.totalValue !== undefined && currentItem.totalValue >= 0) ? currentItem.totalValue.toFixed(2) : '0.00'} {currencyShort}</Text>
                     )}
 
                     {(currentItem.totalValue === -1 || currentItem.totalValue < 0 || currentItem.totalValue === undefined) && (
@@ -1562,6 +1973,49 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                   </View>
                 </View>
 
+                {savedAttributes.length > 0 && (
+                  <View className="mb-3">
+                    <Text style={{ color: colors.text.normal }} className="font-semibold">Доп. параметры</Text>
+                    <View style={{ backgroundColor: colors.background.card }} className="p-3 rounded-lg mt-1" >
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                        {savedAttributes.map((a, i) => (
+                          <View
+                            key={`${a.name}-${i}`}
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              paddingHorizontal: 10,
+                              paddingVertical: 6,
+                              borderRadius: 14,
+                              borderWidth: 1,
+                              borderColor: colors.border.normal,
+                              backgroundColor: colors.background.screen,
+                            }}
+                          >
+                            {a.attrType === 'color' ? (
+                              <View
+                                style={{
+                                  width: 12,
+                                  height: 12,
+                                  borderRadius: 6,
+                                  marginRight: 6,
+                                  backgroundColor: COLOR_SWATCHES.find((s) => s.name.toLowerCase() === a.value.toLowerCase())?.hex ?? '#9ca3af',
+                                  borderWidth: 1,
+                                  borderColor: colors.border.light,
+                                }}
+                              />
+                            ) : null}
+                            <Text style={{ color: colors.text.muted, fontSize: 12 }}>{a.name}: </Text>
+                            <Text style={{ color: colors.text.normal, fontSize: 12, fontWeight: '600' }}>
+                              {a.value}{a.unit ? ` ${a.unit}` : ''}
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
+                    </View>
+                  </View>
+                )}
+
                 <View className="mb-3">
                   <Text style={{ color: colors.text.normal }} className="font-semibold">Размеры по коробкам</Text>
                   <View style={{ backgroundColor: colors.background.card }} className="p-3 rounded-lg mt-1">
@@ -1578,22 +2032,76 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                           const { quantity: cartQty } = getCartQuantityForSize(boxIndex, sizeIndex);
                           const availableQty = qty - cartQty; // Доступное количество = склад - корзина
 
+                          // Для весовых товаров: интерпретируем qty/cartQty/availableQty
+                          // как значения в единицах priceUnit (kg / 100г) и считаем граммы для отображения.
+                          const perUnitGrams = isWeightItem ? gramsPerPriceUnit(itemPriceUnit) : 0;
+                          const availableGrams = isWeightItem ? availableQty * perUnitGrams : 0;
+                          const cartGrams = isWeightItem ? cartQty * perUnitGrams : 0;
+                          const priceForDisplay = isAdmin() ? safePrice : safeRecommendedPrice;
+
                           return (
                             <View key={sizeIndex} style={{ backgroundColor: colors.background.card }} className="flex-row items-center justify-between mb-2 p-2 rounded">
                               <View className="flex-1">
                                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                                   <Text style={{ color: colors.text.normal }} className="font-medium">
-                                    Размер {sizeQty.size}: {availableQty} шт.
+                                    {isWeightItem
+                                      ? `Размер ${sizeQty.size}: ${formatWeight(availableGrams)}`
+                                      : `Размер ${sizeQty.size}: ${availableQty} шт.`}
                                   </Text>
                                 </View>
-                                {isAdmin() ? (
-                                  <Text style={{ color: colors.text.muted }} className="text-xs mt-1">Цена: {safePrice.toFixed(2)} сомонӣ</Text>
+                                {isWeightItem ? (
+                                  <Text style={{ color: isDark ? colors.primary.gold : '#15803d' }} className="text-xs mt-1 font-semibold">
+                                    {priceForDisplay.toFixed(2)} {currencyShort} за {priceUnitLabel(itemPriceUnit)}
+                                  </Text>
+                                ) : isAdmin() ? (
+                                  <Text style={{ color: colors.text.muted }} className="text-xs mt-1">Цена: {safePrice.toFixed(2)} {currencyShort}</Text>
                                 ) : (
-                                  <Text style={{ color: isDark ? colors.primary.gold : '#15803d' }} className="text-xs mt-1 font-semibold">Рек. цена: {safeRecommendedPrice.toFixed(2)} сомонӣ</Text>
+                                  <Text style={{ color: isDark ? colors.primary.gold : '#15803d' }} className="text-xs mt-1 font-semibold">Рек. цена: {safeRecommendedPrice.toFixed(2)} {currencyShort}</Text>
                                 )}
                               </View>
 
-                              {qty > 0 && isAssistant() && (() => {
+                              {/* Весовые товары — единая кнопка "Ввести вес" / показ текущего веса в корзине */}
+                              {isWeightItem && qty > 0 && isAssistant() && (
+                                <Pressable
+                                  style={({ pressed }) => [{
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    backgroundColor: cartGrams > 0
+                                      ? (isDark ? 'rgba(212, 175, 55, 0.18)' : 'rgba(34, 197, 94, 0.15)')
+                                      : (pressed
+                                        ? (isDark ? '#b8860b' : '#15803d')
+                                        : (isDark ? colors.primary.gold : '#22c55e')),
+                                    borderRadius: 20,
+                                    paddingHorizontal: 14,
+                                    paddingVertical: 8,
+                                    opacity: isLoading ? 0.5 : 1,
+                                    borderWidth: cartGrams > 0 ? 1 : 0,
+                                    borderColor: isDark ? colors.primary.gold : '#22c55e',
+                                  }]}
+                                  onPress={() => openWeightModalFor(boxIndex, sizeQty)}
+                                  disabled={isLoading}
+                                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                >
+                                  <Ionicons
+                                    name={cartGrams > 0 ? 'create-outline' : 'cart'}
+                                    size={16}
+                                    color={cartGrams > 0
+                                      ? (isDark ? colors.primary.gold : '#15803d')
+                                      : (isDark ? '#ffffff' : '#000000')}
+                                  />
+                                  <Text style={{
+                                    marginLeft: 6,
+                                    fontWeight: '700',
+                                    color: cartGrams > 0
+                                      ? (isDark ? colors.primary.gold : '#15803d')
+                                      : (isDark ? '#ffffff' : '#000000'),
+                                  }}>
+                                    {cartGrams > 0 ? formatWeight(cartGrams) : 'Ввести вес'}
+                                  </Text>
+                                </Pressable>
+                              )}
+
+                              {!isWeightItem && qty > 0 && isAssistant() && (() => {
                                 const accentColor = isDark ? colors.primary.gold : '#22c55e';
                                 const isMaxReached = cartQty >= qty;
 
@@ -1694,12 +2202,12 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                           <Text style={{ color: colors.text.normal }} className="font-medium mt-2">Стоимость закупки коробки: {box.reduce((sum, sq) => {
                             const price = (sq.price !== undefined && !isNaN(sq.price)) ? sq.price : 0;
                             return sum + (sq.quantity || 0) * price;
-                          }, 0).toFixed(2)} сомонӣ</Text>
+                          }, 0).toFixed(2)} {currencyShort}</Text>
                         ) : (
                           <Text style={{ color: isDark ? colors.primary.gold : '#15803d' }} className="font-medium mt-2">Рекомендуемая стоимость коробки: {box.reduce((sum, sq) => {
                             const price = (sq.recommendedSellingPrice !== undefined && !isNaN(sq.recommendedSellingPrice)) ? sq.recommendedSellingPrice : 0;
                             return sum + (sq.quantity || 0) * price;
-                          }, 0).toFixed(2)} сомонӣ</Text>
+                          }, 0).toFixed(2)} {currencyShort}</Text>
                         )}
                       </View>
                     ))}
@@ -1746,8 +2254,34 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                     itemName={currentItem.name}
                     itemCode={currentItem.code}
                     qrCodeType={currentItem.qrCodeType}
+                    price={deriveItemDisplayPrice(currentItem, recommendedSellingPrice, priceValue)}
                   />
                 )}
+
+                {/* Кнопка "Показать штрих-код товара" — отдельный экран с большим штрих-кодом */}
+                {currentItem.code ? (
+                  <TouchableOpacity
+                    onPress={() => setShowBarcodePreview(true)}
+                    style={{
+                      marginTop: 12,
+                      backgroundColor: isDark ? colors.background.card : '#F3F4F6',
+                      borderColor: isDark ? colors.primary.gold : colors.primary.blue,
+                      borderWidth: 1,
+                      paddingVertical: 14,
+                      paddingHorizontal: 16,
+                      borderRadius: 12,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                    accessibilityLabel="Показать штрих-код товара"
+                  >
+                    <Ionicons name="barcode-outline" size={22} color={isDark ? colors.primary.gold : colors.primary.blue} />
+                    <Text style={{ marginLeft: 8, color: isDark ? colors.primary.gold : colors.primary.blue, fontWeight: '600' }}>
+                      Показать штрих-код
+                    </Text>
+                  </TouchableOpacity>
+                ) : null}
 
                 <View className="flex-row justify-between mt-6 space-x-3">
                   {isAssistant() && (
@@ -1873,7 +2407,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                         borderRadius: 8
                       }}>
                         <Text style={{ color: isDark ? '#4ade80' : '#166534', fontWeight: '600', textAlign: 'center' }}>
-                          Рекомендуемая цена: {recommendedPrice.toFixed(2)} сомонӣ
+                          Рекомендуемая цена: {recommendedPrice.toFixed(2)} {currencyShort}
                         </Text>
                       </View>
                     );
@@ -1889,11 +2423,11 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                       marginBottom: 16,
                       fontSize: 16,
                     }}
-                    placeholder="Цена продажи за пару (сомонӣ)"
+                    placeholder={`Цена продажи (${currencyShort})`}
                     placeholderTextColor={colors.text.muted}
                     value={salePrice}
-                    onChangeText={setSalePrice}
-                    keyboardType="numeric"
+                    onChangeText={(t) => setSalePrice(sanitizePriceText(t))}
+                    keyboardType="decimal-pad"
                     autoFocus={true}
                   />
                   <View style={{ flexDirection: 'row', gap: 12 }}>
@@ -1929,6 +2463,177 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
               </Pressable>
             )
           }
+
+          {/* Weight Input Overlay — для товаров на вес. Открывается из строки размера
+              кнопкой "Ввести вес" / тапом по текущему весу в корзине. */}
+          {weightModal && (() => {
+            const { sizeQty } = weightModal;
+            const perUnit = gramsPerPriceUnit(itemPriceUnit);
+            // sizeQty.quantity хранится в единицах priceUnit (kg/100g),
+            // переводим в граммы для подсказки "доступно X г / X кг".
+            const stockGrams = perUnit > 0 ? Math.round((sizeQty.quantity || 0) * perUnit) : 0;
+            const enteredGrams = parsePriceText(weightGramsText);
+            const quantityInPriceUnits = perUnit > 0 ? enteredGrams / perUnit : 0;
+            // В модалке продажи используем рекомендуемую цену продажи, а не себестоимость.
+            // Себестоимость (sizeQty.price) видит только админ в редактировании.
+            // Если рек. цена не задана — fallback на price чтобы не показывать 0.
+            const costPrice = sizeQty.price || 0;
+            const sellPrice = sizeQty.recommendedSellingPrice && sizeQty.recommendedSellingPrice > 0
+              ? sizeQty.recommendedSellingPrice
+              : costPrice;
+            const unitPrice = sellPrice;
+            const computedTotal = quantityInPriceUnits * unitPrice;
+            const isOverStock = enteredGrams > stockGrams + 1e-6;
+            const isEmpty = enteredGrams <= 0;
+            const isExistingInCart = cartItems.some(
+              ci => ci.item.id === currentItem.id &&
+                ci.boxIndex === weightModal.boxIndex &&
+                ci.sizeIndex === weightModal.sizeIndex,
+            );
+            return (
+              <Pressable
+                style={{
+                  position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+                  backgroundColor: 'rgba(0,0,0,0.6)',
+                  justifyContent: 'center', alignItems: 'center',
+                  padding: 16, zIndex: 9999,
+                }}
+                onPress={() => { setWeightModal(null); setWeightGramsText(''); }}
+              >
+                <Pressable
+                  style={{
+                    backgroundColor: colors.background.screen,
+                    borderRadius: 16,
+                    padding: 20,
+                    width: '100%',
+                    maxWidth: 360,
+                    shadowColor: '#000',
+                    shadowOffset: { width: 0, height: 4 },
+                    shadowOpacity: 0.3,
+                    shadowRadius: 8,
+                    elevation: 10,
+                  }}
+                  onPress={(e) => e.stopPropagation()}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+                    <Ionicons name="scale-outline" size={22} color={isDark ? colors.primary.gold : '#0ea5e9'} />
+                    <Text style={{ marginLeft: 8, color: colors.text.normal, fontSize: 18, fontWeight: '700' }}>
+                      Продажа на вес
+                    </Text>
+                  </View>
+
+                  <Text style={{ color: colors.text.muted, marginBottom: 4 }}>
+                    Размер: <Text style={{ color: colors.text.normal, fontWeight: '600' }}>{String(sizeQty.size)}</Text>
+                  </Text>
+                  <Text style={{ color: colors.text.muted, marginBottom: 4 }}>
+                    Цена: <Text style={{ color: colors.text.normal, fontWeight: '600' }}>{unitPrice.toFixed(2)} {currencyShort} за {priceUnitLabel(itemPriceUnit)}</Text>
+                  </Text>
+                  <Text style={{ color: colors.text.muted, marginBottom: 12 }}>
+                    Доступно на складе: <Text style={{ color: colors.text.normal, fontWeight: '600' }}>{formatWeight(stockGrams)}</Text>
+                  </Text>
+
+                  <Text style={{ color: colors.text.muted, marginBottom: 6, fontSize: 13 }}>Вес, г</Text>
+                  <TextInput
+                    style={{
+                      borderWidth: 1.5,
+                      borderColor: isOverStock ? '#ef4444' : (isDark ? colors.primary.gold : '#0ea5e9'),
+                      backgroundColor: colors.background.card,
+                      color: colors.text.normal,
+                      borderRadius: 10,
+                      paddingHorizontal: 14,
+                      paddingVertical: 12,
+                      fontSize: 18,
+                      fontWeight: '600',
+                      marginBottom: 12,
+                    }}
+                    value={weightGramsText}
+                    // вес — целые граммы, дробные не нужны, поэтому maxDecimals=0
+                    onChangeText={(t) => setWeightGramsText(sanitizePriceText(t, 0))}
+                    keyboardType="number-pad"
+                    placeholder="например, 878"
+                    placeholderTextColor={colors.text.muted}
+                    autoFocus
+                  />
+
+                  {/* Живой итог */}
+                  <View style={{
+                    backgroundColor: isDark ? 'rgba(34, 197, 94, 0.12)' : '#f0fdf4',
+                    borderColor: isDark ? 'rgba(34, 197, 94, 0.4)' : '#86efac',
+                    borderWidth: 1,
+                    borderRadius: 10,
+                    padding: 12,
+                    marginBottom: 12,
+                  }}>
+                    {isEmpty ? (
+                      <Text style={{ color: colors.text.muted, fontStyle: 'italic' }}>
+                        Введите вес чтобы увидеть сумму
+                      </Text>
+                    ) : (
+                      <Text style={{ color: colors.text.normal, fontSize: 15 }}>
+                        {formatWeight(enteredGrams)} × {unitPrice.toFixed(2)} с/{priceUnitLabel(itemPriceUnit)} ={' '}
+                        <Text style={{ color: isDark ? colors.primary.gold : '#16a34a', fontSize: 18, fontWeight: '800' }}>
+                          {computedTotal.toFixed(2)} {currencyShort}
+                        </Text>
+                      </Text>
+                    )}
+                    {isOverStock && (
+                      <Text style={{ color: '#ef4444', fontSize: 12, marginTop: 4 }}>
+                        Превышен остаток ({formatWeight(stockGrams)})
+                      </Text>
+                    )}
+                  </View>
+
+                  <View style={{ flexDirection: 'row', gap: 10 }}>
+                    {isExistingInCart && (
+                      <TouchableOpacity
+                        onPress={removeWeightItem}
+                        style={{
+                          paddingHorizontal: 14,
+                          paddingVertical: 12,
+                          borderRadius: 10,
+                          backgroundColor: '#fee2e2',
+                          borderWidth: 1,
+                          borderColor: '#fecaca',
+                        }}
+                      >
+                        <Ionicons name="trash-outline" size={20} color="#dc2626" />
+                      </TouchableOpacity>
+                    )}
+                    <TouchableOpacity
+                      onPress={() => { setWeightModal(null); setWeightGramsText(''); }}
+                      style={{
+                        flex: 1,
+                        backgroundColor: colors.background.card,
+                        paddingVertical: 12,
+                        borderRadius: 10,
+                        alignItems: 'center',
+                        borderWidth: 1,
+                        borderColor: colors.border.normal,
+                      }}
+                    >
+                      <Text style={{ color: colors.text.normal, fontWeight: '600' }}>Отмена</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={confirmWeightAdd}
+                      disabled={isEmpty || isOverStock}
+                      style={{
+                        flex: 1.4,
+                        backgroundColor: isDark ? colors.primary.gold : '#22c55e',
+                        paddingVertical: 12,
+                        borderRadius: 10,
+                        alignItems: 'center',
+                        opacity: (isEmpty || isOverStock) ? 0.5 : 1,
+                      }}
+                    >
+                      <Text style={{ color: '#fff', fontWeight: '700' }}>
+                        {isExistingInCart ? 'Обновить' : 'В корзину'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </Pressable>
+              </Pressable>
+            );
+          })()}
 
           {/* Wholesale Fullscreen Modal */}
           {
@@ -2086,7 +2791,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                                 Коробка {boxIndex + 1}
                               </Text>
                               <Text style={{ color: colors.text.muted, fontSize: 13 }}>
-                                {boxTotalQuantity} шт. • {safeBoxTotalValue.toFixed(0)} сомонӣ
+                                {boxTotalQuantity} шт. • {safeBoxTotalValue.toFixed(0)} {currencyShort}
                               </Text>
                             </View>
                           </View>
@@ -2115,7 +2820,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                                 return (
                                   <View key={sizeIndex} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 }}>
                                     <Text style={{ color: colors.text.muted }}>Размер {sizeQty.size}: {qty} шт.</Text>
-                                    <Text style={{ color: colors.text.muted }}>× {safePrice.toFixed(2)} с.</Text>
+                                    <Text style={{ color: colors.text.muted }}>× {safePrice.toFixed(2)} {currencyShort}</Text>
                                   </View>
                                 );
                               })}
@@ -2132,18 +2837,19 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                                     borderRadius: 12,
                                     fontSize: 16,
                                   }}
-                                  placeholder="Введите цену (сомонӣ)"
+                                  placeholder={`Введите цену (${currencyShort})`}
                                   placeholderTextColor={colors.text.muted}
                                   value={selectedBox?.price === '0' ? '' : (selectedBox?.price || '')}
                                   onChangeText={(text) => {
+                                    const sanitized = sanitizePriceText(text);
                                     const updatedBoxes = [...selectedBoxes];
                                     const selectedBoxIndex = updatedBoxes.findIndex(sb => sb.boxIndex === boxIndex);
                                     if (selectedBoxIndex !== -1) {
-                                      updatedBoxes[selectedBoxIndex].price = text;
+                                      updatedBoxes[selectedBoxIndex].price = sanitized;
                                       setSelectedBoxes(updatedBoxes);
                                     }
                                   }}
-                                  keyboardType="numeric"
+                                  keyboardType="decimal-pad"
                                 />
                                 {selectedBox?.price && !isNaN(parseFloat(selectedBox.price)) && parseFloat(selectedBox.price) > 0 && (
                                   <View style={{
@@ -2159,7 +2865,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                                       Прибыль:
                                     </Text>
                                     <Text style={{ color: isDark ? '#4ade80' : '#15803d', fontWeight: 'bold', fontSize: 16 }}>
-                                      {(parseFloat(selectedBox.price) - safeBoxTotalValue).toFixed(2)} сомонӣ
+                                      {(parseFloat(selectedBox.price) - safeBoxTotalValue).toFixed(2)} {currencyShort}
                                     </Text>
                                   </View>
                                 )}
@@ -2210,11 +2916,11 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                             </View>
                             <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
                               <Text style={{ color: isDark ? '#86efac' : '#16a34a' }}>Себестоимость:</Text>
-                              <Text style={{ color: isDark ? '#86efac' : '#16a34a', fontWeight: '600' }}>{totalCostPrice.toFixed(2)} сомонӣ</Text>
+                              <Text style={{ color: isDark ? '#86efac' : '#16a34a', fontWeight: '600' }}>{totalCostPrice.toFixed(2)} {currencyShort}</Text>
                             </View>
                             <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
                               <Text style={{ color: isDark ? '#4ade80' : '#15803d', fontWeight: '600' }}>Цена продажи:</Text>
-                              <Text style={{ color: isDark ? '#4ade80' : '#15803d', fontWeight: 'bold' }}>{totalSalePrice.toFixed(2)} сомонӣ</Text>
+                              <Text style={{ color: isDark ? '#4ade80' : '#15803d', fontWeight: 'bold' }}>{totalSalePrice.toFixed(2)} {currencyShort}</Text>
                             </View>
                             <View style={{
                               flexDirection: 'row',
@@ -2229,7 +2935,7 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
                                 <Text style={{ color: isDark ? '#4ade80' : '#15803d', fontWeight: 'bold', fontSize: 16 }}>Прибыль:</Text>
                               </View>
                               <Text style={{ color: isDark ? '#4ade80' : '#15803d', fontWeight: 'bold', fontSize: 18 }}>
-                                {(totalSalePrice - totalCostPrice).toFixed(2)} сомонӣ
+                                {(totalSalePrice - totalCostPrice).toFixed(2)} {currencyShort}
                               </Text>
                             </View>
                           </View>
@@ -2254,10 +2960,59 @@ const ItemDetailsModal = ({ item, visible, onClose, onItemUpdated, onItemDeleted
             numberOfBoxes={currentItem.numberOfBoxes}
             boxSizeQuantities={currentItem.boxSizeQuantities}
           />
+
+          {/* Превью штрих-кода — рендерится ВНУТРИ ItemDetailsModal как абсолютный overlay,
+              иначе на iOS он окажется под Modal-ом и будет невидим. */}
+          <BarcodePreview
+            visible={showBarcodePreview}
+            onClose={() => setShowBarcodePreview(false)}
+            code={currentItem.code}
+            itemName={currentItem.name}
+            // Цена для дизайнов «С ценой/Ценник» — пытаемся в порядке приоритета:
+            // 1) state в режиме редактирования (recommendedSellingPrice → priceValue),
+            // 2) первый ненулевой recommendedSellingPrice из boxSizeQuantities,
+            // 3) первый ненулевой price из boxSizeQuantities.
+            // Без этого даже у заполненного товара дизайны с ценой были disabled,
+            // т.к. state-уровневые цены инициализируются только в режиме edit.
+            price={deriveItemDisplayPrice(currentItem, recommendedSellingPrice, priceValue)}
+          />
         </View >
       </Modal >
     </>
   );
 };
+
+/**
+ * Достаёт цену для печати на ценнике. Используем ТОЛЬКО рекомендуемую цену
+ * продажи (`recommendedSellingPrice`); `price` — это себестоимость/закупка и
+ * на ценник её ставить нельзя.
+ *
+ * Логика:
+ *   1) если в редактирующем state есть ненулевая рек. цена — берём её;
+ *   2) иначе парсим boxSizeQuantities и ищем первую ненулевую
+ *      recommendedSellingPrice среди размеров с qty > 0;
+ *   3) если рекомендуемой цены нет — undefined (дизайны с ценой
+ *      будут disabled в BarcodePreview).
+ */
+function deriveItemDisplayPrice(
+  item: Item,
+  recommendedSellingPrice: number,
+  _priceValue: number,
+): number | undefined {
+  if (recommendedSellingPrice && recommendedSellingPrice > 0) return recommendedSellingPrice;
+  try {
+    const parsed = JSON.parse(item.boxSizeQuantities || '[]');
+    if (!Array.isArray(parsed)) return undefined;
+    for (const box of parsed) {
+      if (!Array.isArray(box)) continue;
+      for (const sq of box) {
+        if (sq?.quantity > 0 && sq?.recommendedSellingPrice > 0) return sq.recommendedSellingPrice;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return undefined;
+}
 
 export default ItemDetailsModal;

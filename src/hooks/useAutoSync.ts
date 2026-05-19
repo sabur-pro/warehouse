@@ -103,7 +103,7 @@ export const useAutoSync = (options: UseAutoSyncOptions = {}) => {
   const [dataQualityReport, setDataQualityReport] = useState<DataQualityReport | null>(null);
   const [showDataQualityAlert, setShowDataQualityAlert] = useState(false);
 
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isAuthenticatedRef = useRef(false);
   const userRoleRef = useRef<string | null>(null);
   const isFirstSyncRef = useRef(true);
